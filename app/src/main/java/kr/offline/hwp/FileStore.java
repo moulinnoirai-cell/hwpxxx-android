@@ -27,7 +27,7 @@ public final class FileStore {
         for (File root : roots) {
             if (f.toPath().startsWith(root.toPath())) {
                 String rel = root.toPath().relativize(f.toPath()).toString().replace('\\','/');
-                if (rel.equals("Android") || rel.startsWith("Android/"))
+                if (rel.equalsIgnoreCase("Android") || rel.regionMatches(true,0,"Android/",0,8))
                     throw new IOException("Android 보호 폴더에는 접근할 수 없어요.");
                 return f;
             }
@@ -72,26 +72,65 @@ public final class FileStore {
             return;
         }
         if (!format.equals("hwpx")) throw new IOException("지원하지 않는 문서 형식이에요.");
-        Set<String> seen=new HashSet<>(); long expanded=0; int entries=0; boolean section=false,header=false,mime=false;
+        Set<String> seen=new HashSet<>(); Map<String,Long> sizes=new HashMap<>(); long expanded=0; int entries=0; boolean section=false,header=false,mime=false; byte[] manifest=null;
         try (ZipInputStream zin=new ZipInputStream(new ByteArrayInputStream(bytes))) {
             ZipEntry e;
             while((e=zin.getNextEntry())!=null) {
                 if(++entries>2048)throw new IOException("압축 항목이 너무 많아요.");
                 String n=e.getName();
                 if(n.startsWith("/") || n.contains("\\") || Arrays.asList(n.split("/")).contains("..") || !seen.add(n))throw new IOException("안전하지 않은 압축 경로예요.");
-                int limit=n.toLowerCase(Locale.ROOT).endsWith(".xml")?8*1024*1024:32*1024*1024;
+                int limit=xmlLike(n)?8*1024*1024:MAX_BYTES;
                 byte[] b=bounded(zin,limit); expanded+=b.length;
                 if(expanded>MAX_EXPANDED)throw new IOException("압축을 푼 문서 크기가 너무 커요.");
+                sizes.put(n,(long)b.length);
                 if(n.equals("mimetype")) mime=new String(b,StandardCharsets.US_ASCII).trim().equals("application/hwp+zip");
                 if(n.equals("Contents/header.xml"))header=true;
                 if(n.matches("Contents/section[0-9]+\\.xml"))section=true;
-                if(n.toLowerCase(Locale.ROOT).endsWith(".xml") || n.toLowerCase(Locale.ROOT).endsWith(".hpf"))secureXml(b);
+                if(n.equals("META-INF/manifest.xml"))manifest=b;
                 zin.closeEntry();
             }
         }
         if(!mime || !section || !header)throw new IOException("HWPX 필수 항목이 없어요.");
+        centralDirectoryMatches(bytes,sizes);
+        // Entries listed as encrypted in the manifest may hold ciphertext instead of XML.
+        Set<String> encrypted=manifest==null?Collections.<String>emptySet():encryptedEntries(manifest);
+        try (ZipInputStream zin=new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            ZipEntry e;
+            while((e=zin.getNextEntry())!=null) {
+                String n=e.getName();
+                if(xmlLike(n)&&!n.equals("META-INF/manifest.xml")) {
+                    byte[] b=bounded(zin,8*1024*1024);
+                    if(!(encrypted.contains(n)&&!looksLikeXml(b)))secureXml(b,null);
+                }
+                zin.closeEntry();
+            }
+        }
     }
-    private static void secureXml(byte[] b) throws IOException {
+    private static boolean xmlLike(String n){String s=n.toLowerCase(Locale.ROOT);return s.endsWith(".xml")||s.endsWith(".hpf");}
+    static boolean looksLikeXml(byte[] b){
+        int i=0;
+        if(b.length>=3&&b[0]==(byte)0xef&&b[1]==(byte)0xbb&&b[2]==(byte)0xbf)i=3;
+        else if(b.length>=2&&((b[0]==(byte)0xff&&b[1]==(byte)0xfe)||(b[0]==(byte)0xfe&&b[1]==(byte)0xff)))return true;
+        if(b.length>=2&&((b[0]=='<'&&b[1]==0)||(b[0]==0&&b[1]=='<')))return true;
+        while(i<b.length&&(b[i]==' '||b[i]=='\t'||b[i]=='\r'||b[i]=='\n'))i++;
+        return i<b.length&&b[i]=='<';
+    }
+    /** The streaming and central-directory views of the archive must agree, so no reader sees hidden entries. */
+    private static void centralDirectoryMatches(byte[] bytes,Map<String,Long> streamed)throws IOException {
+        File temp=File.createTempFile("hwpx-check-",".zip");
+        try {
+            try(FileOutputStream out=new FileOutputStream(temp)){out.write(bytes);}
+            Map<String,Long> central=new HashMap<>();
+            try(ZipFile zip=new ZipFile(temp)){
+                Enumeration<? extends ZipEntry> all=zip.entries();
+                while(all.hasMoreElements()){ZipEntry e=all.nextElement();if(central.put(e.getName(),e.getSize())!=null)throw new IOException("안전하지 않은 압축 경로예요.");}
+            }
+            if(!central.equals(streamed))throw new IOException("압축 목록이 일치하지 않는 HWPX예요.");
+        } catch(ZipException e){throw new IOException("압축 목록이 일치하지 않는 HWPX예요.",e);}
+        finally{temp.delete();}
+    }
+    static Set<String> encryptedEntries(byte[] manifest)throws IOException {Set<String> out=new HashSet<>();secureXml(manifest,out);return out;}
+    private static void secureXml(byte[] b,final Set<String> encrypted) throws IOException {
         try {
             // Android's SAX implementation lacks Xerces-only features. Reject DTDs before
             // parsing, decode UTF-8/UTF-16 strictly, and always install a rejecting resolver.
@@ -113,7 +152,19 @@ public final class FileStore {
             XMLReader r=f.newSAXParser().getXMLReader();
             r.setEntityResolver((publicId,systemId)->{throw new SAXException("외부 참조 차단");});
             r.setErrorHandler(new DefaultHandler(){public void error(SAXParseException e)throws SAXException{throw e;}public void fatalError(SAXParseException e)throws SAXException{throw e;}});
-            r.setContentHandler(new DefaultHandler(){int depth=0,nodes=0;public void startElement(String u,String l,String q,Attributes a)throws SAXException{if(++depth>128||++nodes>200000)throw new SAXException("XML 한도 초과");}public void endElement(String u,String l,String q){depth--;}});
+            r.setContentHandler(new DefaultHandler(){
+                int depth=0,nodes=0,entryDepth=-1;String entryPath=null;
+                public void startElement(String u,String l,String q,Attributes a)throws SAXException{
+                    if(++depth>128||++nodes>200000)throw new SAXException("XML 한도 초과");
+                    if(encrypted==null)return;
+                    String local=l==null||l.isEmpty()?q.substring(q.indexOf(':')+1):l;
+                    if(local.equals("file-entry")){
+                        entryDepth=depth;entryPath=null;
+                        for(int i=0;i<a.getLength();i++){String n=a.getLocalName(i);if(n==null||n.isEmpty())n=a.getQName(i).substring(a.getQName(i).indexOf(':')+1);if(n.equals("full-path"))entryPath=a.getValue(i);}
+                    } else if(local.equals("encryption-data")&&entryDepth>0&&entryPath!=null)encrypted.add(entryPath);
+                }
+                public void endElement(String u,String l,String q){if(depth==entryDepth){entryDepth=-1;entryPath=null;}depth--;}
+            });
             // Parse the already decoded characters so an alternate encoding declaration
             // cannot reinterpret the bytes used for the DTD check.
             r.parse(new InputSource(new StringReader(decoded)));
@@ -144,12 +195,26 @@ public final class FileStore {
                 boolean made=false;
                 try {
                     if(!dest.createNewFile())throw new IOException("같은 이름의 파일이 있어요. 이름이나 폴더를 바꿔 주세요.");made=true;
-                    try(InputStream in=new FileInputStream(temp);FileOutputStream out=new FileOutputStream(dest)){byte[] buf=new byte[16384];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);out.getFD().sync();}
+                    try { Files.move(temp.toPath(),dest.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING); }
+                    catch(AtomicMoveNotSupportedException unsupported) {
+                        try(InputStream in=new FileInputStream(temp);FileOutputStream out=new FileOutputStream(dest)){byte[] buf=new byte[16384];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);out.getFD().sync();}
+                    }
                     if(!sha(bytes).equals(sha(read(dest.getPath()))))throw new IOException("저장 결과가 일치하지 않아요.");
                 } catch(IOException e){if(made)dest.delete();throw e;}
             }
             return dest;
         } finally {temp.delete();}
+    }
+    /** Copies the current HWP next to itself before its first in-place save; HWPX returns null. */
+    public File backup(String target,String expectedSha,String stamp)throws IOException {
+        File f=resolve(target);if(!ext(f).equals("hwp"))return null;
+        byte[] bytes=read(f.getPath());
+        if(expectedSha==null||!sha(bytes).equals(expectedSha))throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");
+        File dir=f.getParentFile();String base=f.getName().substring(0,f.getName().length()-4),suffix="_백업_"+stamp;
+        while(!base.isEmpty()&&(base+suffix+"-99.hwp").getBytes(StandardCharsets.UTF_8).length>240)base=base.substring(0,base.offsetByCodePoints(base.length(),-1));
+        File dest=new File(dir,base+suffix+".hwp");
+        for(int i=2;dest.exists();i++){if(i>99)throw new IOException("백업 파일 이름을 정하지 못했어요.");dest=new File(dir,base+suffix+"-"+i+".hwp");}
+        return write(dest.getPath(),bytes,null,false);
     }
     public File move(String source,String parent,String newName)throws IOException {
         File src=resolve(source),dir=resolve(parent);name(newName);

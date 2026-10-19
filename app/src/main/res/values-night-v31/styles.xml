@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#b6c7ff</item>
+        <item name="android:statusBarColor">#141922</item>
+        <item name="android:navigationBarColor">#141922</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowSplashScreenBackground">#5ba8f8</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/hwpxxx_icon_foreground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#5ba8f8</item>
+    </style>
+</resources>
