@@ -1,0 +1,8 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'kr.offline.hwp'
+    compileSdk 35
+    defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 2; versionName '0.1.1' }
+    buildTypes { release { minifyEnabled false } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+}

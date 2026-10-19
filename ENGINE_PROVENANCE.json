@@ -1,0 +1,26 @@
+{
+  "version": "0.8.7",
+  "dist": {
+    "shasum": "3bf8afb0683223e26ac704314a0a9b471c4840cd",
+    "tarball": "https://registry.npmjs.org/@rhwp/core/-/core-0.8.7.tgz",
+    "fileCount": 7,
+    "integrity": "sha512-qgNpY9aclCvy9D7cPnpuplu42kUFZCCPhdjAS5HBso4Z4XeHG3uchYdUleQBoas/zEuwfJ7H4/ulepqdL/LXDA==",
+    "signatures": [
+      {
+        "sig": "MEQCIB9ZzKGjIEYwEd4aE2FznGvYBtXTEeiFISsFlnWc0MjiAiAPLsx3ivw83yMu4LM5nh5w7HYKLjr8myfjzk7HAj3U7Q==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      },
+      {
+        "sig": "MEQCIDfhiT163OclfeZCCRaklpICsjV3wbu32EnNxElP8FZpAiBHZeBEIaHtI5ESrvXVcZHJUfGa03DHQ1Vp/iKcpkhJBQ==",
+        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+      }
+    ],
+    "attestations": {
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@rhwp%2fcore@0.8.7",
+      "provenance": {
+        "predicateType": "https://slsa.dev/provenance/v1"
+      }
+    },
+    "unpackedSize": 12534924
+  }
+}

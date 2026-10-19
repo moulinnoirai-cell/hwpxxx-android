@@ -1,0 +1,11 @@
+{
+  "applicationName": "hwpxxx",
+  "sourceUpload": "1000023248.png",
+  "detectedFormat": "JPEG",
+  "sourceSize": [
+    1536,
+    1536
+  ],
+  "sourceSha256": "6a77c6be5065eef36dc982757bbb5bbd8a61b6c8cb316dffa80b6643542c92a3",
+  "processing": "Original artwork retained; deterministic resize and PNG encoding for Android launcher densities. Adaptive foreground inset 16.6667%."
+}

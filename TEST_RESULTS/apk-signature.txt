@@ -1,0 +1,17 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): false
+Verified using v3 scheme (APK Signature Scheme v3): true
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=Offline HWP Personal, O=Personal, C=KR
+Signer #1 certificate SHA-256 digest: d4aa89484caf940acf15847fca11cbd616cc4a109642a0a369e345bee2b9c8fd
+Signer #1 certificate SHA-1 digest: f88c3635f9e4993a958e468ac07edc996cd77f84
+Signer #1 certificate MD5 digest: 3cf200c030d689956fe5dd5864f6beab
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 3072
+Signer #1 public key SHA-256 digest: 42f944e814abc85c2362fa2790d789b08a6cf54601f962e5a73ecfc732e4c2b8
+Signer #1 public key SHA-1 digest: ad35feb15dbb3c9b8146323a1d9e7a5cb7782e98
+Signer #1 public key MD5 digest: a77bffb7030680cf625bcf42bc443ba4
