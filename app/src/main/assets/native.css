@@ -6,7 +6,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f5f6fa;overscroll-beh
 #hwp-app .head{flex:none;padding-top:18px}#hwp-app h1{font-size:26px;font-weight:600}
 #hwp-app .library-pane{flex:1;min-height:0}#hwp-app .library-scroll{height:100%}
 #hwp-app .nav{flex:none;padding-bottom:8px}#hwp-app .settings-body{height:auto;flex:1;min-height:0}
-#hwp-app .thumb img{max-width:100%;height:100%;object-fit:contain;background:white;box-shadow:0 2px 8px #15294d18}
+#hwp-app .thumb img{width:100%;height:100%;object-fit:cover;object-position:top center;background:white;box-shadow:0 2px 8px #15294d18}
 #hwp-app .reader{height:100%;width:100%;flex:1;min-height:0}
 #hwp-app .reader-scroll{padding:76px 18px 16px;touch-action:pan-x pan-y;scrollbar-width:none;overflow:auto;position:absolute;inset:0}
 #hwp-app .reader-scroll::-webkit-scrollbar{display:none}
@@ -45,3 +45,58 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f5f6fa;overscroll-beh
 #hwp-app .folder-row>svg{color:var(--folder);fill:var(--folderfill)}
 
 #hwp-app .about-brand{display:flex;align-items:center;gap:16px;margin:18px 0 22px}#hwp-app .about-brand img{width:72px;height:72px;border-radius:16px;flex:none}#hwp-app .about-brand strong{font-size:24px;display:block}#hwp-app .about-brand span{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+/* 0.1.2 bottom edit toolbar */
+#hwp-app .edit-bottom{position:absolute;z-index:3;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line)}
+#hwp-app .edit-tools{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));padding:2px 4px}
+#hwp-app .edit-tools .tool{min-height:56px;min-width:0;padding:6px 0 4px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:transparent;color:var(--ink);border-radius:12px;font-size:11px;line-height:1.2;word-break:keep-all}
+#hwp-app .edit-tools .tool svg{width:22px;height:22px}
+#hwp-app .edit-tools .tool:disabled{color:var(--muted);opacity:.45}
+#hwp-app .edit-tools .tool[aria-pressed=true],#hwp-app .edit-tools .tool.open{background:var(--soft);color:var(--brand)}
+#hwp-app .edit-tools .tool[aria-pressed=mixed]{background:linear-gradient(135deg,var(--soft) 50%,transparent 50%);color:var(--brand)}
+#hwp-app .edit-panel{padding:10px 12px 4px;border-bottom:1px solid var(--line);max-height:45vh;overflow:auto}
+#hwp-app .panel-title{font-size:13px;font-weight:600;margin:0 0 6px;color:var(--ink)}
+#hwp-app .panel-hint{font-size:12px;color:var(--muted);margin:0 0 8px}
+#hwp-app .panel-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:8px}
+#hwp-app .panel-label{min-width:48px;font-size:12px;color:var(--muted);flex:none;white-space:nowrap}
+#hwp-app .panel-row.chips{padding-left:54px}
+#hwp-app .edit-panel .chip{min-width:48px;min-height:44px;padding:0 10px;border-radius:10px;background:var(--bg);color:var(--ink);display:inline-flex;align-items:center;justify-content:center;gap:4px;font-size:13px}
+#hwp-app .edit-panel .chip.on{background:var(--soft);color:var(--brand);box-shadow:inset 0 0 0 2px var(--brand)}
+#hwp-app .edit-panel .chip:disabled,#hwp-app .edit-panel .swatch:disabled{opacity:.4}
+#hwp-app .size-value{min-width:56px;text-align:center;font-size:14px;color:var(--ink)}
+#hwp-app .edit-panel .swatch{width:44px;height:44px;min-width:44px;border-radius:50%;background:var(--sw);box-shadow:inset 0 0 0 1px #0003;display:inline-flex;align-items:center;justify-content:center;color:#fff;padding:0}
+#hwp-app .edit-panel .swatch[data-action="tb-shade"]{color:#202c40}
+#hwp-app .edit-panel .swatch.on{box-shadow:0 0 0 3px var(--surface),0 0 0 5px var(--brand)}
+#hwp-app .edit-panel .swatch.none{background:var(--bg);color:var(--muted)}
+#hwp-app .edit-layer.fmt-preview{background:transparent;color:transparent;caret-color:transparent}
+#hwp-app .edit-layer.fmt-preview::selection{background:transparent}
+#hwp-app .sel-mark{position:absolute;z-index:1;pointer-events:none;background:#3156c933;border-bottom:2px solid #3156c9}
+@media(prefers-reduced-motion:reduce){#hwp-app .read-controls{transition:none}}
+/* Wide screens (landscape, tablets): the panel uses two columns so it stays short. */
+@media(min-width:600px){#hwp-app .edit-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:20px;align-content:start}#hwp-app .panel-title,#hwp-app .panel-hint{grid-column:1/-1}#hwp-app .panel-row.chips{padding-left:0}}
+/* Short screens (landscape phones): compact bars so the document keeps most of the height. */
+@media(max-height:520px){#hwp-app .reader-top{min-height:0;padding:2px 8px}#hwp-app .edit-top{padding:4px 12px}#hwp-app .edit-top button,#hwp-app .edit-top button:first-child,#hwp-app .edit-top button:last-child{min-height:44px;padding:4px 6px}#hwp-app .edit-tools .tool{min-height:48px;flex-direction:row;gap:6px;font-size:12px;padding:0}#hwp-app .edit-panel{max-height:34vh;padding-top:6px}#hwp-app .panel-title{display:none}#hwp-app .panel-row{margin-bottom:4px}}/* Keyboard open in landscape: give the remaining height to the text; close the keyboard to reach Cancel/Save. */
+@media(max-height:260px){#hwp-app .reader.is-editing .edit-top{display:none}}
+/* Dark panels: give swatches a light ring so black/dark colors stay visible. */
+@media(prefers-color-scheme:dark){#hwp-app:not([data-theme=light]) .edit-panel .swatch:not(.on){box-shadow:inset 0 0 0 1px #ffffff66}}
+#hwp-app[data-theme=dark] .edit-panel .swatch:not(.on){box-shadow:inset 0 0 0 1px #ffffff66}
+/* Library/favorites: no big title; the top row is search + an icon-only refresh button. */
+#hwp-app .head.head-bar{display:flex;align-items:center;gap:8px;padding:10px 12px 10px 16px}
+#hwp-app .head-bar .search{flex:1;margin-top:0;min-width:0}
+#hwp-app .head-bar .refresh{width:50px;height:50px;border-radius:13px;background:var(--soft);color:var(--brand)}
+#hwp-app .head-bar .refresh:disabled{opacity:.5}
+#hwp-app .settings-body{padding-top:12px}
+/* Edit top bar: three real buttons instead of bare text. */
+#hwp-app .edit-top button,#hwp-app .edit-top button:first-child,#hwp-app .edit-top button:last-child{min-height:48px;border-radius:12px;font-weight:500}
+#hwp-app .edit-top button[data-action="cancel-edit"]{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line)}
+#hwp-app .edit-top button[data-action="save"]:disabled{background:var(--bg);color:var(--muted);box-shadow:inset 0 0 0 1px var(--line);opacity:1}
+#hwp-app .edit-top button[data-action="save"]:not(:disabled){background:var(--brand);color:var(--onbrand)}/* Confirmation buttons with a caption under the answer (cancel-edit dialog). */
+#hwp-app .sheet-actions .captioned{flex-direction:column;gap:2px;padding:10px 12px;line-height:1.3}
+#hwp-app .sheet-actions .captioned span{display:flex;flex-direction:column;align-items:center;gap:3px}
+#hwp-app .sheet-actions .captioned small{font-size:12px;font-weight:400;opacity:.85}
+#hwp-app .sheet-actions .danger{background:var(--danger);color:var(--surface)}/* Dark mode: no light flash behind the page during rotation or keyboard resize. */
+@media(prefers-color-scheme:dark){html:not(:has(#hwp-app[data-theme=light])),html:not(:has(#hwp-app[data-theme=light])) body{background:#141922}}
+html:has(#hwp-app[data-theme=dark]),html:has(#hwp-app[data-theme=dark]) body{background:#141922}
+
+#hwp-app .docs:not([data-view="list"]) .thumb{height:190px;padding:0}
+#hwp-app .pull-tip{height:0;overflow:hidden;display:flex;align-items:flex-end;justify-content:center;font-size:13px;color:var(--muted);transition:height .15s}
+#hwp-app .danger{background:#c62828;border-color:#c62828;color:#fff}
