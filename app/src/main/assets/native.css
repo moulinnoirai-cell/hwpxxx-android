@@ -101,40 +101,27 @@ html:has(#hwp-app[data-theme=dark]),html:has(#hwp-app[data-theme=dark]) body{bac
 #hwp-app .pull-tip{height:0;overflow:hidden;display:flex;align-items:flex-end;justify-content:center;font-size:13px;color:var(--muted);transition:height .15s}
 #hwp-app .danger{background:#c62828;border-color:#c62828;color:#fff}
 
-/* Compact cards: grid favorite overlays preview; metadata keeps the full width. */
-#hwp-app .doc{position:relative}
-#hwp-app .doc-text{padding-bottom:8px}
-#hwp-app .doc-meta{display:flex;align-items:center;min-height:0;padding-right:0;margin-top:4px}
-#hwp-app .doc-details{min-width:0;width:100%}
-#hwp-app .doc-meta .doc-path{margin-top:0}
-#hwp-app .doc-meta .doc-ext{padding:3px 0 0}
-#hwp-app .doc>.star{position:absolute;left:4px;top:4px;right:auto;bottom:auto;width:48px;height:48px;border-radius:50%;isolation:isolate;background:transparent;z-index:1}
-#hwp-app .doc>.star::before{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--surface);box-shadow:0 1px 5px #00000026;z-index:-1}
-#hwp-app .docs[data-view="list"] .doc-open{padding-bottom:10px}
-#hwp-app .docs[data-view="list"] .doc-text{padding-bottom:0}
-#hwp-app .docs[data-view="list"] .doc-meta{min-height:20px;padding-right:0;margin-top:4px}
-#hwp-app .docs[data-view="list"] .doc>.star{left:4px;right:auto;top:50%;bottom:auto;transform:translateY(-50%)}
-#hwp-app .docs[data-view="list"] .doc>.star::before{display:none}
-
-/* Requests 6-13: clean list, one settings dialog, persistent permission hint. */
-#hwp-app .docs[data-view="list"] .doc{padding:0 0 0 56px}
-#hwp-app .docs[data-view="list"] .doc-open{display:block;padding:12px 12px 12px 4px}
-#hwp-app .docs[data-view="list"] .doc-text{padding:0}
-#hwp-app .docs[data-view="list"] .doc-meta{min-height:0;margin-top:4px}
-#hwp-app .head-bar .settings-trigger{width:50px;height:50px;border-radius:13px;background:var(--soft);color:var(--brand)}
-#hwp-app .overlay.settings-overlay{align-items:center;justify-content:center;padding:16px}
-#hwp-app .overlay.settings-overlay .sheet{width:100%;max-width:420px;max-height:calc(100% - 32px);border-radius:22px;padding:20px}
-#hwp-app .settings-overlay .settings-group{margin-bottom:12px}
-#hwp-app .settings-overlay .setting{min-width:0;min-height:68px;padding:12px!important;gap:10px}
-#hwp-app .settings-overlay .setting-copy{flex:1;min-width:0;overflow-wrap:anywhere;word-break:keep-all}
-#hwp-app .settings-overlay .setting-copy strong{font-size:14px}
-#hwp-app .settings-overlay .setting-copy small{line-height:1.6}
-#hwp-app .permission-state{flex:none;font-size:11px;color:var(--brand);white-space:nowrap}
-#hwp-app .permission-copy{word-break:keep-all;overflow-wrap:anywhere;line-height:1.8}
-#hwp-app .permission-copy>span{display:block}
-#hwp-app .permission-guide{margin-top:10px}
-#hwp-app .permission-needed{animation:hwp-permission-glow 2.8s ease-in-out infinite}
-@keyframes hwp-permission-glow{0%,100%{box-shadow:inset 0 0 0 1px #3156c91a,0 0 2px #3156c91a}50%{box-shadow:inset 0 0 0 1px #6f92e899,0 0 10px #6f92e855}}
-@media(prefers-reduced-motion:reduce){#hwp-app .permission-needed{animation:none;box-shadow:inset 0 0 0 1px #6f92e888,0 0 5px #6f92e833}}
-
 #hwp-app .reader.is-editing .edit-layer{-webkit-text-size-adjust:none;text-size-adjust:none}
+
+/* Library and dialogs follow library.css (approved design). Product-only pieces below. */
+#hwp-app{font-family:OfflineNoto,system-ui,sans-serif}
+#hwp-app .hw-screen{background:var(--bg);color:var(--ink);font-size:14px;line-height:1.55}
+#hwp-app .hw-screen .notice{flex:none}
+#hwp-app .hw-screen .scan{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 14px;font-size:12px;color:var(--muted)}
+#hwp-app .hw-screen .scan[hidden]{display:none}
+#hwp-app .hw-thumb img{display:block}
+/* A list that fits on screen shows the track only, not a handle that looks draggable (L11). */
+#hwp-app .hw-rail-thumb:disabled::after{opacity:0}
+#hwp-app .hw-thumb .pending-thumb{height:100%;display:grid;place-items:center;color:#9aa6b8;background:#fff}
+#hwp-app .hw-docs[data-view=list] .hw-path{margin-top:4px}
+#hwp-app .hw-doc-scroll .pull-tip{grid-column:1/-1}
+#hwp-app .hw-empty:not(.hw-permission-intro)>svg{width:38px;height:38px;display:block;margin:0 auto 16px}
+/* Design dialogs reuse the product overlay: centred, opaque surface, header with back/close. */
+#hwp-app .overlay.hw-modal{align-items:center;justify-content:center;padding:16px}
+#hwp-app .overlay.hw-modal .sheet.hw-dialog{position:relative;width:100%;max-width:420px;max-height:calc(100% - 24px);margin:0;border-radius:22px;padding:20px;box-shadow:0 12px 30px #00000020}
+#hwp-app .hw-dialog .hw-about-brand img{border-radius:10px}
+#hwp-app .hw-dialog details h3{font-size:14px;margin:14px 0 4px}
+#hwp-app .hw-dialog details p{font-size:12px}
+#hwp-app .hw-main-button:focus-visible,#hwp-app .hw-intro-dot:focus-visible,#hwp-app .hw-star:focus-visible,#hwp-app .hw-icon:focus-visible,#hwp-app .hw-open:focus-visible{outline:3px solid var(--brand);outline-offset:-3px}
+@media(min-width:650px){#hwp-app .hw-docs:not([data-view=list]){grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}}
+@media(prefers-reduced-motion:reduce){#hwp-app .hw-permission-needed{animation:none}}
