@@ -8,3 +8,5 @@ tests/out-*.png
 tests/design-*.png
 tests/cmp-*.png
 .claude/
+dist/
+build/

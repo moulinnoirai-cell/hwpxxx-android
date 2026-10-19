@@ -1,9 +1,27 @@
 plugins { id 'com.android.application' }
+
+// Release signing comes from local.properties (never committed):
+//   release.storeFile=C:/path/hwpxxx-release.jks
+//   release.passwordFile=C:/path/keystore-password.txt
+def local = new Properties()
+def localFile = rootProject.file('local.properties')
+if (localFile.exists()) localFile.withInputStream { local.load(it) }
+def storePath = local.getProperty('release.storeFile')
+def passwordPath = local.getProperty('release.passwordFile')
+
 android {
     namespace 'kr.offline.hwp'
     compileSdk 35
     defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 4; versionName '0.2.0' }
     buildFeatures { buildConfig true }
-    buildTypes { release { minifyEnabled false } }
+    signingConfigs {
+        if (storePath && passwordPath) {
+            release {
+                def password = new File(passwordPath).text.trim()
+                storeFile file(storePath); storePassword password; keyAlias 'hwpxxx'; keyPassword password
+            }
+        }
+    }
+    buildTypes { release { minifyEnabled false; if (storePath && passwordPath) signingConfig signingConfigs.release } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
 }
