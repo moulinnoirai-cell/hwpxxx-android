@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient(){
             @Override public boolean shouldOverrideUrlLoading(WebView view,WebResourceRequest request){return true;}
             @Override public WebResourceResponse shouldInterceptRequest(WebView view,WebResourceRequest request){return intercept(request.getUrl(),request.getMethod());}
-            @Override public void onPageFinished(WebView view,String url){if(url.equals(ORIGIN+"/index.html"))started=true;}
+            @Override public void onPageFinished(WebView view,String url){if(url.equals(ORIGIN+"/index.html")){started=true;event("resume",Boolean.TRUE);}}
             @Override public void onReceivedSslError(WebView view,android.webkit.SslErrorHandler handler,android.net.http.SslError error){handler.cancel();}
             @Override public boolean onRenderProcessGone(WebView view,android.webkit.RenderProcessGoneDetail detail){if(root!=null)root.removeView(view);view.destroy();if(view==web)web=null;finish();return true;}
         });
@@ -220,7 +220,7 @@ public class MainActivity extends Activity {
         if(batch.length()>0)event("scanBatch",batch);
         return obj("cancelled",scanStop.get(),"limited",limit,"skipped",skipped,"count",count);
     }
-    @Override protected void onResume(){super.onResume();if(started)event("resume",Boolean.TRUE);}
+    @Override protected void onResume(){super.onResume();if(web!=null)event("resume",Boolean.TRUE);}
     @Override public void onBackPressed(){if(web!=null&&started)web.evaluateJavascript("window.AppBack&&window.AppBack()",null);else super.onBackPressed();}
     @Override protected void onDestroy(){destroyed=true;scanStop.set(true);// Release buffers on the I/O thread so an operation in flight never sees them vanish.
         try{io.execute(()->{blobs.clear();upload=null;if(pdf!=null){try{pdf.close();}catch(Exception ignored){}pdf=null;}});}catch(RejectedExecutionException ignored){}

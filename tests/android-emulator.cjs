@@ -16,14 +16,24 @@ const a=name=>page.locator(`[data-action="${name}"]`);
 async function click(name){await a(name).click();}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
 async function library(){
- if(await a('cancel-edit').isVisible()){await click('cancel-edit');if(await a('cancel-yes').isVisible())await click('cancel-yes');}
+ if(await a('cancel-edit').isVisible()){
+  await click('cancel-edit');await until(async()=>await a('cancel-yes').isVisible()||await a('edit').isVisible());
+  if(await a('cancel-yes').isVisible())await click('cancel-yes');await a('edit').waitFor();
+ }
  if(await a('back').isVisible())await click('back');
  await page.locator('#search').waitFor();
 }
 async function open(name){await page.locator('#search').fill(name);await page.getByRole('button',{name:`${name} 열기`,exact:true}).click();await page.locator('.page img').first().waitFor();}
 async function edit(){await click('edit');const p=page.locator('.page').first(),b=await p.boundingBox();await p.click({position:{x:b.width*120/794,y:b.width*135/794}});await page.locator('#text-editor').waitFor();}
 async function changed(text){const t=page.locator('#text-editor');await t.fill(text);await until(()=>a('save').isEnabled());}
-async function save(){await click('save');await click('save-yes');await until(async()=>await page.locator('#overlay').isHidden()||await a('close').isVisible());if(await a('close').isVisible())await click('close');await closed();assert(await a('save').isDisabled());}
+async function save(){
+ await click('save');await click('save-yes');
+ await until(async()=>await page.locator('#overlay').isHidden()||['저장했어요','작업을 완료하지 못했어요'].includes(await page.locator('#sheet-title').innerText()));
+ if(await page.locator('#overlay').isVisible()){
+  assert.equal(await page.locator('#sheet-title').innerText(),'저장했어요',await page.locator('#sheet').innerText());await click('close');
+ }
+ await closed();assert(await a('save').isDisabled());
+}
 async function hash(name){return sh('sha256sum',`${dir}/${name}`).split(/\s/)[0];}
 async function rotate(n){sh('settings','put','system','accelerometer_rotation','0');sh('settings','put','system','user_rotation',String(n));await pause(1000);}
 (async()=>{
@@ -43,9 +53,9 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await click('allow');await pause(1000);assert(sh('dumpsys','activity','activities').includes('com.android.settings'),'Android permission settings did not open');
    let sw;for(let i=0;i<2&&!sw;i++)try{sh('rm','-f','/sdcard/window.xml');sh('uiautomator','dump','--compressed','/sdcard/window.xml');const xml=sh('cat','/sdcard/window.xml');sw=(xml.match(/<node\b[^>]*>/g)||[]).find(n=>/class="android.widget.Switch"|resource-id="[^"]*switch_widget"/.test(n));}catch{}
    if(sw){const b=sw.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
-   else{permissionGrant='adb-appops; Settings navigation verified, UiAutomator root unavailable';sh('appops','set',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
+   else{permissionGrant='adb-appops; Settings navigation verified, UiAutomator root unavailable';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
    let mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');
-   if(!mode.includes('allow')){permissionGrant+='; switch did not grant, normalized with adb-appops';sh('appops','set',pkg,'MANAGE_EXTERNAL_STORAGE','allow');mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');}
+   if(!mode.includes('allow')){permissionGrant+='; switch did not grant, normalized with adb-appops';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');}
    console.log('PERMISSION_OS',mode);sh('input','keyevent','4');
    const nativeStatus=await page.evaluate(()=>new Promise(resolve=>{const old=window.NativeReply,id=900001;const timer=setTimeout(()=>{window.NativeReply=old;resolve('native status timeout');},5000);window.NativeReply=(rid,r)=>{if(rid===id){clearTimeout(timer);window.NativeReply=old;resolve(r);}else old(rid,r);};OfflineNative.postMessage(JSON.stringify({id,op:'status',args:{}}));}));console.log('PERMISSION_NATIVE',JSON.stringify(nativeStatus));
    await until(()=>a('open').count());
@@ -124,8 +134,8 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   await record('Android Back offers continue editing and discard without writing',async()=>{const old=await hash('qa-edit.hwpx');sh('input','keyevent','4');await a('exit-discard').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('input','keyevent','4');await click('exit-discard');await page.locator('#search').waitFor();assert.equal(await hash('qa-edit.hwpx'),old);});
   await record('permission revoked during editing refuses save and preserves source',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' DENIED');const old=await hash('qa-edit.hwpx');
-   sh('appops','set',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await click('save');await click('save-yes');await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();assert.equal(await hash('qa-edit.hwpx'),old);await click('close');assert(await a('save').isEnabled());
-   sh('appops','set',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await library();
+   sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await click('save');await click('save-yes');await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();assert.equal(await hash('qa-edit.hwpx'),old);await click('close');assert(await a('save').isEnabled());
+   sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await library();
   });
   await record('external modification is never overwritten by stale save',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' CONFLICT');
