@@ -19,7 +19,8 @@ function uiNodes(){sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump'
 function uiMatch(nodes,regex){return nodes.find(n=>regex.test(n)&&!/enabled="false"/.test(n));}
 function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
 async function uiTap(regex){await until(()=>{const n=uiMatch(uiNodes(),regex);if(!n)return false;tapNode(n);return true;});await pause(400);}
-async function picker(){await click('settings');await click('connect-folder');await until(()=>foreground().includes('documentsui'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('documentsui')));await pause(500);}
+async function ensureConnection(){if(!page.isClosed())return;assert(sh('pidof',pkg),'Android app terminated unexpectedly');console.log('TERMUX_CDP_REATTACH_WITHOUT_APP_RELAUNCH');await Promise.race([device.close(),pause(5000)]);device=(await android.devices())[0];await connect();}
+async function picker(){await click('settings');try{await click('connect-folder');}catch(e){if(!/closed/.test(e.message))throw e;}await until(()=>foreground().includes('documentsui'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('documentsui')));await pause(500);}
 async function chooseProject(){
  let nodes=await until(()=>{const n=uiNodes();return n.length?n:false;});
  if(!uiMatch(nodes,/text="hwpxxx-project"/)){
@@ -27,7 +28,7 @@ async function chooseProject(){
   await uiTap(/text="Termux"/);
  }
  await uiTap(/text="hwpxxx-project"/);await uiTap(/text="(?:USE THIS FOLDER|Use this folder)"/i);await uiTap(/text="(?:ALLOW|Allow)"/i);
- await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await page.locator('#overlay').waitFor({state:'hidden'});await page.locator('#search').fill('termux-');await until(()=>a('open').count()===2);
+ await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await page.locator('#overlay').waitFor({state:'hidden'});await page.locator('#search').fill('termux-');await until(()=>a('open').count()===2);
 }
 async function open(name){await page.locator('#search').fill(name);await page.getByRole('button',{name:name+' 열기',exact:true}).click();await page.locator('.page img').first().waitFor();}
 async function edit(){await click('edit');const p=page.locator('.page').first(),b=await p.boundingBox();await p.click({position:{x:b.width*120/794,y:b.width*135/794}});await page.locator('#text-editor').waitFor();}
@@ -42,7 +43,7 @@ async function native(op,args={}){const r=await page.evaluate(({op,args})=>new P
   privateWrite(project+'/nested/termux-nested.hwpx','tests/fixtures/문서.hwpx');privateWrite(project+'/termux-remove.hwp','tests/fixtures/문서.hwp');privateWrite(home+'/outside-project/outside-secret.hwpx','tests/fixtures/문서.hwpx');
   const original=privateHash();sh('pm','clear',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');sh('svc','wifi','disable');sh('svc','data','disable');await start();
   await check('private projects stay hidden before connection; system picker cancellation returns safely',async()=>{
-   assert.equal(await a('open').count(),0);await picker();sh('input','keyevent','4');await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await click('close');assert.equal(await a('open').count(),0);
+   assert.equal(await a('open').count(),0);await picker();sh('input','keyevent','4');await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await click('close');assert.equal(await a('open').count(),0);
   });
   await check('system picker grants only selected Termux project; nested HWP/HWPX are searchable',async()=>{
    await picker();await chooseProject();assert.equal(await a('open').count(),2);await page.locator('#search').fill('outside-secret');assert.equal(await a('open').count(),0);await page.locator('#search').fill('termux-nested');assert.equal(await a('open').count(),1);

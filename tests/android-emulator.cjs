@@ -17,11 +17,12 @@ async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActi
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
 async function settingsVisible(){await until(()=>foreground().includes('com.android.settings'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('com.android.settings')));await pause(700);}
 async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes(pkg)));}
-async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;sh('input','keyevent','4');await pause(1000);}await appVisible();}
+async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;sh('input','keyevent','4');await pause(1000);}await appVisible();await ensureConnection();}
+async function ensureConnection(){if(!page.isClosed())return;assert(appAlive(),'Android app terminated unexpectedly');console.log('CDP_REATTACH_WITHOUT_APP_RELAUNCH');await Promise.race([device.close(),pause(5000)]);device=(await android.devices())[0];await connect();}
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
-async function click(name){await a(name).click();}
+async function click(name){try{await a(name).click();}catch(e){if(name!=='allow'||!/closed/.test(e.message))throw e;await settingsVisible();console.log('CDP_DETACHED_DURING_NATIVE_SETTINGS');}}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
 async function library(){
  if(await a('cancel-edit').isVisible()){
@@ -142,7 +143,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    const t=page.locator('#text-editor');await changed((await t.inputValue())+' ROTATION');const value=await t.inputValue();await t.evaluate(t=>t.dataset.survival='same');
    await rotate(1);assert.equal(await t.inputValue(),value);assert.equal(await t.getAttribute('data-survival'),'same');await rotate(0);assert(await a('save').isVisible());
   });
-  await record('Home/background/resume preserves unsaved text',async()=>{const text=await page.locator('#text-editor').inputValue();sh('input','keyevent','3');await pause(500);sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);assert.equal(await page.locator('#text-editor').inputValue(),text);});
+  await record('Home/background/resume preserves unsaved text',async()=>{const text=await page.locator('#text-editor').inputValue();sh('input','keyevent','3');await pause(500);sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await ensureConnection();assert.equal(await page.locator('#text-editor').inputValue(),text);});
   await record('Android Back offers continue editing and discard without writing',async()=>{const old=await hash('qa-edit.hwpx');sh('input','keyevent','4');await a('exit-discard').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('input','keyevent','4');await click('exit-discard');await page.locator('#search').waitFor();assert.equal(await hash('qa-edit.hwpx'),old);});
   await record('permission revocation preserves the source, including OS-forced termination',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' DENIED');const old=await hash('qa-edit.hwpx');
