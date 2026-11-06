@@ -239,7 +239,7 @@ let tapStart=null;
 root.addEventListener('pointerdown',e=>{if(!e.target.closest('.page')||e.target.closest('textarea'))return;tapStart={x:e.clientX,y:e.clientY,t:Date.now()};});
 root.addEventListener('pointerup',async e=>{const start=tapStart;tapStart=null;if(!start||state.busy||Date.now()-start.t>350||Math.hypot(e.clientX-start.x,e.clientY-start.y)>10||$('.reader-scroll')?.dataset.pinching||!overlay.hidden)return;const page=e.target.closest('.page');if(!page)return;if(state.editing){showMenus(true);const i=Number(page.dataset.page),r=page.getBoundingClientRect(),s=state.meta.sizes[i];try{await chooseText(i,(e.clientX-r.left)*s.width/r.width,(e.clientY-r.top)*s.height/r.height);}catch(x){errorDialog(x.message);}}else showMenus(!state.menus);});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){rememberPosition();persist();}});
-window.addEventListener('resize',()=>{updateRail(false);updateRail(true);updateInset(true);if(state.selection)relayoutEditor();renderMemoMarks();});
+window.addEventListener('resize',()=>{if(state.editing&&tabletLayout())showMenus(true);updateRail(false);updateRail(true);updateInset(true);if(state.selection)relayoutEditor();renderMemoMarks();});
 // Resizes (e.g. the soft keyboard opening) only move the live editor; rebuilding it would drop focus, IME composition and unflushed text.
 function relayoutEditor(){const c=state.selection;if(!c)return;const t=$('#text-editor'),el=$(`[data-page="${c.start.pageIndex}"]`);if(t&&el&&t.parentElement===el)layoutEditor(t,c,el);else placeEditor(c);}
 // ---- Bottom edit toolbar (0.1.2): undo / redo / bold / underline / text panel / paragraph panel ----
@@ -313,7 +313,7 @@ async function toolbar(a,b){const v=b.dataset.value;if(await featureToolbar(a,b)
  if(a==='tb-size')return formatChar(()=>({fontSize:Number(v)}));
  if(a==='tb-size-step')return formatChar(c=>({fontSize:nextSize(c.fontSize,Number(v))}));
  if(a==='tb-color')return formatChar(()=>({textColor:v}));
- if(a==='tb-shade'){state.highlightColor=v;persist();if(hasRange())await formatChar(()=>({shadeColor:v}));else{state.highlight=true;announce('형광펜 모드: 글자를 선택하면 칠해요. Esc로 해제해요.');}updateTools();return;}
+ if(a==='tb-shade'){state.highlightColor=v;persist();if(hasRange()){if(state.highlight)highlightStamp=highlightKey(liveRange());await formatChar(()=>({shadeColor:v}));}else{state.highlight=true;announce('형광펜 모드: 글자를 선택하면 칠해요. Esc로 해제해요.');}updateTools();return;}
  if(a==='tb-align')return formatPara({alignment:v});
  if(a==='tb-list')return formatPara({list:v});
  if(a==='tb-spacing')return formatPara({lineSpacing:Number(v)});}
@@ -347,7 +347,7 @@ function renderMemoMarks(){
   const q=m.rects?.[0],el=q&&$(`[data-page="${q.pageIndex}"]`),s=q&&state.meta?.sizes[q.pageIndex];if(!el||!s)continue;
   const top=Math.max(q.y/s.height*el.clientHeight,lastBottom.get(q.pageIndex)||0),box=document.createElement('button');box.type='button';box.className='memo-box';box.dataset.action='memo-jump';box.dataset.memoId=m.id;
   box.innerHTML=`<strong>[메모 ${m.index}] ${esc(m.author)} ${esc(m.date?.slice(0,16).replace('T',' ')||'')}</strong><span>${esc(m.text)}</span>`;box.style.top=top+'px';box.addEventListener('dblclick',()=>memoDialog(m));el.append(box);lastBottom.set(q.pageIndex,top+box.offsetHeight+8);
-  if(state.memoGuides){const line=document.createElement('span');line.className='memo-guide';Object.assign(line.style,{left:(q.x+q.width)/s.width*100+'%',right:'-12px',top:(q.y+q.height/2)/s.height*100+'%'});el.append(line);}
+  if(state.memoGuides){const line=document.createElement('span');line.className='memo-guide';const scale=el.clientWidth/s.width,x=(q.x+q.width)*scale,y=(q.y+q.height/2)*scale,dx=el.clientWidth+12-x,dy=top+Math.min(box.offsetHeight,44)/2-y;Object.assign(line.style,{left:x+'px',top:y+'px',width:Math.hypot(dx,dy)+'px',transform:`rotate(${Math.atan2(dy,dx)}rad)`,transformOrigin:'0 0'});el.append(line);}
  }
 }
 function renderFeaturePanel(el,hint){
@@ -361,7 +361,7 @@ function renderFeaturePanel(el,hint){
  }
 }
 async function featureToolbar(a,b){
- if(a==='tb-highlight'){state.highlight=!state.highlight;state.panel='char';if(state.highlight&&hasRange())await formatChar(()=>({shadeColor:state.highlightColor}));updateTools();renderPanel();showMenus(true);return true;}
+ if(a==='tb-highlight'){state.highlight=!state.highlight;state.panel='char';if(state.highlight&&hasRange()){highlightStamp=highlightKey(liveRange());await formatChar(()=>({shadeColor:state.highlightColor}));}updateTools();renderPanel();showMenus(true);return true;}
  if(a==='tb-memo'){state.panel=state.panel==='memo'?null:'memo';await refreshMemos();renderPanel();showMenus(true);return true;}
  if(a==='tb-table'){state.table=null;await guarded(async()=>{state.table=await state.engine.run('tableState',{ident:state.selection.ident});state.panel='table';renderPanel();showMenus(true);});return true;}
  if(a==='tb-merge-cells'){const first=Number($('#table-first').value),last=Number($('#table-last').value);await guarded(async()=>{const r=await state.engine.run('tableMerge',{ident:state.selection.ident,first,last});$('#text-editor')?.remove();state.range=null;state.panel=null;await refreshPages(r);renderPanel();});return true;}
@@ -408,8 +408,20 @@ root.addEventListener('keydown',e=>{
  if(e.key==='Escape'&&(state.highlight||state.painter)){action=()=>{state.highlight=false;state.painter=false;updateTools();announce('편집 도구 모드를 해제했어요.');};}
  if(action){e.preventDefault();e.stopImmediatePropagation();Promise.resolve(action()).catch(e=>errorDialog(e.message));}
 },true);
-let highlightTimer;
-root.addEventListener('pointerup',e=>{if(e.target.id!=='text-editor'||!state.highlight)return;clearTimeout(highlightTimer);highlightTimer=setTimeout(()=>{saveRange();if(hasRange())formatChar(()=>({shadeColor:state.highlightColor}));},80);});
+let highlightTimer,highlightStamp=null;
+const highlightKey=r=>JSON.stringify([state.current.id,r.ident,r.start,r.end,state.highlightColor]);
+function scheduleHighlight(){
+ clearTimeout(highlightTimer);if(!state.highlight)return;
+ highlightTimer=setTimeout(async()=>{
+  if(!state.highlight||state.busy||!overlay.hidden||!state.editing)return;
+  saveRange();const r=liveRange();if(!r||r.end<=r.start){highlightStamp=null;return;}
+  const stamp=highlightKey(r);if(stamp===highlightStamp)return;
+  highlightStamp=stamp;await formatChar(()=>({shadeColor:state.highlightColor}));
+ },250);
+}
+root.addEventListener('pointerdown',e=>{if(e.target.id==='text-editor')highlightStamp=null;});
+root.addEventListener('pointerup',e=>{if(e.target.id==='text-editor')scheduleHighlight();});
+document.addEventListener('selectionchange',()=>{if(document.activeElement?.id==='text-editor')scheduleHighlight();});
 
 boot();
 

@@ -22,7 +22,7 @@ android {
             }
         }
     }
-    buildTypes { release { minifyEnabled false; if (storePath && passwordPath) signingConfig signingConfigs.release } }
+    buildTypes { debug { applicationIdSuffix '.preview'; versionNameSuffix '-preview' }; release { minifyEnabled false; if (storePath && passwordPath) signingConfig signingConfigs.release } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
 }
 

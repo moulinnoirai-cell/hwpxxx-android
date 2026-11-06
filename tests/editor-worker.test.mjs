@@ -35,7 +35,7 @@ test('table text paste stays in the cell; merged ranges expand before joining',a
  let t=await run('tableState',{ident:c.ident});assert.equal(t.cells.length,4);
  const cell=t.cells[0];
  c=await run('select',{page:cell.pageIndex,x:cell.x+5,y:cell.y+5});
- let r=await run('paste',{ident:c.ident,start:0,end:0,text:'칸 안\n붙여넣기'});assert.match(r.selection.text,/붙여넣기/);assert.match(r.selection.ident,/path|\[/);
+ let r=await run('paste',{ident:c.ident,start:0,end:0,text:'칸 안\n붙여넣기'});assert.match(r.selection.text,/붙여넣기/);assert((await run('tableState',{ident:r.selection.ident})).cells.length>0);
  await run('undo');
  c=await run('select',{page:cell.pageIndex,x:cell.x+5,y:cell.y+5});t=await run('tableState',{ident:c.ident});
  const top=t.cells.filter(x=>x.row===0).sort((a,b)=>a.col-b.col);

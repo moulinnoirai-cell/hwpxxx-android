@@ -1,7 +1,7 @@
 name: Android tablet build
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -50,7 +50,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .build/rhwp
-          key: android-memo-v1
+          key: android-memo-v2
           cache-on-failure: true
       - name: Install pinned wasm-bindgen CLI
         run: |
@@ -59,6 +59,10 @@ jobs:
           mkdir -p .build/wasm-bindgen
           tar -xzf /tmp/wasm-bindgen.tar.gz --strip-components=1 -C .build/wasm-bindgen
           echo "$PWD/.build/wasm-bindgen" >> "$GITHUB_PATH"
+      - name: Fetch embedded blank document
+        run: |
+          mkdir -p .build/rhwp/saved
+          git -C .build/rhwp show HEAD:saved/blank2010.hwp > .build/rhwp/saved/blank2010.hwp
       - run: bash scripts/build-engine.sh .build/rhwp
       - name: Document worker regression tests
         run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs

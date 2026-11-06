@@ -47,6 +47,13 @@ with sync_playwright() as pw:
         click('tb-para');page.locator('#fmt-spacingBefore').fill('10');page.locator('#fmt-spacingAfter').fill('6');click('tb-para-spacing')
         page.wait_for_timeout(250)
         assert page.locator('[data-action="save"]').is_enabled()
+        click('tb-highlight');assert page.locator('[data-action="tb-highlight"]').get_attribute('aria-pressed')=='true'
+        page.wait_for_timeout(350)
+        previous=page.locator('.page img').first.get_attribute('src')
+        editor.evaluate('(t)=>{t.focus();t.setSelectionRange(3,6);document.dispatchEvent(new Event("selectionchange"));}')
+        page.wait_for_timeout(650)
+        assert page.locator('.page img').first.get_attribute('src')!=previous
+        page.keyboard.press('Escape');assert page.locator('[data-action="tb-highlight"]').get_attribute('aria-pressed')=='false'
         click('tb-memo');click('memo-new')
         page.locator('#memo-author').fill('태블릿')
         page.locator('#memo-text').fill('가로 화면 메모 <script> & 테스트')

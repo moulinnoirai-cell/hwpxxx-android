@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
         try {roots=volumeRoots();store=new FileStore(roots);}catch(IOException e){new AlertDialog.Builder(this).setMessage("저장공간을 확인하지 못했어요.").setPositiveButton("닫기",(d,w)->finish()).show();return;}
         web=new WebView(this);
         web.setBackgroundColor(surface());
-        WebSettings s=web.getSettings();s.setJavaScriptEnabled(true);s.setDomStorageEnabled(true);
+        WebSettings s=web.getSettings();s.setJavaScriptEnabled(true);s.setDomStorageEnabled(true);s.setTextZoom(Math.round(getResources().getConfiguration().fontScale*100));
         s.setAllowFileAccess(false);s.setAllowContentAccess(false);s.setAllowFileAccessFromFileURLs(false);s.setAllowUniversalAccessFromFileURLs(false);
         s.setBlockNetworkLoads(true);s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         // No external URLs are ever loaded; disable remote URL checks for this local-only view.
