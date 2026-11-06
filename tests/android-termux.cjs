@@ -10,7 +10,7 @@ async function until(fn,ms=30000){const end=Date.now()+ms;let error;while(Date.n
 const a=name=>page.locator(`[data-action="${name}"]`),click=async name=>a(name).click();
 async function check(name,fn){try{await fn();checks.push({name,passed:true});console.log('PASS TERMUX',name);await device.screenshot({path:`${qa}/${checks.length}.png`});}catch(e){e.scenario=name;throw e;}}
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
-async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(25000);page.on('pageerror',e=>errors.push(e.message));await page.locator('#search').waitFor();}
+async function connect(){for(let attempt=0;attempt<3;attempt++)try{page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(25000);page.on('pageerror',e=>errors.push(e.message));await page.locator('#search').waitFor();return;}catch(e){if(!/closed/.test(e.message)||attempt===2)throw e;console.log('TERMUX_CDP_ATTACH_RETRY',attempt+1);await Promise.race([device.close(),pause(5000)]);device=(await android.devices())[0];await pause(500);}}
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
 async function restart(){sh('am','force-stop',pkg);await start();}
 function privateHash(){return sh('run-as','com.termux','sha256sum',project+'/nested/termux-nested.hwpx').split(/\s/)[0];}
@@ -19,7 +19,7 @@ function uiNodes(){sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump'
 function uiMatch(nodes,regex){return nodes.find(n=>regex.test(n)&&!/enabled="false"/.test(n));}
 function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
 async function uiTap(regex){await until(()=>{const n=uiMatch(uiNodes(),regex);if(!n)return false;tapNode(n);return true;});await pause(400);}
-async function picker(){await click('settings');await click('connect-folder');await until(()=>foreground().includes('documentsui'));}
+async function picker(){await click('settings');await click('connect-folder');await until(()=>foreground().includes('documentsui'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('documentsui')));await pause(500);}
 async function chooseProject(){
  let nodes=await until(()=>{const n=uiNodes();return n.length?n:false;});
  if(!uiMatch(nodes,/text="hwpxxx-project"/)){

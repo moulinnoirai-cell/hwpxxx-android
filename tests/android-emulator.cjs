@@ -81,7 +81,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await a('open').first().click();await page.locator('#doc-password').waitFor();assert.equal(await page.locator('#doc-password').inputValue(),'');await page.locator('#doc-password').fill('qa-only-2026');await click('pw-open');await page.locator('.page img').first().waitFor();await edit();assert((await page.locator('#text-editor').inputValue()).includes('ENCRYPTED'));await library();
   });
   await record('long document: lazy pages, PageDown and Ctrl+End after editing',async()=>{
-   await open('qa-long.hwpx');assert(await page.locator('.page').count()>5);await edit();await page.keyboard.press('PageDown');await page.keyboard.press('Control+End');const value=await page.locator('#text-editor').inputValue();assert(value.length>0);await page.keyboard.press('Control+Home');assert((await page.locator('#text-editor').inputValue()).startsWith('1.'));await library();
+   await open('qa-long.hwpx');assert(await page.locator('.page').count()>5);await edit();await page.keyboard.press('PageDown');await page.keyboard.press('Control+End');await until(async()=>(await page.locator('#text-editor').inputValue()).startsWith('30.'));await page.keyboard.press('Control+Home');await until(async()=>(await page.locator('#text-editor').inputValue()).startsWith('1.'));await library();
   });
   await record('search miss, clear search and favorite survive restart',async()=>{
    await page.locator('#search').fill('no-such-document');assert.equal(await a('open').count(),0);await click('clear');
