@@ -1,0 +1,76 @@
+name: Android tablet build
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: actions/checkout@v4
+        with:
+          repository: edwardkim/rhwp
+          ref: 1a76570e833917d15817415a53c09ad61ab3203f
+          path: .build/rhwp
+          sparse-checkout: |
+            src
+            crates
+            tools
+            bindings
+            vendor
+            scripts
+            assets
+            fonts
+            resources
+            .cargo
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.1'
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .build/rhwp
+          key: android-memo-v1
+      - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - run: bash scripts/build-engine.sh .build/rhwp
+      - name: Document worker regression tests
+        run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
+      - name: File store regression tests
+        run: |
+          mkdir -p build/fs-test
+          javac -encoding UTF-8 -d build/fs-test app/src/main/java/kr/offline/hwp/FileStore.java tests/FileStoreTest.java
+          java -cp build/fs-test kr.offline.hwp.FileStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
+      - name: Browser regression tests
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          python tests/tablet-ui.py
+      - name: Build installable debug and unsigned release APKs
+        run: bash gradlew assembleDebug assembleRelease lintRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hwpxxx-android-0.3.0
+          path: |
+            app/build/outputs/apk/**/*.apk
+            app/build/reports/lint-results-release.html
+            .qa/tablet-*.png
+            app/src/main/assets/engine/build-info.json
+          if-no-files-found: warn

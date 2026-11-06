@@ -10,3 +10,8 @@ tests/cmp-*.png
 .claude/
 dist/
 build/
+
+
+.build/
+.qa/
+app/src/main/assets/engine/build-info.json

@@ -86,7 +86,7 @@ const shim = `(()=>{const q=[];
 window.OfflineNative={postMessage(m){const {id,op,args}=JSON.parse(m);fetch('/__native',{method:'POST',body:m}).then(r=>r.json()).then(r=>{for(const [n,d] of r.events)window.NativeEvent&&window.NativeEvent(n,d);window.NativeReply(id,r.reply);if(op==='permission')setTimeout(()=>window.NativeEvent&&window.NativeEvent('resume',true),400);});}};
 window.__mock={grant:v=>fetch('/__grant?'+(v?1:0)).then(()=>window.NativeEvent('resume',true)),resume:()=>window.NativeEvent('resume',true)};})();`;
 
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs':'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8' };
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/__native') { let body = ''; req.on('data', c => body += c); req.on('end', () => { const m = JSON.parse(body), events = []; let reply; try { reply = { ok: true, data: operation(m.op, m.args || {}, events) }; } catch (e) { reply = { ok: false, error: e.message }; } res.end(JSON.stringify({ reply, events })); }); return; }
@@ -101,3 +101,4 @@ http.createServer((req, res) => {
   res.setHeader('content-type', types[path.extname(rel)] || 'application/octet-stream');
   res.end(body);
 }).listen(port, () => console.log(`preview http://localhost:${port}  sandbox ${volume}`));
+

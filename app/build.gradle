@@ -12,7 +12,7 @@ def passwordPath = local.getProperty('release.passwordFile')
 android {
     namespace 'kr.offline.hwp'
     compileSdk 35
-    defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 4; versionName '0.2.0' }
+    defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 5; versionName '0.3.0' }
     buildFeatures { buildConfig true }
     signingConfigs {
         if (storePath && passwordPath) {
@@ -25,3 +25,17 @@ android {
     buildTypes { release { minifyEnabled false; if (storePath && passwordPath) signingConfig signingConfigs.release } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
 }
+
+
+// Old 0.8.7 lacks the memo reader/writer. Never ship the new UI with that engine.
+tasks.register('verifyMemoEngine') {
+    doLast {
+        def glue = file('src/main/assets/engine/rhwp.js').getText('UTF-8')
+        ['getMemoList', 'insertMemo', 'insertMemoByPath', 'setMemoText', 'removeMemo'].each { method ->
+            if (!glue.contains(method + '(')) throw new GradleException('Build the memo engine first: bash scripts/build-engine.sh <rhwp-checkout>')
+        }
+        def wasm = file('src/main/assets/engine/rhwp_bg.wasm')
+        if (!wasm.exists()) throw new GradleException('Missing rhwp_bg.wasm')
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'verifyMemoEngine' }

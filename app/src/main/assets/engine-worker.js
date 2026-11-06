@@ -1,10 +1,12 @@
+import {CHAR_KEYS,PARA_KEYS,spacingToRaw,spacingToPt,paragraphForWrite,memoTarget,expandCellRange} from './editor-features.mjs';
 import init,{HwpDocument} from './engine/rhwp.js';
 let doc=null,selected=null,savedBytes=null,savedText='',history=[],future=[];
 // Dirty tracking: every successful edit gets a new revision; snapshots carry the revision they restore.
 // fmt marks states whose formatting may differ from the last save (text comparison cannot see it).
 let rev=0,revSeq=0,savedRev=0,fmt=false,fmtTargets=[];
 // Password of an encrypted document: worker memory only, used to reopen/verify and to keep the file encrypted on save.
-let password=null;
+let password=null,painter=null;
+let exported=null;
 const openBytes=b=>{const d=password!=null?HwpDocument.openWithPassword(b,password):new HwpDocument(b);return d;};
 // rhwp 0.8.7 draws some HWP pictures at their original size and ignores the object's current size
 // (2008 수능 정답: 567px picture drawn 1771px wide, cut off by the page). Re-applying the size fixes the layout.
@@ -18,14 +20,14 @@ const OBJ='￼'; // object placeholder: deleting it from a text diff would delet
 const canvas=typeof OffscreenCanvas==='function'?new OffscreenCanvas(8,8):null;
 globalThis.measureTextWidth=(font,text)=>{if(canvas){const c=canvas.getContext('2d');c.font=font;return c.measureText(text).width;}return [...text].length*7;};
 const ready=init({module_or_path:'/engine/rhwp_bg.wasm'});
-const checked=s=>{const r=typeof s==='string'?JSON.parse(s):s;if(r?.ok===false||r?.error)throw new Error(r.error||'편집할 수 없는 위치예요.');return r;};
+const checked=s=>{const r=typeof s==='string'?JSON.parse(s):s;if(r?.ok===false||r?.error)throw new Error(r.message||r.error||'편집할 수 없는 위치예요.');return r;};
 const text=()=>JSON.parse(doc.getTextFileUnicode());
 // The whole-text dirty comparison runs once per revision, and page sizes are sent only when the page count
 // changed or a full refresh is asked for (open/cancel/undo/redo); the UI keeps its previous sizes otherwise.
 let dirtyRev=-1,dirtyVal=false,sentCount=-1;
 function meta(full=false){const count=doc.pageCount();if(count<1||count>500)throw new Error('이 문서는 500페이지 한도를 넘었어요.');
  if(rev!==dirtyRev){dirtyVal=rev!==savedRev&&(fmt||text()!==savedText);dirtyRev=rev;}
- const m={count,dirty:dirtyVal,canUndo:history.length>0,canRedo:future.length>0};
+ const m={count,dirty:dirtyVal,canUndo:history.length>0,canRedo:future.length>0,memoSupported:typeof doc.getMemoList==='function'};
  if(full||count!==sentCount){m.sizes=Array.from({length:count},(_,i)=>JSON.parse(doc.getPageInfo(i)));sentCount=count;}return m;}
 function normalHit(h){if(h.cellPath?.length)return {sec:h.sectionIndex,para:h.parentParaIndex,path:JSON.stringify(h.cellPath),p:h.cellParaIndex||0,offset:h.charOffset};if(h.parentParaIndex!=null&&h.cellIndex!=null)return {sec:h.sectionIndex,para:h.parentParaIndex,ctrl:h.controlIndex,cell:h.cellIndex,p:h.cellParaIndex||0,offset:h.charOffset};return {sec:h.sectionIndex,para:h.paragraphIndex,offset:h.charOffset};}
 function inCell(c){return c.path!=null||c.cell!=null;}
@@ -44,11 +46,11 @@ function takeSnapshot(range=null){const limit=Math.min(40,Math.max(1,doc.snapsho
 const editorRange=a=>Number.isInteger(a?.start)&&Number.isInteger(a?.end)?{start:a.start,end:a.end}:null;
 function rollback(){const s=history.pop();try{checked(doc.restoreSnapshot(s.id));selected=s.selected;}finally{doc.discardSnapshot(s.id);}}
 function mark(format){rev=++revSeq;if(format)fmt=true;for(const x of future)doc.discardSnapshot(x.id);future=[];}
-function fresh(){selected=null;history=[];future=[];fmtTargets=[];typing=null;rev=savedRev=++revSeq;fmt=false;dirtyRev=-1;sentCount=-1;}
+function fresh(){selected=null;history=[];future=[];fmtTargets=[];typing=null;painter=null;exported=null;rev=savedRev=++revSeq;fmt=false;dirtyRev=-1;sentCount=-1;}
 // Consecutive typing in one paragraph is one undo step (gaps under 1.5s, at most 8s per step).
 let typing=null;
 // ---- character / paragraph formatting (body, single cell, nested cell path) ----
-const COLOR=/^#[0-9a-fA-F]{6}$/,ALIGN=['left','center','right','justify'],CHAR_KEYS=['bold','underline','fontSize','textColor','shadeColor'];
+const COLOR=/^#[0-9a-fA-F]{6}$/,ALIGN=['left','center','right','justify'];
 function charAt(d,c,o){return JSON.parse(c.path!=null?d.getCellCharPropertiesAtByPath(c.sec,c.para,c.path,o):inCell(c)?d.getCellCharPropertiesAt(c.sec,c.para,c.ctrl,c.cell,c.p,o):d.getCharPropertiesAt(c.sec,c.para,o));}
 function applyChar(c,s,e,json){return checked(c.path!=null?doc.applyCharFormatInCellByPath(c.sec,c.para,c.path,s,e,json):inCell(c)?doc.applyCharFormatInCell(c.sec,c.para,c.ctrl,c.cell,c.p,s,e,json):doc.applyCharFormat(c.sec,c.para,s,e,json));}
 // 0.8.7 has no paragraph-format API for nested cell paths; a one-level path is the plain cell API.
@@ -56,7 +58,8 @@ function paraRef(c){if(c.path==null)return c;const p=JSON.parse(c.path);return p
 function paraGet(d,r){return JSON.parse(r.cell!=null?d.getCellParaPropertiesAt(r.sec,r.para,r.ctrl,r.cell,r.p):d.getParaPropertiesAt(r.sec,r.para));}
 function paraSet(r,json){return checked(r.cell!=null?doc.applyParaFormatInCell(r.sec,r.para,r.ctrl,r.cell,r.p,json):doc.applyParaFormat(r.sec,r.para,json));}
 function charProps(p){const o={};for(const [k,v] of Object.entries(p||{})){
- if((k==='bold'||k==='underline')&&typeof v==='boolean')o[k]=v;
+ if((k==='bold'||k==='italic'||k==='underline')&&typeof v==='boolean')o[k]=v;
+ else if((k==='spacings'||k==='ratios')&&Array.isArray(v)&&v.length===7&&v.every(n=>Number.isInteger(n)&&n>=(k==='spacings'?-50:50)&&n<=(k==='spacings'?50:200)))o[k]=v;
  else if(k==='fontSize'&&Number.isInteger(v)&&v>=100&&v<=9600)o[k]=v;
  else if((k==='textColor'||k==='shadeColor')&&COLOR.test(v))o[k]=v.toLowerCase();
  else throw new Error('지원하지 않는 글자 서식이에요.');}
@@ -66,8 +69,8 @@ const same=(a,b)=>String(a).toLowerCase()===String(b).toLowerCase();
 function span(a){const t=range(selected),n=[...t].length;let s=[...t.slice(0,a.start||0)].length,e=[...t.slice(0,a.end??a.start??0)].length;if(s>e)[s,e]=[e,s];return {s:Math.min(s,n),e:Math.min(e,n),n};}
 function charState(c,s,e,n){const at=[];if(e>s){const step=Math.max(1,Math.ceil((e-s)/64));for(let o=s;o<e;o+=step)at.push(o);if(at.at(-1)!==e-1)at.push(e-1);}else at.push(Math.max(0,Math.min(s,n)-1));
  const p=at.map(o=>charAt(doc,c,o)),tri=k=>p.every(x=>x[k])?'on':p.some(x=>x[k])?'mixed':'off',one=k=>p.every(x=>same(x[k],p[0][k]))?p[0][k]:null;
- return {range:e>s,bold:tri('bold'),underline:tri('underline'),fontSize:one('fontSize'),textColor:one('textColor'),shadeColor:one('shadeColor')};}
-function paraState(c){const r=paraRef(c);if(!r)return {supported:false};const p=paraGet(doc,r);return {supported:true,alignment:p.alignment,lineSpacing:p.lineSpacing,lineSpacingType:p.lineSpacingType,list:p.headType==='Bullet'?'bullet':p.headType==='None'?'none':'other'};}
+ return {range:e>s,...Object.fromEntries(CHAR_KEYS.map(k=>[k,['bold','italic','underline'].includes(k)?tri(k):one(k)]))};}
+function paraState(c){const r=paraRef(c);if(!r)return {supported:false};const p=paraGet(doc,r);return {supported:true,alignment:p.alignment,lineSpacing:p.lineSpacing,lineSpacingType:p.lineSpacingType,spacingBefore:spacingToPt(p.spacingBefore||0),spacingAfter:spacingToPt(p.spacingAfter||0),list:p.headType==='Bullet'?'bullet':p.headType==='None'?'none':'other'};}
 // getSelectionRects starts the first line at the line origin (bullet/number area included); trim it to the caret at s.
 function rects(c,s,e){const r=rawRects(c,s,e);if(r.length){try{const a=rect(c,s),f=r[0];if(a.pageIndex===f.pageIndex&&a.x>f.x&&a.x<f.x+f.width&&Math.abs(a.y-f.y)<f.height){f.width-=a.x-f.x;f.x=a.x;}}catch{}}return r;}
 function rawRects(c,s,e){if(e<=s)return [];return JSON.parse(c.path!=null?doc.getSelectionRectsInCellByPath(c.sec,c.para,c.path,c.p,s,c.p,e):inCell(c)?doc.getSelectionRectsInCell(c.sec,c.para,c.ctrl,c.cell,c.p,s,c.p,e):doc.getSelectionRects(c.sec,c.para,s,c.para,e));}
@@ -77,8 +80,21 @@ function sameTarget(a){if(!selected)throw new Error('편집할 문장을 눌러 
 const points=(s,e)=>[...new Set([s,Math.floor((s+e-1)/2),e-1])];
 function verifyFormats(v){const lost=new Error('저장한 문서에서 서식을 다시 확인하지 못했어요. 원본은 변경하지 않았어요.');for(const t of fmtTargets){
  if(t.kind==='char'){for(const o of points(t.s,t.e)){let x;try{x=charAt(doc,t.c,o);}catch{break;}let y;try{y=charAt(v,t.c,o);}catch{throw lost;}for(const k of CHAR_KEYS)if(!same(x[k],y[k]))throw new Error('저장한 문서에서 글자 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}
- else{const r=paraRef(t.c);if(!r)continue;let x;try{x=paraGet(doc,r);}catch{continue;}let y;try{y=paraGet(v,r);}catch{throw lost;}for(const k of ['alignment','lineSpacing','headType'])if(!same(x[k],y[k]))throw new Error('저장한 문서에서 문단 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}}
+ else{const r=paraRef(t.c);if(!r)continue;let x;try{x=paraGet(doc,r);}catch{continue;}let y;try{y=paraGet(v,r);}catch{throw lost;}for(const k of PARA_KEYS)if(!same(x[k],y[k]))throw new Error('저장한 문서에서 문단 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}}
 function openError(e){const m=String(e?.message??e);if(/비밀번호가 필요한/.test(m))return new Error('PASSWORD_REQUIRED');if(/비밀번호가 일치하지/.test(m))return new Error('PASSWORD_WRONG');return e;}
+function memoList(d=doc){
+ if(typeof d.getMemoList!=='function')throw new Error('메모 엔진이 필요해요. 최신 빌드로 업데이트해 주세요.');
+ return checked(d.getMemoList());
+}
+function decoratedMemos(){return memoList().map(m=>{
+ const c=memoTarget(m);let anchor='',marks=[];
+ if(c)try{anchor=[...range(c)].slice(m.startCharIdx,m.endCharIdx).join('');marks=rects(c,m.startCharIdx,m.endCharIdx);}catch{}
+ return {...m,anchor,rects:marks};
+});}
+function tableRef(){const c=selected&&paraRef(selected);if(!c||c.cell==null)throw new Error('먼저 표의 칸을 눌러 주세요. 겹친 표는 지원하지 않아요.');return c;}
+function tableCells(c){return checked(doc.getTableCellBboxes(c.sec,c.para,c.ctrl));}
+function memoSignature(d){return memoList(d).map(({author,text})=>({author,text}));}
+
 async function operation(op,a){await ready;
  if(op==='open'){if(doc){doc.free();doc=null;}password=typeof a.password==='string'?a.password:null;const b=new Uint8Array(a.bytes);try{doc=openBytes(b);}catch(e){password=null;throw openError(e);}savedBytes=b;fixPictureSizes();fresh();savedText=text();return {...meta(true),encrypted:password!=null};}
  if(!doc)throw new Error('먼저 문서를 열어 주세요.');
@@ -146,17 +162,60 @@ async function operation(op,a){await ready;
   const cur=paraGet(doc,r),p=a.props||{},props={};
   if(p.alignment!=null){if(!ALIGN.includes(p.alignment))throw new Error('지원하지 않는 정렬이에요.');props.alignment=p.alignment;}
   if(p.lineSpacing!=null){if(cur.lineSpacingType!=='Percent')throw new Error('이 문단의 줄 간격 방식은 아직 바꿀 수 없어요.');if(!Number.isInteger(p.lineSpacing)||p.lineSpacing<50||p.lineSpacing>500)throw new Error('지원하지 않는 줄 간격이에요.');props.lineSpacing=p.lineSpacing;}
+  for(const k of ['spacingBefore','spacingAfter'])if(p[k]!=null)props[k]=spacingToRaw(p[k]);
   if(p.list!=null&&p.list!=='bullet'&&p.list!=='none')throw new Error('지원하지 않는 목록이에요.');
   if(!Object.keys(props).length&&p.list==null)throw new Error('바꿀 서식이 없어요.');
   takeSnapshot(editorRange(a.range));try{
    if(p.list==='bullet')Object.assign(props,{headType:'Bullet',numberingId:doc.ensureDefaultBullet('●'),paraLevel:0});
    if(p.list==='none')props.headType='None';
    paraSet(r,JSON.stringify(props));
-   const x=paraGet(doc,r);for(const [k,v] of Object.entries(props))if(!same(x[k],v))throw new Error('문단 서식이 적용되지 않았어요.');
+   const x=paraGet(doc,r);for(const [k,v] of Object.entries(props))if(!same(['spacingBefore','spacingAfter'].includes(k)?Math.round(x[k]*75):x[k],v))throw new Error('문단 서식이 적용되지 않았어요.');
    doc.pageCount();mark(true);fmtTargets.push({kind:'para',c:{...c}});if(fmtTargets.length>200)fmtTargets.shift();
    return {...meta(),selection:selection(),paraState:paraState(c)};
   }catch(e){rollback();throw e;}
  }
+
+ if(op==='memos')return decoratedMemos();
+ if(op==='memoSelect'){
+  const m=memoList().find(m=>m.id===a.id),c=m&&memoTarget(m);if(!c)throw new Error('이 메모의 위치로 이동할 수 없어요.');
+  selected=c;const t=range(c),start=[...t].slice(0,m.startCharIdx).join('').length,end=[...t].slice(0,m.endCharIdx).join('').length;
+  return {selection:selection(),range:{start,end},rects:rects(c,m.startCharIdx,m.endCharIdx)};
+ }
+ if(op==='memoAdd'||op==='memoUpdate'||op==='memoDelete'){
+  memoList();let args;
+  if(op==='memoAdd'){sameTarget(a);args=span(a);if(args.e<=args.s)throw new Error('메모를 달 글자를 선택해 주세요.');}
+  else{const m=memoList().find(m=>m.id===a.id);if(!m||!m.editable)throw new Error(m?.readOnlyReason||'메모를 수정할 수 없어요.');}
+  if(op!=='memoDelete'&&(typeof a.text!=='string'||!a.text.trim()||a.text.length>10000))throw new Error('메모 내용을 1~10000자로 입력해 주세요.');
+  typing=null;takeSnapshot(editorRange(a));try{
+   if(op==='memoAdd'){const c=selected,path=c.path||(inCell(c)?JSON.stringify([{controlIndex:c.ctrl,cellIndex:c.cell,cellParaIndex:c.p}]):null),json=JSON.stringify({author:String(a.author||'hwpxxx').slice(0,100),text:a.text});
+    checked(path?doc.insertMemoByPath(c.sec,c.para,path,args.s,args.e,json):doc.insertMemo(c.sec,c.para,args.s,args.e,json));}
+   else checked(op==='memoUpdate'?doc.setMemoText(a.id,a.text):doc.removeMemo(a.id));
+   mark(true);return {...meta(),selection:selection(),memos:decoratedMemos()};
+  }catch(e){rollback();throw e;}
+ }
+ if(op==='copyFormat'){
+  sameTarget(a);const {s,n}=span(a),c=charAt(doc,selected,Math.min(s,Math.max(0,n-1))),r=paraRef(selected);
+  if(!['char','para','both','style'].includes(a.scope))throw new Error('복사할 모양을 골라 주세요.');
+  if(a.scope!=='char'&&!r)throw new Error('겹친 표의 문단 모양은 아직 복사할 수 없어요.');
+  painter={char:a.scope==='char'||a.scope==='both'?Object.fromEntries([...CHAR_KEYS,'fontIds','fontId'].filter(k=>c[k]!=null).map(k=>[k,c[k]])):{},para:a.scope==='para'||a.scope==='both'?paragraphForWrite(paraGet(doc,r)):a.scope==='style'?{styleId:paraGet(doc,r).styleId}:{}};
+  if(a.scope==='style'&&painter.para.styleId==null){painter=null;throw new Error('문단 스타일을 읽을 수 없어요.');}
+  return true;
+ }
+ if(op==='pasteFormat'){
+  sameTarget(a);if(!painter)throw new Error('먼저 모양을 복사해 주세요.');const {s,e}=span(a),r=paraRef(selected),hasChar=Object.keys(painter.char).length,hasPara=Object.keys(painter.para).length;
+  if(hasChar&&e<=s)throw new Error('모양을 적용할 글자를 선택해 주세요.');if(hasPara&&!r)throw new Error('겹친 표의 문단 모양은 아직 바꿀 수 없어요.');
+  typing=null;takeSnapshot(editorRange(a));try{
+   if(hasChar){applyChar(selected,s,e,JSON.stringify(painter.char));fmtTargets.push({kind:'char',c:{...selected},s,e});}
+   if(hasPara){paraSet(r,JSON.stringify(painter.para));fmtTargets.push({kind:'para',c:{...selected}});}
+   mark(true);painter=null;return {...meta(),selection:selection(),rects:rects(selected,s,e)};
+  }catch(e){rollback();throw e;}
+ }
+ if(op==='tableState'){sameTarget(a);const c=tableRef();return {cells:tableCells(c),current:checked(doc.getCellInfo(c.sec,c.para,c.ctrl,c.cell))};}
+ if(op==='tableMerge'){
+  sameTarget(a);const c=tableRef(),cells=tableCells(c),first=cells.find(x=>x.cellIdx===a.first),last=cells.find(x=>x.cellIdx===a.last);if(!first||!last)throw new Error('표의 칸을 다시 선택해 주세요.');
+  const r=expandCellRange(cells,first,last);typing=null;takeSnapshot();try{checked(doc.mergeTableCells(c.sec,c.para,c.ctrl,r.top,r.left,r.bottom,r.right));selected=null;mark(true);return {...meta(true),selection:null};}catch(e){rollback();throw e;}
+ }
+
  if(op==='export'){
   doc.flushDeferredPagination();
   // Same check as the PC app: export with the engine's content-loss report and refuse to save if anything would be dropped.
@@ -165,12 +224,13 @@ async function operation(op,a){await ready;
   let bytes,loss;try{loss=JSON.parse(ex.contentLoss());bytes=ex.takeBytes();}finally{ex.free();}
   if(loss.count||loss.losses?.length){const what=(loss.losses||[]).slice(0,3).map(x=>x.kind||x.type||x.item||x.reason||'').filter(Boolean).join(', ');throw new Error(`저장하면 문서 일부${what?`(${what})`:''}가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.`);}
   if(bytes.length>32*1024*1024)throw new Error('저장 결과가 32MB를 넘어요.');
-  const verify=openBytes(bytes);try {const t=JSON.parse(verify.getTextFileUnicode());if(t.replace(/\r\n/g,'\n')!==text().replace(/\r\n/g,'\n'))throw new Error('저장 전후의 문서 내용이 달라요. 원본은 변경하지 않았어요.');const count=verify.pageCount();if(!count||count>500)throw new Error('저장 결과의 페이지 수를 확인하지 못했어요.');verify.renderPageSvg(0);if(count>1)verify.renderPageSvg(count-1);verifyFormats(verify);}finally{verify.free();}
-  return {bytes};
+  const verify=openBytes(bytes);try {const t=JSON.parse(verify.getTextFileUnicode());if(t.replace(/\r\n/g,'\n')!==text().replace(/\r\n/g,'\n'))throw new Error('저장 전후의 문서 내용이 달라요. 원본은 변경하지 않았어요.');const count=verify.pageCount();if(!count||count>500)throw new Error('저장 결과의 페이지 수를 확인하지 못했어요.');verify.renderPageSvg(0);if(count>1)verify.renderPageSvg(count-1);verifyFormats(verify);if(typeof doc.getMemoList==='function'&&JSON.stringify(memoSignature(verify))!==JSON.stringify(memoSignature(doc)))throw new Error('저장 전후의 메모 내용이 달라요. 원본은 변경하지 않았어요.');}finally{verify.free();}
+  exported={rev,text:text(),bytes:bytes.slice()};return {bytes,rev};
  }
  // Only a successful disk write becomes the new baseline; older undo states may differ in formatting from it.
- if(op==='saved'){savedBytes=new Uint8Array(a.bytes);savedText=text();savedRev=rev;fmt=false;fmtTargets=[];for(const x of history)x.fmt=true;for(const x of future)x.fmt=true;dirtyRev=-1;return meta();}
+ if(op==='saved'){if(!exported)throw new Error('저장할 문서를 먼저 내보내 주세요.');const b=new Uint8Array(a.bytes);if(b.length!==exported.bytes.length||b.some((v,i)=>v!==exported.bytes[i]))throw new Error('저장한 문서가 내보낸 문서와 달라요.');savedBytes=b;savedText=exported.text;savedRev=exported.rev;if(rev===savedRev){fmt=false;fmtTargets=[];}exported=null;for(const x of history)x.fmt=true;for(const x of future)x.fmt=true;dirtyRev=-1;return meta();}
  if(op==='close'){doc.free();doc=null;savedBytes=null;selected=null;password=null;return true;}
  throw new Error('지원하지 않는 문서 작업이에요.');
 }
 self.onmessage=async e=>{const {id,op,args}=e.data;try {self.postMessage({id,ok:true,data:await operation(op,args||{})});}catch(error){self.postMessage({id,ok:false,error:String(error.message||error)});}};
+
