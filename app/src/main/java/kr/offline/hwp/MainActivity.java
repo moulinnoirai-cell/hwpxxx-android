@@ -125,7 +125,7 @@ public class MainActivity extends Activity {
                 if(op.equals("exit")){runOnUiThread(()->finish());reply(id,true,null);return;}
                 if(op.equals("permission")){runOnUiThread(()->{try{Intent intent=new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:"+getPackageName()));startActivity(intent);reply(id,true,null);}catch(Exception e){reply(id,null,"설정에서 hwpxxx의 모든 파일 접근을 허용해 주세요.");}});return;}
                 if(op.equals("scan"))scanStop.set(false);
-                io.execute(()->{try {if(!op.equals("status")&&!op.equals("release")&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){upload=null;reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
+                io.execute(()->{try {if(!op.equals("status")&&!op.equals("release")&&!op.equals("abortSave")&&!op.equals("abortPdf")&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){upload=null;reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
             }catch(Exception ignored){}
         }
     }

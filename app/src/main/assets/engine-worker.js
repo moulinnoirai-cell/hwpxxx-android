@@ -38,7 +38,7 @@ function ident(c){return c?JSON.stringify([c.sec,c.para,c.ctrl??null,c.cell??nul
 function selection(){if(!selected)return null;return {text:range(selected),offset:selected.offset,start:rect(selected,0),end:rect(selected,len(selected)),key:JSON.stringify(selected),ident:ident(selected)};}
 function replace(c,start,n,s){if(c.path!=null){if(n)checked(doc.deleteTextInCellByPath(c.sec,c.para,c.path,start,n));if(s)checked(doc.insertTextInCellByPath(c.sec,c.para,c.path,start,s));return;}// The *DeferredPagination cell replace only accepts 1-8 characters without line breaks/tabs (IME use), so plain cells use delete+insert.
 if(inCell(c)){if(n)checked(doc.deleteTextInCell(c.sec,c.para,c.ctrl,c.cell,c.p,start,n));if(s)checked(doc.insertTextInCell(c.sec,c.para,c.ctrl,c.cell,c.p,start,s));return;}return checked(doc.replaceText(c.sec,c.para,start,n,s));}
-function relocate(c,result){if(inCell(c)){c.p=result.cellParaIndex??c.p;if(c.path){const path=JSON.parse(c.path);path.at(-1).cellParaIndex=c.p;c.path=JSON.stringify(path);}}else c.para=result.paraIdx??c.para;c.offset=result.charOffset??0;}
+function relocate(c,result){if(inCell(c)){c.p=result.cellParaIndex??c.p;if(c.path){const path=JSON.parse(c.path);path[path.length-1].cellParaIndex=c.p;c.path=JSON.stringify(path);}}else c.para=result.paraIdx??c.para;c.offset=result.charOffset??0;}
 function split(c,off){const r=checked(c.path?doc.splitParagraphInCellByPath(c.sec,c.para,c.path,off):inCell(c)?doc.splitParagraphInCell(c.sec,c.para,c.ctrl,c.cell,c.p,off):doc.splitParagraph(c.sec,c.para,off));relocate(c,r);}
 // range: the editor's UTF-16 selection the command acted on, handed back on undo/redo so the selection is restored.
 // The redo list is dropped only when a command succeeds (mark), so a refused or failed command keeps it.
@@ -67,7 +67,7 @@ function charProps(p){const o={};for(const [k,v] of Object.entries(p||{})){
 const same=(a,b)=>String(a).toLowerCase()===String(b).toLowerCase();
 // UTF-16 positions from the textarea -> rhwp scalar offsets within the selected paragraph.
 function span(a){const t=range(selected),n=[...t].length;let s=[...t.slice(0,a.start||0)].length,e=[...t.slice(0,a.end??a.start??0)].length;if(s>e)[s,e]=[e,s];return {s:Math.min(s,n),e:Math.min(e,n),n};}
-function charState(c,s,e,n){const at=[];if(e>s){const step=Math.max(1,Math.ceil((e-s)/64));for(let o=s;o<e;o+=step)at.push(o);if(at.at(-1)!==e-1)at.push(e-1);}else at.push(Math.max(0,Math.min(s,n)-1));
+function charState(c,s,e,n){const at=[];if(e>s){const step=Math.max(1,Math.ceil((e-s)/64));for(let o=s;o<e;o+=step)at.push(o);if(at[at.length-1]!==e-1)at.push(e-1);}else at.push(Math.max(0,Math.min(s,n)-1));
  const p=at.map(o=>charAt(doc,c,o)),tri=k=>p.every(x=>x[k])?'on':p.some(x=>x[k])?'mixed':'off',one=k=>p.every(x=>same(x[k],p[0][k]))?p[0][k]:null;
  return {range:e>s,...Object.fromEntries(CHAR_KEYS.map(k=>[k,['bold','italic','underline'].includes(k)?tri(k):one(k)]))};}
 function paraState(c){const r=paraRef(c);if(!r)return {supported:false};const p=paraGet(doc,r);return {supported:true,alignment:p.alignment,lineSpacing:p.lineSpacing,lineSpacingType:p.lineSpacingType,spacingBefore:spacingToPt(p.spacingBefore||0),spacingAfter:spacingToPt(p.spacingAfter||0),list:p.headType==='Bullet'?'bullet':p.headType==='None'?'none':'other'};}
@@ -86,7 +86,7 @@ function openError(e){const m=String(e?.message??e);if(/비밀번호가 필요�
 function adjacent(c,direction){
  const n=c.path?doc.getCellParagraphCountByPath(c.sec,c.para,c.path):inCell(c)?doc.getCellParagraphCount(c.sec,c.para,c.ctrl,c.cell):doc.getParagraphCount(c.sec);
  const index=inCell(c)?c.p:c.para,next=index+direction,out={...c};
- if(next>=0&&next<n){if(inCell(c)){out.p=next;if(c.path){const p=JSON.parse(c.path);p.at(-1).cellParaIndex=next;out.path=JSON.stringify(p);}}else out.para=next;}
+ if(next>=0&&next<n){if(inCell(c)){out.p=next;if(c.path){const p=JSON.parse(c.path);p[p.length-1].cellParaIndex=next;out.path=JSON.stringify(p);}}else out.para=next;}
  else if(!inCell(c)&&c.sec+direction>=0&&c.sec+direction<doc.getSectionCount()){out.sec+=direction;out.para=direction<0?doc.getParagraphCount(out.sec)-1:0;}
  else return null;
  out.offset=direction<0?len(out):0;return out;
@@ -153,7 +153,7 @@ async function operation(op,a){await ready;
  }
  if(op==='undo'||op==='redo'){const from=op==='undo'?history:future,to=op==='undo'?future:history;typing=null;let back=null,marks=[];if(from.length){
   // Restore first; only a successful restore moves the entry, so a failure leaks no snapshot and loses no history.
-  const s=from.at(-1),cur=doc.saveSnapshot();try{checked(doc.restoreSnapshot(s.id));}catch(e){doc.discardSnapshot(cur);throw e;}
+  const s=from[from.length-1],cur=doc.saveSnapshot();try{checked(doc.restoreSnapshot(s.id));}catch(e){doc.discardSnapshot(cur);throw e;}
   from.pop();doc.discardSnapshot(s.id);to.push({id:cur,selected:selected?{...selected}:null,rev,fmt,range:s.range});
   selected=s.selected;rev=s.rev;fmt=s.fmt;back=s.range;if(back&&selected){const {s:x,e:y}=span(back);marks=rects(selected,x,y);}}
   return {...meta(true),selection:selection(),range:back,rects:marks};}

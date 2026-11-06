@@ -19,7 +19,7 @@ export function memoTarget(m){
  if(m.paraIndex==null||m.startCharIdx==null||m.endCharIdx==null)return null;
  if((m.path||[]).some(s=>s.type!=='cell'))return null;
  const c={sec:m.sectionIndex,para:m.paraIndex,offset:m.startCharIdx};
- if(m.path?.length){c.path=JSON.stringify(m.path.map(s=>({controlIndex:s.controlIndex,cellIndex:s.cellIndex,cellParaIndex:s.paraIndex})));c.p=m.path.at(-1).paraIndex;}
+ if(m.path?.length){c.path=JSON.stringify(m.path.map(s=>({controlIndex:s.controlIndex,cellIndex:s.cellIndex,cellParaIndex:s.paraIndex})));c.p=m.path[m.path.length-1].paraIndex;}
  return c;
 }
 // Grow to a fixed point: expanding for one merged cell may intersect another.

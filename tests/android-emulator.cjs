@@ -6,12 +6,14 @@ const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/andr
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
 const sh=(...args)=>adb('shell',...args);
-const checks=[],errors=[];let permissionGrant='settings-switch';let page,device;
+const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run';let page,device;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
 async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);await device.screenshot({path:`${qa}/${String(checks.length).padStart(2,'0')}.png`});}
-async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.locator('#content').waitFor();}
+async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();}
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
+function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
+async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
 async function click(name){await a(name).click();}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
@@ -28,11 +30,15 @@ async function edit(){await click('edit');const p=page.locator('.page').first(),
 async function changed(text){const t=page.locator('#text-editor');await t.fill(text);await until(()=>a('save').isEnabled());}
 async function save(){
  await click('save');await click('save-yes');
- await until(async()=>await page.locator('#overlay').isHidden()||['저장했어요','작업을 완료하지 못했어요'].includes(await page.locator('#sheet-title').innerText()));
+ await page.waitForFunction(()=>document.querySelector('#overlay').hidden||['저장했어요','작업을 완료하지 못했어요'].includes(document.querySelector('#sheet-title')?.textContent));
  if(await page.locator('#overlay').isVisible()){
   assert.equal(await page.locator('#sheet-title').innerText(),'저장했어요',await page.locator('#sheet').innerText());await click('close');
  }
  await closed();assert(await a('save').isDisabled());
+}
+async function nativeCall(op,args={}){
+ const r=await page.evaluate(({op,args})=>new Promise((resolve,reject)=>{const id=900100+(window.__qaSeq=(window.__qaSeq||0)+1),old=window.NativeReply;const timer=setTimeout(()=>{window.NativeReply=old;reject(new Error('Native test request timed out'));},15000);window.NativeReply=(rid,r)=>{if(rid===id){clearTimeout(timer);window.NativeReply=old;resolve(r);}else old(rid,r);};OfflineNative.postMessage(JSON.stringify({id,op,args}));}),{op,args});
+ if(!r.ok)throw new Error(r.error);return r.data;
 }
 async function hash(name){return sh('sha256sum',`${dir}/${name}`).split(/\s/)[0];}
 async function rotate(n){sh('settings','put','system','accelerometer_rotation','0');sh('settings','put','system','user_rotation',String(n));await pause(1000);}
@@ -102,7 +108,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   });
   await record('dark theme applies and remains usable with mouse',async()=>{await click('settings');await page.locator('[data-action="set-theme"][data-value="dark"]').click();await click('close');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');});
   await open('qa-edit.hwpx');await edit();
-  await record('Android input dispatcher types through the installed WebView',async()=>{await page.locator('#text-editor').focus();sh('input','text','DEX_OS_KEYS');await until(async()=>(await page.locator('#text-editor').inputValue()).includes('DEX_OS_KEYS'));});
+  await record('Android input dispatcher types through the installed WebView',async()=>{await page.locator('#text-editor').click();sh('input','text','DEX_OS_KEYS');await until(async()=>(await page.locator('#text-editor').inputValue()).includes('DEX_OS_KEYS'));});
   await record('DeX: clicking text never zooms; Ctrl+wheel zooms only document',async()=>{
    const before=await page.locator('#pages').evaluate(e=>parseFloat(e.style.width));await page.locator('#text-editor').click();assert.equal(await page.locator('#pages').evaluate(e=>parseFloat(e.style.width)),before);
    const p=await page.locator('.page').first().boundingBox();await page.mouse.move(p.x+200,p.y+150);await page.keyboard.down('Control');await page.mouse.wheel(0,-120);await page.keyboard.up('Control');
@@ -132,10 +138,20 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   });
   await record('Home/background/resume preserves unsaved text',async()=>{const text=await page.locator('#text-editor').inputValue();sh('input','keyevent','3');await pause(500);sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);assert.equal(await page.locator('#text-editor').inputValue(),text);});
   await record('Android Back offers continue editing and discard without writing',async()=>{const old=await hash('qa-edit.hwpx');sh('input','keyevent','4');await a('exit-discard').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('input','keyevent','4');await click('exit-discard');await page.locator('#search').waitFor();assert.equal(await hash('qa-edit.hwpx'),old);});
-  await record('permission revoked during editing refuses save and preserves source',async()=>{
+  await record('permission revocation preserves the source, including OS-forced termination',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' DENIED');const old=await hash('qa-edit.hwpx');
-   sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await click('save');await click('save-yes');await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();assert.equal(await hash('qa-edit.hwpx'),old);await click('close');assert(await a('save').isEnabled());
-   sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await library();
+   sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await pause(500);
+   if(page.isClosed()||!appAlive()){
+    permissionRevocation='Android terminated the app';assert.equal(await hash('qa-edit.hwpx'),old);await start();await a('allow').waitFor();await regrantAndRestart();
+   }else{
+    permissionRevocation='In-app denial';await click('save');await click('save-yes');await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();assert.equal(await hash('qa-edit.hwpx'),old);await click('close');assert(await a('save').isEnabled());sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await library();
+   }
+  });
+  await record('revoking permission during an upload still permits abort and immediate retry',async()=>{
+   await page.locator('#search').fill('qa-edit.hwpx');const id=await a('open').first().getAttribute('data-id'),before=await hash('qa-edit.hwpx');
+   const source=await nativeCall('read',{id});await nativeCall('release',{token:source.token});const args={id,target:source.meta.path,sha:source.sha,length:source.meta.size,replace:true,backup:false};
+   const token=await nativeCall('beginSave',args);await nativeCall('saveChunk',{token,seq:0,base64:'UEsDBAoA'});sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await pause(500);if(page.isClosed()||!appAlive()){await regrantAndRestart();}else{await nativeCall('abortSave',{token});sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
+   const retry=await nativeCall('beginSave',args);await nativeCall('abortSave',{token:retry});assert.equal(await hash('qa-edit.hwpx'),before);
   });
   await record('external modification is never overwritten by stale save',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' CONFLICT');
@@ -153,5 +169,5 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
  }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(page)console.error('APP_DIAGNOSTIC',await page.evaluate(()=>({url:location.href,text:document.body.innerText.slice(0,5000),announce:document.querySelector('#announce')?.textContent})).catch(()=>({closed:true})));console.error('ANDROID_FOREGROUND',sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' '));if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
- finally{fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));if(device)await Promise.race([device.close(),pause(5000)]);process.exit(process.exitCode||0);}
+ finally{console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,permissionGrant,permissionRevocation,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,permissionRevocation,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));if(device)await Promise.race([device.close(),pause(5000)]);process.exit(process.exitCode||0);}
 })();
