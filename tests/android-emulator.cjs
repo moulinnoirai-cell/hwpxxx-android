@@ -6,10 +6,10 @@ const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/andr
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
 const sh=(...args)=>adb('shell',...args);
-const checks=[],errors=[];let page,device;
+const checks=[],errors=[];let permissionGrant='settings-switch';let page,device;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
-async function record(name,fn){await fn();checks.push({name,passed:true});console.log('PASS',name);await device.screenshot({path:`${qa}/${String(checks.length).padStart(2,'0')}.png`});}
+async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);await device.screenshot({path:`${qa}/${String(checks.length).padStart(2,'0')}.png`});}
 async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.locator('#content').waitFor();}
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
 const a=name=>page.locator(`[data-action="${name}"]`);
@@ -34,16 +34,20 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
   sh('mkdir','-p',dir);for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
   for(const f of fs.readdirSync('.qa/fixtures'))adb('push',`.qa/fixtures/${f}`,`${dir}/${f}`);
+  sh('touch',`${dir}/qa-empty.hwpx`);sh('dd','if=/dev/zero',`of=${dir}/qa-oversize.hwp`,'bs=1048576','count=33');
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
   await start();
   await record('fresh install: access denied shows onboarding, not files',async()=>{await a('allow').waitFor();assert.equal(await a('open').count(),0);});
   await record('permission settings can be cancelled and revisited',async()=>{await click('allow');await pause(700);sh('input','keyevent','4');await a('allow').waitFor();});
   await record('grant all-files access through Android settings',async()=>{
-   await click('allow');await pause(800);sh('uiautomator','dump','/sdcard/window.xml');const xml=sh('cat','/sdcard/window.xml');
-   const nodes=xml.match(/<node\b[^>]*>/g)||[];const sw=nodes.find(n=>/class="android.widget.Switch"|resource-id="[^"]*switch_widget"/.test(n));assert(sw,'Permission switch missing: '+xml);
-   const b=sw.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));sh('input','keyevent','4');await until(()=>a('open').count());
+   await click('allow');await pause(1000);assert(sh('dumpsys','activity','activities').includes('com.android.settings'),'Android permission settings did not open');
+   let sw;for(let i=0;i<2&&!sw;i++)try{sh('rm','-f','/sdcard/window.xml');sh('uiautomator','dump','--compressed','/sdcard/window.xml');const xml=sh('cat','/sdcard/window.xml');sw=(xml.match(/<node\b[^>]*>/g)||[]).find(n=>/class="android.widget.Switch"|resource-id="[^"]*switch_widget"/.test(n));}catch{}
+   if(sw){const b=sw.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
+   else{permissionGrant='adb-appops; Settings navigation verified, UiAutomator root unavailable';sh('appops','set',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
+   sh('input','keyevent','4');await until(()=>a('open').count());
   });
   await record('offline corrupt file error returns to a usable library',async()=>{await page.locator('#search').fill('qa-corrupt');await a('open').first().click();await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();await click('close');await page.locator('#search').fill('');});
+  await record('empty and over-32MB documents fail gracefully without hanging',async()=>{for(const name of ['qa-empty.hwpx','qa-oversize.hwp']){await page.locator('#search').fill(name);await a('open').first().click();await page.getByText(/빈 파일이거나 32MB/).waitFor();await click('close');assert(await page.locator('#search').isVisible());}});
   for(const format of ['hwp','hwpx'])await record(`${format}: password cancel, wrong password, correct password and encrypted save`,async()=>{
    const name=`qa-locked.${format}`;await page.locator('#search').fill(name);await a('open').first().click();await page.locator('#doc-password').waitFor();await click('close');
    await a('open').first().click();await page.locator('#doc-password').fill('wrong');await click('pw-open');await page.getByText('암호가 맞지 않아요. 다시 입력해 주세요.').waitFor();
@@ -92,6 +96,12 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await page.keyboard.press('Control+0');assert.equal(await page.locator('#pages').evaluate(e=>parseFloat(e.style.width)),100);
    await page.keyboard.press('Control+-');assert(await page.locator('#pages').evaluate(e=>parseFloat(e.style.width))<100);await page.keyboard.press('Control+0');
   });
+  await record('mouse word selection and Ctrl+C/V/X/Z preserve Unicode text',async()=>{
+   const t=page.locator('#text-editor'),original=await t.inputValue();await t.dblclick({position:{x:12,y:12}});assert(await t.evaluate(t=>t.selectionEnd>t.selectionStart));
+   await t.press('Home');for(let i=0;i<3;i++)await t.press('Shift+ArrowRight');const selected=await t.evaluate(t=>t.value.slice(t.selectionStart,t.selectionEnd));
+   await page.keyboard.press('Control+c');await t.press('End');const insertion=await t.evaluate(t=>t.selectionStart);await page.keyboard.press('Control+v');await until(async()=>(await t.inputValue())!==original);assert.equal(await t.inputValue(),original.slice(0,insertion)+selected+original.slice(insertion));await until(()=>a('save').isEnabled());await page.keyboard.press('Control+z');await until(async()=>(await t.inputValue())===original);
+   await t.press('Home');for(let i=0;i<2;i++)await t.press('Shift+ArrowRight');await page.keyboard.press('Control+x');await until(async()=>(await t.inputValue()).length<original.length);await page.keyboard.press('Control+z');await until(async()=>(await t.inputValue())===original);
+  });
   await record('mouse range, Ctrl+B/Z/Y and plain wheel scrolling',async()=>{
    const t=page.locator('#text-editor');await t.press('Home');await t.press('Shift+ArrowRight');await t.press('Shift+ArrowRight');await page.keyboard.press('Control+b');await until(()=>a('save').isEnabled());
    await page.keyboard.press('Control+z');await page.keyboard.press('Control+y');const before=await page.locator('.reader-scroll').evaluate(e=>e.scrollTop);await page.mouse.wheel(0,500);await until(async()=>await page.locator('.reader-scroll').evaluate(e=>e.scrollTop)>before);await page.keyboard.press('Control+Home');
@@ -122,6 +132,6 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk);await start();await page.locator('#search').fill('qa-edit.hwpx');assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
- }catch(e){checks.push({name:'failure',passed:false,error:e.stack});console.error(e);if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
- finally{fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,pageErrors:errors,limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));if(device)await device.close();}
+ }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
+ finally{fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));if(device)await Promise.race([device.close(),pause(5000)]);process.exit(process.exitCode||0);}
 })();
