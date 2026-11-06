@@ -17,7 +17,7 @@
 
 ## 엔진과 빌드
 
-PC판의 PR #8269 백포트 패치를 동일하게 포함했습니다. `config/android-engine.json`에 원본 커밋·패치 체크섬·도구 버전을 기록합니다. `bash scripts/build-engine.sh <별도 rhwp 체크아웃>`으로 엔진을 만든 후 Gradle로 빌드합니다. 예전 엔진을 실수로 넣은 APK는 `verifyMemoEngine` 작업에서 빌드를 막습니다.
+PC판의 PR #8269 백포트 패치를 동일하게 포함했습니다. Android 11의 구형 WebView에서도 실행되도록 Rust nightly-2026-02-01과 rust-src로 표준 라이브러리까지 WebAssembly MVP 대상으로 다시 빌드합니다. `config/android-engine.json`에 원본 커밋·패치 체크섬·도구 버전을 기록합니다. `bash scripts/build-engine.sh <별도 rhwp 체크아웃>`으로 엔진을 만든 후 Gradle로 빌드합니다. 예전 엔진을 실수로 넣은 APK는 `verifyMemoEngine` 작업에서 빌드를 막습니다.
 
 GitHub Actions `Android tablet build`는 엔진 빌드, 문서 왕복 시험, FileStore 시험, 4개 화면 크기의 브라우저 시험, lint, debug/release APK 생성을 수행하도록 구성했습니다. debug APK는 `kr.offline.hwp.preview` / `hwpxxx 미리보기`로 별도 설치할 수 있습니다. 정식 release APK로 기존 앱을 업데이트하려면 원래 release 서명이 필요합니다. 기존 앱 데이터나 문서를 삭제하지 마세요.
 

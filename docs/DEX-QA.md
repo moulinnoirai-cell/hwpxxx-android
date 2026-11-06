@@ -14,6 +14,8 @@
 
 ## 검증 계층
 
+Android 엔진은 WebAssembly MVP 대상으로 표준 라이브러리까지 빌드합니다. Rust 공식 [구형 Wasm 대상 빌드 안내](https://doc.rust-lang.org/stable/rustc/platform-support/wasm32-unknown-unknown.html)에 따라 `-Ctarget-cpu=mvp`와 `-Zbuild-std`를 함께 사용합니다.
+
 1. WASM Worker 시험: Unicode·여러 문단 붙여넣기, 메모 겹침 거부, 잘못된 서식, 과도한 요청, stale selection, 저장 bytes 검증, 되돌리기 분기, 문서 탐색.
 2. Chromium 시험: 네 가지 창 크기에서 실제 휠/키 이벤트, 배율과 입력 요소 유지, 형광펜과 메모, 회전·창 크기 변경.
 3. 설치 APK 시험: Android API 30, 33(탭 S7 최종 Android 세대), 35. 실제 WebView/OfflineNative/공유 저장공간과 Android 설정을 사용합니다. 저장·재열기·백업·충돌·암호 문서·손상 파일·PDF·이동·권한 회수·백그라운드·프로세스 종료를 확인합니다. 브리지를 가짜로 바꾸지 않습니다.

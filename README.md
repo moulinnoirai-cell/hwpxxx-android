@@ -33,7 +33,7 @@ PC 1.6.1의 메모·형광펜 모드·모양 복사·문단 간격·자간/장�
 
 ## 빌드
 
-먼저 `config/android-engine.json`의 커밋을 별도 rhwp 작업 사본에 체크아웃하고 Rust 1.93.1(wasm32-unknown-unknown 타깃), wasm-bindgen-cli 0.2.127로 `bash scripts/build-engine.sh <rhwp 작업 사본>`을 실행하세요. 새 엔진은 GitHub Actions에서도 빌드합니다.
+먼저 `config/android-engine.json`의 커밋을 별도 rhwp 작업 사본에 체크아웃하고 Rust nightly-2026-02-01(rust-src 및 wasm32-unknown-unknown 타깃), wasm-bindgen-cli 0.2.127로 `bash scripts/build-engine.sh <rhwp 작업 사본>`을 실행하세요. 새 엔진은 GitHub Actions에서도 빌드합니다.
 
 JDK 17과 Android SDK(platform 35, build-tools 35.0.0)가 필요합니다. `local.properties`에 다음을 적습니다. 이 파일은 커밋하지 않습니다.
 

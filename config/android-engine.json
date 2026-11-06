@@ -5,6 +5,8 @@
   "desktopVersion": "1.6.1",
   "patch": "patches/rhwp-engine/0001-rhwp-pr8269-memo-api-backport-to-v0.8.7.patch",
   "patchSha256": "5fefe4f252c45c54551ff3f6a673291545298e8c5839796d2122d21c82de300b",
-  "rust": "1.93.1",
-  "wasmBindgen": "0.2.127"
+  "rust": "nightly-2026-02-01",
+  "wasmBindgen": "0.2.127",
+  "rustFlags": "-Ctarget-cpu=mvp",
+  "buildStd": true
 }

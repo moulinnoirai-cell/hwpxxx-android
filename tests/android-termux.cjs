@@ -14,7 +14,7 @@ async function connect(){for(let attempt=0;attempt<3;attempt++)try{page=await(aw
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
 async function restart(){sh('am','force-stop',pkg);await start();}
 function privateHash(){return sh('run-as','com.termux','sha256sum',project+'/nested/termux-nested.hwpx').split(/\s/)[0];}
-function privateWrite(name,src){execFileSync('adb',['exec-out','run-as','com.termux','sh','-c',`'cat > ${name}'`],{input:fs.readFileSync(src),timeout:45000});}
+function privateWrite(name,src){const bytes=fs.readFileSync(src).toString('base64');adb('shell',`run-as com.termux sh -c 'printf %s ${bytes} | base64 -d > ${name}'`);assert.equal(sh('run-as','com.termux','stat','-c','%s',name),String(fs.statSync(src).size));}
 function uiNodes(){sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump','--compressed','/sdcard/termux-ui.xml');lastXml=sh('cat','/sdcard/termux-ui.xml');return lastXml.match(/<node\b[^>]*>/g)||[];}
 function uiMatch(nodes,regex){return nodes.find(n=>regex.test(n)&&!/enabled="false"/.test(n));}
 function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}

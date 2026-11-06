@@ -17,7 +17,10 @@ execFileSync('git',['-C',process.argv[2],'apply','--check','--include=src/**',fs
 execFileSync('git',['-C',process.argv[2],'apply','--include=src/**',fs.realpathSync(lock.patch)],{stdio:'inherit'});
 JS
 cd "$engine_dir"
-cargo build --target wasm32-unknown-unknown --lib --release --locked
+# The stock API 30 WebView cannot execute multivalue/externref Wasm.
+# Rebuild std too: precompiled std retains newer target features.
+export RUSTFLAGS="-Ctarget-cpu=mvp"
+cargo build -Zbuild-std=std,panic_abort --target wasm32-unknown-unknown --lib --release --locked
 wasm-bindgen "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/rhwp.wasm" --target web --out-dir "$project_dir/.build/engine" --out-name rhwp
 cd "$project_dir"
 node scripts/install-engine.mjs .build/engine

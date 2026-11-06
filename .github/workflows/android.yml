@@ -52,7 +52,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: steps.memo-engine.outputs.cache-hit != 'true'
         with:
-          toolchain: '1.93.1'
+          toolchain: 'nightly-2026-02-01'
+          components: rust-src
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         if: steps.memo-engine.outputs.cache-hit != 'true'
@@ -137,6 +138,7 @@ jobs:
           name: android-test-fixtures
           path: .qa/fixtures
       - run: npm install --no-save --package-lock=false playwright@1.48.2
+      - run: python -m pip install pillow
       - name: Download official Termux for private-project integration tests
         run: bash scripts/fetch-termux-qa.sh
       - name: Reserve disk space for emulator userdata
