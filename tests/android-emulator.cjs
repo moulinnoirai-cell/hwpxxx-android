@@ -6,7 +6,7 @@ const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/andr
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
 const sh=(...args)=>adb('shell',...args);
-const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run';let page,browser;
+const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run',backInputDismissals=0;let page,browser;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
 async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);screenshot(`${qa}/${String(checks.length).padStart(2,'0')}.png`);}
@@ -30,6 +30,7 @@ function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
 async function click(name){try{await a(name).click();}catch(e){if(name!=='allow'||!/closed/.test(e.message))throw e;await settingsVisible();console.log('CDP_DETACHED_DURING_NATIVE_SETTINGS');}}
+async function backPrompt(){sh('input','keyevent','4');await pause(700);if(!await a('exit-discard').isVisible()){assert(foreground().includes(pkg),'Back left the editor without a confirmation');backInputDismissals++;console.log('BACK_DISMISSED_INPUT_UI_FIRST');sh('input','keyevent','4');}await a('exit-discard').waitFor();}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
 async function library(){
  if(await a('cancel-edit').isVisible()){
@@ -59,6 +60,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
 (async()=>{
  try{
   assert.equal(adb('get-state'),'device');
+  sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
   sh('wm','size','2560x1600');sh('wm','density','320');
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
@@ -151,7 +153,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await rotate(1);assert.equal(await t.inputValue(),value);assert.equal(await t.getAttribute('data-survival'),'same');await rotate(0);assert(await a('save').isVisible());
   });
   await record('Home/background/resume preserves unsaved text',async()=>{const text=await page.locator('#text-editor').inputValue();sh('input','keyevent','3');await pause(500);sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await ensureConnection();assert.equal(await page.locator('#text-editor').inputValue(),text);});
-  await record('Android Back offers continue editing and discard without writing',async()=>{const old=await hash('qa-edit.hwpx');sh('input','keyevent','4');await a('exit-discard').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('input','keyevent','4');await click('exit-discard');await page.locator('#search').waitFor();assert.equal(await hash('qa-edit.hwpx'),old);});
+  await record('Android Back offers continue editing and discard without writing',async()=>{const old=await hash('qa-edit.hwpx');await backPrompt();await click('close');assert(await page.locator('#text-editor').isVisible());await backPrompt();await click('exit-discard');await page.locator('#search').waitFor();assert.equal(await hash('qa-edit.hwpx'),old);});
   await record('permission revocation preserves the source, including OS-forced termination',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' DENIED');const old=await hash('qa-edit.hwpx');
    sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');await pause(500);
@@ -183,5 +185,5 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
  }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(page)console.error('APP_DIAGNOSTIC',await page.evaluate(()=>({url:location.href,text:document.body.innerText.slice(0,5000),announce:document.querySelector('#announce')?.textContent})).catch(()=>({closed:true})));console.error('CRASH_DIAGNOSTIC',adb('logcat','-d','-b','crash'));console.error('WEBVIEW_DIAGNOSTIC',adb('logcat','-d','-t','500').split('\n').filter(l=>/FATAL|signal [0-9]|RenderProcessGone|renderer process|Killing.*offline|chromium.* E /i.test(l)).slice(-25).join('\n'));console.error('ANDROID_FOREGROUND',sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' '));(()=>{try{screenshot(`${qa}/failure.png`);}catch{}})();if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
- finally{console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,permissionGrant,permissionRevocation,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,permissionRevocation,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));await disconnect();process.exit(process.exitCode||0);}
+ finally{console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,permissionGrant,permissionRevocation,backInputDismissals,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,permissionRevocation,backInputDismissals,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));await disconnect();process.exit(process.exitCode||0);}
 })();

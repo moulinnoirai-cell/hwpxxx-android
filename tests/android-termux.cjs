@@ -46,11 +46,12 @@ async function native(op,args={}){const r=await page.evaluate(({op,args})=>new P
 (async()=>{
  try{
   assert.equal(adb('get-state'),'device');
+  sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
   sh('wm','size','2560x1600');sh('wm','density','320');sh('settings','put','system','font_scale','1.0');sh('settings','put','secure','show_ime_with_hard_keyboard','0');
-  adb('install','-r','.qa/termux.apk');
+  console.log('TERMUX_SETUP install official APK');adb('install','-r','.qa/termux.apk');console.log('TERMUX_SETUP create private fixtures');
   sh('run-as','com.termux','mkdir','-p',project+'/nested',home+'/outside-project');
   privateWrite(project+'/nested/termux-nested.hwpx','tests/fixtures/문서.hwpx');privateWrite(project+'/termux-remove.hwp','tests/fixtures/문서.hwp');privateWrite(home+'/outside-project/outside-secret.hwpx','tests/fixtures/문서.hwpx');
-  const original=privateHash();sh('pm','clear',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');sh('svc','wifi','disable');sh('svc','data','disable');await start();
+  const original=privateHash();console.log('TERMUX_SETUP fixtures verified');sh('pm','clear',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');sh('svc','wifi','disable');sh('svc','data','disable');console.log('TERMUX_SETUP start preview');await start();console.log('TERMUX_SETUP WebView connected');
   await check('private projects stay hidden before connection; system picker cancellation returns safely',async()=>{
    assert.equal(await a('open').count(),0);await picker();sh('input','keyevent','4');await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await click('close');assert.equal(await a('open').count(),0);
   });
