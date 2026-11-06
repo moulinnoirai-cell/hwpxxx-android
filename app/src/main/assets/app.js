@@ -189,7 +189,7 @@ async function saveDocument(target,replace){await flushEdit();const r=await stat
  catch(e){if(token)await native('abortSave',{token}).catch(()=>{});throw e;}}
 // Cancel with unsaved changes asks first; the captions say what each answer does.
 async function cancelConfirm(){await flushEdit();if(!state.dirty)return cancelEdit();sheetOpen('편집을 취소할까요?','<p>저장하지 않은 변경 내용은 사라져요.</p>',btn('close','<span>아니오<small>계속 편집하기</small></span>','secondary captioned')+btn('cancel-yes','<span>예<small>저장하지 않고 끝내기</small></span>','primary captioned danger'));}
-async function saveConfirm(){await flushEdit();if(!state.dirty)return;sheetOpen('저장하시겠습니까?','',btn('close','아니오')+btn('save-yes','예','primary'));}
+async function saveConfirm(){await flushEdit();await commitHighlight();if(!state.dirty)return;sheetOpen('저장하시겠습니까?','',btn('close','아니오')+btn('save-yes','예','primary'));}
 async function saveYes(){state.busy=true;sheet.querySelectorAll('button').forEach(b=>b.disabled=true);try{state.lastBackup=null;await saveDocument(state.current.path,true);state.busy=false;updateEditorButtons();const bak=state.lastBackup;if(bak){sheetOpen('저장했어요',`<p>저장하기 전 원본을 같은 폴더에 남겨 두었어요.</p><p><strong>${esc(bak.name)}</strong></p><p>저장 후 메모나 일부 바탕쪽이 빠졌다면 이 파일을 열어 확인해 주세요.</p>`,btn('close','확인','primary'));}else sheetClose();announce('저장했습니다.');}catch(e){state.busy=false;errorDialog(e.message);}}
 async function leaveReader(){rememberPosition();persist();revokePages();if(state.engine&&!state.engine.dead)await state.engine.run('close').catch(()=>{});state.engine?.stop('문서를 닫았어요.');state.engine=null;state.current=null;state.editing=false;state.dirty=false;state.selection=null;render();scheduleThumbs();}
 async function back(){if(state.busy)return;if(!overlay.hidden&&sheet.querySelector('.hw-dialog-header [data-action="settings"]'))return settingsSheet();if(!overlay.hidden){if(state.folder?.creating){state.folder.creating=false;folderRender();}else if(state.folder&&state.folder.path!==state.folder.root)await enterFolder(state.folder.path.slice(0,state.folder.path.lastIndexOf('/')));else sheetClose();return;}
@@ -222,7 +222,7 @@ async function action(a,b){
  if(a==='folder-new')return folderNew();if(a==='folder-new-cancel'){state.folder.creating=false;folderRender();return;}if(a==='folder-create')return folderCreate();if(a==='folder-confirm')return folderConfirm();
  if(a.startsWith('tb-'))return toolbar(a,b);
  if(a==='pw-open'){const v=$('#doc-password')?.value||'';if(!v){$('#doc-password')?.focus();return;}sheetClose();return openDoc(b.dataset.id,v);}
- if(a==='edit')return startEdit();if(a==='cancel-edit')return cancelConfirm();if(a==='cancel-yes'){sheetClose();return cancelEdit();}if(a==='save')return saveConfirm();if(a==='save-yes')return saveYes();if(a==='save-as'){await flushEdit();return pickFolder('save',state.current.id);}
+ if(a==='edit')return startEdit();if(a==='cancel-edit')return cancelConfirm();if(a==='cancel-yes'){sheetClose();return cancelEdit();}if(a==='save')return saveConfirm();if(a==='save-yes')return saveYes();if(a==='save-as'){await flushEdit();await commitHighlight();return pickFolder('save',state.current.id);}
  if(a==='back')return back();if(a==='exit-discard'){sheetClose();await cancelEdit();return leaveReader();}if(a==='exit-save'){sheetClose();await saveConfirm();return;}
  if(a==='help')return hwDialog('사용 방법',`<section class="hw-help-item"><h3>문서 새로고침</h3><p>문서함을 누르고 아래로 당기면<br>기기의 문서를 다시 찾아요.</p></section><section class="hw-help-item"><h3>즐겨찾기</h3><p>문서의 별을 누르면<br>목록 위에 먼저 표시돼요.</p></section><section class="hw-help-item"><h3>보기 방식</h3><p>문서 목록 위의 보기 버튼을 누르면<br>격자와 목록을 바꿀 수 있어요.</p></section><section class="hw-help-item"><h3>문서 작업</h3><p>문서를 길게 누르면 이름 변경, 파일 이동,<br>PDF 저장, 파일 정보를 이용할 수 있어요.</p></section><section class="hw-help-item"><h3>읽기와 편집</h3><p>본문을 가볍게 누르면 메뉴가 숨겨지고 다시 나타나요. 읽기 화면에서는 두 손가락으로 확대할 수 있어요.</p><p>오른쪽 위 연필을 누른 뒤 편집할 문장을 눌러 주세요. 저장은 확인 후 원본에 저장하고, 다른 이름으로 저장은 이름과 폴더를 정해 새 파일을 만들어요.</p></section>`,{back:true});
  if(a.startsWith('memo-'))return memoAction(a,b);
@@ -247,7 +247,8 @@ const TEXT_COLORS=[['#000000','검정'],['#C0392B','빨강'],['#D35400','주황'
 const SHADES=[['#FFF2B3','노랑'],['#D5F5E3','연두'],['#D6EAF8','하늘'],['#FADBD8','분홍']];
 const SIZES=[10,12,14,16,20];const SPACINGS=[100,130,160,200];
 const ALIGNS=[['left','text-align-start','왼쪽 정렬'],['center','text-align-center','가운데 정렬'],['right','text-align-end','오른쪽 정렬'],['justify','text-align-justify','양쪽 정렬']];
-const tool=(a,ic,label)=>`<button type="button" class="tool" data-action="tb-${a}" aria-label="${label}">${icon(ic)}<span>${label}</span></button>`;
+const toolShortcut={undo:'Ctrl+Z',redo:'Ctrl+Y',bold:'Ctrl+B',italic:'Ctrl+I',underline:'Ctrl+U',painter:'Alt+C'};
+const tool=(a,ic,label)=>`<button type="button" class="tool" data-action="tb-${a}" aria-label="${label}" title="${label}${toolShortcut[a]?' ('+toolShortcut[a]+')':''}">${icon(ic)}<span>${label}</span></button>`;
 function editBottom(){return `<div class="edit-bottom read-controls"><div class="edit-panel" id="edit-panel" ${state.panel?'':'hidden'}></div><nav class="edit-tools" aria-label="편집 도구">${tool('undo','undo-2','실행 취소')}${tool('redo','redo-2','다시 실행')}${tool('bold','bold','굵게')}${tool('italic','italic','기울임')}${tool('underline','underline','밑줄')}${tool('highlight','highlighter','형광펜')}${tool('painter','paintbrush','모양 복사')}${tool('memo','message-square','메모')}${tool('table','table','표')}${tool('char','type','글자')}${tool('para','pilcrow','문단')}</nav></div>`;}
 // The format target survives focus loss: paragraph identity from the worker plus UTF-16 positions in the editor text.
 function saveRange(){const t=$('#text-editor');if(!t||!state.selection)return;state.range={ident:state.selection.ident,start:t.selectionStart,end:t.selectionEnd};scheduleToolState();}
@@ -282,7 +283,7 @@ async function refreshPages(r){applyMeta(r);state.dirty=r.dirty;state.selection=
 async function guarded(fn){if(state.busy)return;try{await flushEdit();}catch(e){announce(e.message);return;}state.busy=true;updateEditorButtons();try{await fn();}catch(e){errorDialog(e.message);}finally{state.busy=false;updateEditorButtons();}}
 async function historyStep(op){const quiet=!keyboardOpen();await guarded(async()=>{const r=await state.engine.run(op);state.range=null;await refreshPages(r);placeEditor(r.selection,true,quiet);
  // Formatting commands come back with the range they acted on: reselect it and show the page as rendered.
- if(r.range&&r.selection){const rg={ident:r.selection.ident,...r.range};state.range=rg;previewFormat(r.rects,rg);}if(state.panel)renderPanel();});scheduleToolState();}
+ if(r.range&&r.selection){const rg={ident:r.selection.ident,...r.range};state.range=rg;if(state.highlight)highlightStamp=highlightKey(rg);previewFormat(r.rects,rg);}if(state.panel)renderPanel();});scheduleToolState();}
 // Character commands need a real range: an empty caret never silently formats the whole paragraph.
 async function formatChar(make){const rg=liveRange();if(!rg||rg.end<=rg.start){announce('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');if(state.panel)renderPanel('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');return;}
  await guarded(async()=>{const cur=await state.engine.run('charState',rg),r=await state.engine.run('char',{...rg,props:make(cur)});state.dirty=r.dirty;await refreshPages(r);state.range=rg;state.fmt={...state.fmt,char:r.charState};previewFormat(r.rects,rg);});updateTools();if(state.panel)renderPanel();}
@@ -366,12 +367,12 @@ async function featureToolbar(a,b){
  if(a==='tb-table'){state.table=null;await guarded(async()=>{state.table=await state.engine.run('tableState',{ident:state.selection.ident});state.panel='table';renderPanel();showMenus(true);});return true;}
  if(a==='tb-merge-cells'){const first=Number($('#table-first').value),last=Number($('#table-last').value);await guarded(async()=>{const r=await state.engine.run('tableMerge',{ident:state.selection.ident,first,last});$('#text-editor')?.remove();state.range=null;state.panel=null;await refreshPages(r);renderPanel();});return true;}
  if(a==='tb-painter'){
-  if(state.painter){const rg=liveRange();if(!rg)return true;await guarded(async()=>{const r=await state.engine.run('pasteFormat',rg);state.painter=false;await refreshPages(r);state.range=rg;previewFormat(r.rects,rg);});}
+  if(state.painter){const rg=liveRange();if(!rg)return true;await guarded(async()=>{const r=await state.engine.run('pasteFormat',rg);state.painter=false;await refreshPages(r);state.range=rg;if(state.highlight)highlightStamp=highlightKey(rg);previewFormat(r.rects,rg);});}
   else{state.panel=state.panel==='painter'?null:'painter';renderPanel();showMenus(true);}return true;
  }
  if(a==='tb-copy-format'){const rg=liveRange();if(!rg)return true;const scope=$('#copy-scope').value,cellAttr=$('#copy-cell-attr').checked,cellBorder=$('#copy-cell-border').checked,cellOnly=$('#copy-cell-only').checked;await guarded(async()=>{await state.engine.run('copyFormat',{...rg,scope,cellAttr,cellBorder,cellOnly});state.painter=true;state.panel=null;renderPanel();announce('모양을 복사했어요. 적용할 곳을 선택해 모양 복사를 눌러 주세요.');});return true;}
  if(a==='tb-clear-format'){state.painter=false;state.panel=null;renderPanel();updateTools();return true;}
- if(a==='tb-char-metrics'){const spacings=numeric($('#fmt-spacings').value,-50,50),ratios=numeric($('#fmt-ratios').value,50,200);await formatChar(()=>({spacings:Array(7).fill(Math.round(spacings)),ratios:Array(7).fill(Math.round(ratios))}));return true;}
+ if(a==='tb-char-metrics'){const props={};for(const [k,min,max] of [['spacings',-50,50],['ratios',50,200]]){const v=$('#fmt-'+k).value;if(v!=='')props[k]=Array(7).fill(Math.round(numeric(v,min,max)));}if(!Object.keys(props).length)throw new Error('자간이나 장평을 입력해 주세요.');await formatChar(()=>props);return true;}
  if(a==='tb-para-spacing'){const spacingBefore=numeric($('#fmt-spacingBefore').value,0,1000),spacingAfter=numeric($('#fmt-spacingAfter').value,0,1000);await formatPara({spacingBefore,spacingAfter});return true;}
  return false;
 }
@@ -390,7 +391,7 @@ async function memoAction(a,b){
  if(a==='memo-remove')return sheetOpen('메모를 삭제할까요?','<p>메모가 달린 본문 글자는 남아요. 삭제 후 실행 취소로 되돌릴 수 있어요.</p>',btn('close','취소')+btn('memo-delete','삭제','primary',`data-memo-id="${m.id}"`));
  if(a==='memo-jump'){
   if(!state.editing){await startEdit();}state.panel='memo';
-  const r=await state.engine.run('memoSelect',{id:m.id});state.selection=r.selection;placeEditor(r.selection,true,true);state.range={ident:r.selection.ident,...r.range};previewFormat(r.rects,state.range);$(`[data-page="${r.selection.start.pageIndex}"]`)?.scrollIntoView({block:'center'});showMenus(true);renderPanel();return;
+  const r=await state.engine.run('memoSelect',{id:m.id});state.selection=r.selection;placeEditor(r.selection,true,true);state.range={ident:r.selection.ident,...r.range};if(state.highlight)highlightStamp=highlightKey(state.range);previewFormat(r.rects,state.range);$(`[data-page="${r.selection.start.pageIndex}"]`)?.scrollIntoView({block:'center'});showMenus(true);renderPanel();return;
  }
  if(a==='memo-save'||a==='memo-delete'){
   const draft=state.memoDraft,args=a==='memo-delete'?{id:m.id}:{...draft,text:$('#memo-text').value,author:$('#memo-author')?.value||state.memoAuthor};
@@ -403,6 +404,7 @@ root.addEventListener('keydown',e=>{
  if(!state.editing||state.busy||!overlay.hidden)return;
  const code=e.code||'',ctrl=e.ctrlKey||e.metaKey;
  let action=null;
+ if(e.key==='Enter'&&!e.isComposing&&e.target.matches('#fmt-spacings,#fmt-ratios,#fmt-spacingBefore,#fmt-spacingAfter'))action=()=>toolbar(e.target.id==='fmt-spacings'||e.target.id==='fmt-ratios'?'tb-char-metrics':'tb-para-spacing',{dataset:{}});
  if(ctrl&&!e.altKey){if(code==='KeyS')action=()=>saveConfirm();if(code==='KeyZ')action=()=>historyStep(e.shiftKey?'redo':'undo');if(code==='KeyY')action=()=>historyStep('redo');if(['KeyB','KeyI','KeyU'].includes(code)){const k={KeyB:'bold',KeyI:'italic',KeyU:'underline'}[code];action=()=>formatChar(c=>({[k]:c[k]!=='on'}));}}
  if(e.altKey&&code==='KeyC')action=()=>toolbar('tb-painter',{dataset:{}});
  if(e.key==='Escape'&&(state.highlight||state.painter)){action=()=>{state.highlight=false;state.painter=false;updateTools();announce('편집 도구 모드를 해제했어요.');};}
@@ -410,15 +412,14 @@ root.addEventListener('keydown',e=>{
 },true);
 let highlightTimer,highlightStamp=null;
 const highlightKey=r=>JSON.stringify([state.current.id,r.ident,r.start,r.end,state.highlightColor]);
-function scheduleHighlight(){
- clearTimeout(highlightTimer);if(!state.highlight)return;
- highlightTimer=setTimeout(async()=>{
-  if(!state.highlight||state.busy||!overlay.hidden||!state.editing)return;
-  saveRange();const r=liveRange();if(!r||r.end<=r.start){highlightStamp=null;return;}
-  const stamp=highlightKey(r);if(stamp===highlightStamp)return;
-  highlightStamp=stamp;await formatChar(()=>({shadeColor:state.highlightColor}));
- },250);
+async function commitHighlight(){
+ clearTimeout(highlightTimer);highlightTimer=null;
+ if(!state.highlight||state.busy||!overlay.hidden||!state.editing)return;
+ saveRange();const r=liveRange();if(!r||r.end<=r.start){highlightStamp=null;return;}
+ const stamp=highlightKey(r);if(stamp===highlightStamp)return;
+ highlightStamp=stamp;await formatChar(()=>({shadeColor:state.highlightColor}));
 }
+function scheduleHighlight(){clearTimeout(highlightTimer);if(state.highlight)highlightTimer=setTimeout(()=>commitHighlight().catch(e=>errorDialog(e.message)),250);}
 root.addEventListener('pointerdown',e=>{if(e.target.id==='text-editor')highlightStamp=null;});
 root.addEventListener('pointerup',e=>{if(e.target.id==='text-editor')scheduleHighlight();});
 document.addEventListener('selectionchange',()=>{if(document.activeElement?.id==='text-editor')scheduleHighlight();});

@@ -170,7 +170,7 @@ async function operation(op,a){await ready;
    if(p.list==='bullet')Object.assign(props,{headType:'Bullet',numberingId:doc.ensureDefaultBullet('●'),paraLevel:0});
    if(p.list==='none')props.headType='None';
    paraSet(r,JSON.stringify(props));
-   const x=paraGet(doc,r);for(const [k,v] of Object.entries(props))if(!same(['spacingBefore','spacingAfter'].includes(k)?Math.round(x[k]*75):x[k],v))throw new Error('문단 서식이 적용되지 않았어요.');
+   const x=paraGet(doc,r);for(const [k,v] of Object.entries(props))if(['spacingBefore','spacingAfter'].includes(k)?Math.abs(x[k]*75-v)>4:!same(x[k],v))throw new Error('문단 서식이 적용되지 않았어요.');
    doc.pageCount();mark(true);fmtTargets.push({kind:'para',c:{...c}});if(fmtTargets.length>200)fmtTargets.shift();
    return {...meta(),selection:selection(),paraState:paraState(c)};
   }catch(e){rollback();throw e;}

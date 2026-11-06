@@ -1,11 +1,17 @@
 """Real worker + WebView assets in Chromium. Android hardware is a separate check."""
-import base64, hashlib, json, mimetypes, os
+import base64, hashlib, json, mimetypes, os, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 ROOT=Path(__file__).resolve().parents[1]
 ASSETS=ROOT/'app/src/main/assets'
 QA=ROOT/'.qa';QA.mkdir(exist_ok=True)
 errors=[]
+def failure(kind,value,traceback):
+    print('Browser errors:',errors)
+    try:page.screenshot(path=str(QA/'tablet-failure.png'),full_page=True)
+    except Exception:pass
+    sys.__excepthook__(kind,value,traceback)
+sys.excepthook=failure
 with sync_playwright() as pw:
     launch={'headless':True,'args':['--no-sandbox']}
     if os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'):launch['executable_path']=os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE']
