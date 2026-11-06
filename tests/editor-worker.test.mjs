@@ -70,3 +70,11 @@ test('saving wrong bytes is refused and cancellation returns last successful dis
  const ex=await run('export',{format:'hwpx'}),bad=new Uint8Array(ex.bytes);bad[0]^=1;
  await assert.rejects(run('saved',{bytes:bad}));await run('cancel');assert.equal((await select()).text,original);
 });
+test('hardware cursor crosses paragraphs and Delete joins the next paragraph as one undo step',async()=>{
+ await open('hwpx');let c=await run('navigate',{edge:'start'}),original=c.text;
+ await run('split',{ident:c.ident,start:2,end:2});c=await run('adjacent',{direction:-1});assert.equal(c.text,[...original].slice(0,2).join(''));assert.equal(c.offset,2);
+ c=await run('adjacent',{direction:1});assert.equal(c.offset,0);assert.equal(c.text,[...original].slice(2).join(''));
+ c=await run('adjacent',{direction:-1});await run('mergeNext',{ident:c.ident,start:c.text.length,end:c.text.length});assert.equal((await select()).text,original);
+ await run('undo');assert.equal((await run('navigate',{edge:'start'})).text,[...original].slice(0,2).join(''));
+ await run('export',{format:'hwpx'});
+});

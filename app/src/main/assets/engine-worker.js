@@ -83,6 +83,14 @@ function verifyFormats(v){const lost=new Error('저장한 문서에서 서식을
  else if(t.kind==='cell'){let x;try{x=checked(doc.getCellOwnProperties(t.c.sec,t.c.para,t.c.ctrl,t.c.cell));}catch{continue;}const y=checked(v.getCellOwnProperties(t.c.sec,t.c.para,t.c.ctrl,t.c.cell));for(const k of t.keys)if(!same(x[k],y[k]))throw lost;}
  else{const r=paraRef(t.c);if(!r)continue;let x;try{x=paraGet(doc,r);}catch{continue;}let y;try{y=paraGet(v,r);}catch{throw lost;}for(const k of PARA_KEYS)if(!same(x[k],y[k]))throw new Error('저장한 문서에서 문단 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}}
 function openError(e){const m=String(e?.message??e);if(/비밀번호가 필요한/.test(m))return new Error('PASSWORD_REQUIRED');if(/비밀번호가 일치하지/.test(m))return new Error('PASSWORD_WRONG');return e;}
+function adjacent(c,direction){
+ const n=c.path?doc.getCellParagraphCountByPath(c.sec,c.para,c.path):inCell(c)?doc.getCellParagraphCount(c.sec,c.para,c.ctrl,c.cell):doc.getParagraphCount(c.sec);
+ const index=inCell(c)?c.p:c.para,next=index+direction,out={...c};
+ if(next>=0&&next<n){if(inCell(c)){out.p=next;if(c.path){const p=JSON.parse(c.path);p.at(-1).cellParaIndex=next;out.path=JSON.stringify(p);}}else out.para=next;}
+ else if(!inCell(c)&&c.sec+direction>=0&&c.sec+direction<doc.getSectionCount()){out.sec+=direction;out.para=direction<0?doc.getParagraphCount(out.sec)-1:0;}
+ else return null;
+ out.offset=direction<0?len(out):0;return out;
+}
 function memoList(d=doc){
  if(typeof d.getMemoList!=='function')throw new Error('메모 엔진이 필요해요. 최신 빌드로 업데이트해 주세요.');
  return checked(d.getMemoList());
@@ -100,6 +108,7 @@ async function operation(op,a){await ready;
  if(op==='open'){if(doc){doc.free();doc=null;}password=typeof a.password==='string'?a.password:null;const b=new Uint8Array(a.bytes);try{doc=openBytes(b);}catch(e){password=null;throw openError(e);}savedBytes=b;fixPictureSizes();fresh();savedText=text();return {...meta(true),encrypted:password!=null};}
  if(!doc)throw new Error('먼저 문서를 열어 주세요.');
  if(op==='page'){if(a.index<0||a.index>=doc.pageCount())throw new Error('페이지를 찾을 수 없어요.');const svg=doc.renderPageSvg(a.index);if(svg.length>64*1024*1024)throw new Error('이 페이지의 그림이 너무 복잡해요.');return {svg};}
+ if(op==='adjacent'){if(!selected)throw new Error('편집할 문장을 눌러 주세요.');const next=adjacent(selected,a.direction<0?-1:1);if(next){selected=next;if(a.atStart)selected.offset=0;}else selected.offset=a.direction<0?0:len(selected);return selection();}
  if(op==='navigate'){const sec=a.edge==='end'?doc.getSectionCount()-1:0,para=a.edge==='end'?doc.getParagraphCount(sec)-1:0;selected={sec,para,offset:0};if(a.edge==='end')selected.offset=len(selected);return selection();}
  if(op==='select'){selected=normalHit(JSON.parse(doc.hitTest(a.page,a.x,a.y)));return selection();}
  if(op==='change'){
@@ -121,16 +130,18 @@ async function operation(op,a){await ready;
    mark(false);typing={ident:id,rev,last:now,start:group?typing.start:now};return {...meta(),selection:selection()};}
   catch(e){rollback();throw e;}
  }
- if(op==='split'||op==='paste'||op==='merge'){
+ if(op==='split'||op==='paste'||op==='merge'||op==='mergeNext'){
   if(!selected)throw new Error('편집할 문장을 눌러 주세요.');
   if(a.ident!=null&&a.ident!==ident(selected))return {...meta(),selection:selection(),stale:true};
   const c=selected,prev=range(c),start=[...prev.slice(0,a.start||0)].length,end=[...prev.slice(0,a.end??a.start??0)].length;
   if(op!=='merge'&&([...prev].slice(start,end).includes(OBJ)||String(a.text||'').includes(OBJ)))throw new Error('표·그림 같은 개체는 여기서 지우거나 넣을 수 없어요.');
+  if(op==='mergeNext'&&!adjacent(c,1))return {...meta(),selection:selection()};
   if(op==='merge'&&(inCell(c)?c.p:c.para)===0)return {...meta(),selection:selection()};
   typing=null;takeSnapshot();try{
    // One pagination for the whole command: a 50-paragraph paste went from ~2.6s to ~45ms with identical layout.
    doc.beginBatch();try{
-    if(op==='merge')relocate(c,checked(c.path?doc.mergeParagraphInCellByPath(c.sec,c.para,c.path):inCell(c)?doc.mergeParagraphInCell(c.sec,c.para,c.ctrl,c.cell,c.p):doc.mergeParagraph(c.sec,c.para)));
+    if(op==='mergeNext')Object.assign(c,adjacent(c,1));
+    if(op==='merge'||op==='mergeNext')relocate(c,checked(c.path?doc.mergeParagraphInCellByPath(c.sec,c.para,c.path):inCell(c)?doc.mergeParagraphInCell(c.sec,c.para,c.ctrl,c.cell,c.p):doc.mergeParagraph(c.sec,c.para)));
     else{
      const lines=(op==='split'?'\n':String(a.text)).replace(/\r\n?/g,'\n').split('\n');if(lines.length>200||String(a.text||'').length>100000)throw new Error('붙여넣을 내용이 너무 길어요.');
      replace(c,start,end-start,lines[0]);c.offset=start+[...lines[0]].length;
