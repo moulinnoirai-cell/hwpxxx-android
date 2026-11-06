@@ -100,6 +100,7 @@ async function operation(op,a){await ready;
  if(op==='open'){if(doc){doc.free();doc=null;}password=typeof a.password==='string'?a.password:null;const b=new Uint8Array(a.bytes);try{doc=openBytes(b);}catch(e){password=null;throw openError(e);}savedBytes=b;fixPictureSizes();fresh();savedText=text();return {...meta(true),encrypted:password!=null};}
  if(!doc)throw new Error('먼저 문서를 열어 주세요.');
  if(op==='page'){if(a.index<0||a.index>=doc.pageCount())throw new Error('페이지를 찾을 수 없어요.');const svg=doc.renderPageSvg(a.index);if(svg.length>64*1024*1024)throw new Error('이 페이지의 그림이 너무 복잡해요.');return {svg};}
+ if(op==='navigate'){const sec=a.edge==='end'?doc.getSectionCount()-1:0,para=a.edge==='end'?doc.getParagraphCount(sec)-1:0;selected={sec,para,offset:0};if(a.edge==='end')selected.offset=len(selected);return selection();}
  if(op==='select'){selected=normalHit(JSON.parse(doc.hitTest(a.page,a.x,a.y)));return selection();}
  if(op==='change'){
   if(!selected)throw new Error('편집할 문장을 눌러 주세요.');

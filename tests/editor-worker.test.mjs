@@ -45,3 +45,28 @@ test('table text paste stays in the cell; merged ranges expand before joining',a
  await run('tableMerge',{ident:c.ident,first:t.cells.find(x=>x.row===0).cellIdx,last:bottom.cellIdx});
  await run('export',{format:'hwpx'});
 });
+test('overlapping memo / invalid formats / oversized paste fail without losing undo',async()=>{
+ let c=await open('hwpx');const rg={ident:c.ident,start:0,end:3};
+ await run('char',{...rg,props:{bold:true}});await run('undo');
+ await assert.rejects(run('char',{...rg,props:{ratios:Array(7).fill(999)}}));
+ assert.equal((await run('redo')).dirty,true);
+ await run('memoAdd',{...rg,author:'A',text:'保護한 메모😀'});
+ await assert.rejects(run('memoAdd',{...rg,author:'B',text:'overlap'}));assert.equal((await run('memos')).length,1);
+ await assert.rejects(run('paste',{...rg,text:Array(202).fill('row').join('\n')}));assert.equal((await run('memos'))[0].text,'保護한 메모😀');
+ await assert.rejects(run('change',{ident:c.ident,text:'x'.repeat(100001)}));
+ await assert.rejects(run('char',{ident:'stale-paragraph',start:0,end:3,props:{italic:true}}));
+ await run('export',{format:'hwpx'});
+});
+test('Unicode multiline paste, undo branching and document navigation',async()=>{
+ let c=await open('hwpx');const original=c.text;
+ let r=await run('paste',{ident:c.ident,start:0,end:0,text:'마우스😀\r\n두 번째\n마지막'});assert(r.selection.text.startsWith('마지막'));
+ await run('undo');assert.equal((await select()).text,original);await run('redo');
+ c=await run('navigate',{edge:'start'});assert(c.text.startsWith('마우스😀'));c=await run('navigate',{edge:'end'});assert.equal(c.offset,[...c.text].length);
+ await run('undo');c=await select();await run('change',{ident:c.ident,text:c.text+' 새 갈래',offset:0});assert.equal((await run('redo')).canRedo,false);
+ await run('export',{format:'hwpx'});
+});
+test('saving wrong bytes is refused and cancellation returns last successful disk baseline',async()=>{
+ let c=await open('hwpx');const original=c.text;await run('change',{ident:c.ident,text:c.text+' unsaved'});
+ const ex=await run('export',{format:'hwpx'}),bad=new Uint8Array(ex.bytes);bad[0]^=1;
+ await assert.rejects(run('saved',{bytes:bad}));await run('cancel');assert.equal((await select()).text,original);
+});

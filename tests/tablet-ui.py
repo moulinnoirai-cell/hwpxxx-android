@@ -47,6 +47,20 @@ with sync_playwright() as pw:
         editor.evaluate('(t)=>{t.focus();t.setSelectionRange(0,3);t.dispatchEvent(new Event("select",{bubbles:true}));}')
         page.wait_for_timeout(180)
         def click(a):page.locator('[data-action="'+a+'"]').click()
+        # DeX input: actual mouse wheel and physical-key events, no viewport magnification.
+        z=page.locator('#pages')
+        old_zoom=z.evaluate('(e)=>parseFloat(e.style.width)')
+        editor.click()
+        assert z.evaluate('(e)=>parseFloat(e.style.width)')==old_zoom
+        b=page.locator('.page').first.bounding_box();page.mouse.move(b['x']+100,b['y']+100)
+        page.keyboard.down('Control');page.mouse.wheel(0,-120);page.keyboard.up('Control');page.wait_for_timeout(100)
+        assert z.evaluate('(e)=>parseFloat(e.style.width)')>old_zoom
+        assert page.evaluate('visualViewport.scale')==1
+        page.keyboard.press('Control+0');assert z.evaluate('(e)=>parseFloat(e.style.width)')==100
+        page.keyboard.press('Control+-');assert z.evaluate('(e)=>parseFloat(e.style.width)')<100
+        page.keyboard.press('Control+0')
+        editor.evaluate('(t)=>{t.focus();t.setSelectionRange(0,3);t.dispatchEvent(new Event("select",{bubbles:true}));}')
+        page.wait_for_timeout(180)
         click('tb-italic');page.wait_for_timeout(250)
         click('tb-char')
         page.locator('#fmt-spacings').fill('3');page.locator('#fmt-ratios').fill('95');click('tb-char-metrics')

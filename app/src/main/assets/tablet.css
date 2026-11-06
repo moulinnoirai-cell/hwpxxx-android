@@ -51,3 +51,8 @@
 #hwp-app .copy-cell{border:1px solid var(--line);border-radius:10px;margin:12px 0;padding:8px;font-size:12px}
 #hwp-app .copy-cell label{display:flex;align-items:center;gap:8px;min-height:44px}
 #hwp-app .copy-cell input{width:20px;height:20px;accent-color:var(--brand)}
+
+#hwp-app .zoom-tools{display:flex;align-items:center;justify-content:center;gap:8px;padding:4px;border-bottom:1px solid var(--line);order:0}
+#hwp-app .zoom-tools .chip{min-height:36px;min-width:36px}
+#hwp-app #document-zoom{min-width:48px;text-align:center;font-variant-numeric:tabular-nums}
+@media(pointer:fine){#hwp-app .reader.is-editing .edit-layer{touch-action:auto}#hwp-app .tool{cursor:pointer}}
