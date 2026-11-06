@@ -33,6 +33,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
   sh('mkdir','-p',dir);for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
+  for(const f of fs.readdirSync('.qa/fixtures'))adb('push',`.qa/fixtures/${f}`,`${dir}/${f}`);
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
   await start();
   await record('fresh install: access denied shows onboarding, not files',async()=>{await a('allow').waitFor();assert.equal(await a('open').count(),0);});
@@ -43,6 +44,15 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    const b=sw.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));sh('input','keyevent','4');await until(()=>a('open').count());
   });
   await record('offline corrupt file error returns to a usable library',async()=>{await page.locator('#search').fill('qa-corrupt');await a('open').first().click();await page.locator('#sheet-title').filter({hasText:'작업을 완료하지 못했어요'}).waitFor();await click('close');await page.locator('#search').fill('');});
+  for(const format of ['hwp','hwpx'])await record(`${format}: password cancel, wrong password, correct password and encrypted save`,async()=>{
+   const name=`qa-locked.${format}`;await page.locator('#search').fill(name);await a('open').first().click();await page.locator('#doc-password').waitFor();await click('close');
+   await a('open').first().click();await page.locator('#doc-password').fill('wrong');await click('pw-open');await page.getByText('암호가 맞지 않아요. 다시 입력해 주세요.').waitFor();
+   await page.locator('#doc-password').fill('qa-only-2026');await click('pw-open');await page.locator('.page img').first().waitFor();await edit();await changed((await page.locator('#text-editor').inputValue())+' ENCRYPTED');await save();await library();
+   await a('open').first().click();await page.locator('#doc-password').waitFor();assert.equal(await page.locator('#doc-password').inputValue(),'');await page.locator('#doc-password').fill('qa-only-2026');await click('pw-open');await page.locator('.page img').first().waitFor();await edit();assert((await page.locator('#text-editor').inputValue()).includes('ENCRYPTED'));await library();
+  });
+  await record('long document: lazy pages, PageDown and Ctrl+End after editing',async()=>{
+   await open('qa-long.hwpx');assert(await page.locator('.page').count()>5);await edit();await page.keyboard.press('PageDown');await page.keyboard.press('Control+End');const value=await page.locator('#text-editor').inputValue();assert(value.length>0);await page.keyboard.press('Control+Home');assert((await page.locator('#text-editor').inputValue()).startsWith('1.'));await library();
+  });
   await record('search miss, clear search and favorite survive restart',async()=>{
    await page.locator('#search').fill('no-such-document');assert.equal(await a('open').count(),0);await click('clear');
    const f=page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 추가',exact:true});await f.click();assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');
@@ -57,7 +67,24 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
     await library();if(fmt==='hwp')assert(sh('ls',dir).includes('qa-edit_백업_'));
    });
   }
+  await record('memo keyboard confirmation, native disk roundtrip and deletion',async()=>{
+   await open('qa-edit.hwpx');await edit();const t=page.locator('#text-editor');await t.press('Home');await t.press('Shift+ArrowRight');await t.press('Shift+ArrowRight');
+   await click('tb-memo');await click('memo-new');await page.locator('#memo-text').fill('DeX 메모 <script>😀');await page.locator('#memo-text').press('Control+Enter');await closed();assert.equal(await page.locator('.memo-card').count(),1);await save();await library();
+   await open('qa-edit.hwpx');await edit();await click('tb-memo');assert((await page.locator('.memo-card').innerText()).includes('DeX 메모 <script>😀'));
+   await click('memo-remove');await click('close');assert.equal(await page.locator('.memo-card').count(),1);await click('memo-remove');await click('memo-delete');await closed();assert.equal(await page.locator('.memo-card').count(),0);await save();await library();
+  });
+  await record('Ctrl+Shift+S, duplicate-name refusal and native save-as',async()=>{
+   await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' COPY');const old=await hash('qa-edit.hwpx');await page.keyboard.press('Control+Shift+s');
+   await page.locator('#filename').fill('duplicate');await click('folder-confirm');await page.getByText(/같은 이름의 파일/).waitFor();assert.equal(await hash('qa-edit.hwpx'),old);
+   await page.locator('#filename').fill('qa-copy');await click('folder-confirm');await closed();assert(sh('ls',dir).includes('qa-copy.hwpx'));assert.equal(await hash('qa-edit.hwpx'),old);await library();
+  });
+  await record('native PDF creation and folder creation/move preserve the document',async()=>{
+   await page.locator('#search').fill('qa-copy');await a('open').first().click({button:'right'});await click('pdf');await page.locator('#filename').fill('qa-output');await click('folder-confirm');await closed();assert(sh('head','-c','5',`${dir}/qa-output.pdf`).startsWith('%PDF-'));
+   const old=await hash('qa-copy.hwpx');await a('open').first().click({button:'right'});await click('move');await click('folder-new');await page.locator('#new-folder').fill('moved');await click('folder-create');await page.getByText('moved',{exact:true}).first().waitFor();await click('folder-confirm');await closed();assert.equal(await hash('moved/qa-copy.hwpx'),old);assert(!sh('ls',dir).split('\n').includes('qa-copy.hwpx'));
+  });
+  await record('dark theme applies and remains usable with mouse',async()=>{await click('settings');await page.locator('[data-action="set-theme"][data-value="dark"]').click();await click('close');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');});
   await open('qa-edit.hwpx');await edit();
+  await record('Android input dispatcher types through the installed WebView',async()=>{await page.locator('#text-editor').focus();sh('input','text','DEX_OS_KEYS');await until(async()=>(await page.locator('#text-editor').inputValue()).includes('DEX_OS_KEYS'));});
   await record('DeX: clicking text never zooms; Ctrl+wheel zooms only document',async()=>{
    const before=await page.locator('#pages').evaluate(e=>parseFloat(e.style.width));await page.locator('#text-editor').click();assert.equal(await page.locator('#pages').evaluate(e=>parseFloat(e.style.width)),before);
    const p=await page.locator('.page').first().boundingBox();await page.mouse.move(p.x+200,p.y+150);await page.keyboard.down('Control');await page.mouse.wheel(0,-120);await page.keyboard.up('Control');
@@ -85,14 +112,14 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    adb('push','tests/fixtures/blank.hwpx',`${dir}/qa-edit.hwpx`);const external=await hash('qa-edit.hwpx');await click('save');await click('save-yes');await page.getByText(/다른 앱에서 문서가 바뀌었어요/).waitFor();assert.equal(await hash('qa-edit.hwpx'),external);await click('close');await library();
   });
   await record('rename rejects invalid names and collisions without losing files',async()=>{
-   await page.locator('#search').fill('duplicate');await a('open').first().click({button:'right'});await click('rename');await page.locator('#rename').fill('../bad');await click('rename-confirm');assert(await page.locator('#operation-error').innerText());await page.locator('#rename').fill('qa-edit');await click('rename-confirm');await until(async()=>!!(await page.locator('#operation-error').innerText()));assert(sh('ls',dir).includes('duplicate.hwpx'));await click('close');
+   await page.locator('#search').fill('duplicate');await a('open').first().click({button:'right'});await click('rename');await page.locator('#rename').fill('../bad');await click('rename-confirm');assert(await page.locator('#operation-error').innerText());await page.locator('#rename').fill('qa-edit');await click('rename-confirm');await page.locator('#operation-error').filter({hasText:/같은 이름/}).waitFor();assert(sh('ls',dir).includes('duplicate.hwpx'));await click('close');
   });
   await record('font scale and small DeX-like window retain controls',async()=>{
    sh('settings','put','system','font_scale','1.5');await open('qa-table.hwpx');await edit();assert(await a('save-as').isVisible());sh('wm','size','1400x1000');await pause(1000);assert(await a('save-as').isVisible());assert(await page.locator('#text-editor').isVisible());sh('wm','size','2560x1600');sh('settings','put','system','font_scale','1.0');await pause(700);await library();
   });
   await record('saved documents persist after process death; unsaved bytes never touch disk',async()=>{
    await open('duplicate.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' SAVED');await save();const disk=await hash('duplicate.hwpx');
-   await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk);await start();await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
+   await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk);await start();await page.locator('#search').fill('qa-edit.hwpx');assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
  }catch(e){checks.push({name:'failure',passed:false,error:e.stack});console.error(e);if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}

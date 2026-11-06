@@ -81,6 +81,7 @@ jobs:
         with:
           path: .build/engine
           key: ${{ steps.memo-engine.outputs.cache-primary-key }}
+      - run: node tests/build-qa-fixtures.mjs
       - name: Document worker regression tests
         run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
       - name: File store regression tests
@@ -95,6 +96,10 @@ jobs:
           python tests/tablet-ui.py
       - name: Build installable debug and unsigned release APKs
         run: bash gradlew assembleDebug assembleRelease lintRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-test-fixtures
+          path: .qa/fixtures/*
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -114,7 +119,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        api: [30, 35]
+        api: [30, 33, 35]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -127,6 +132,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: hwpxxx-android-0.3.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-test-fixtures
+          path: .qa/fixtures
       - run: npm install --no-save --package-lock=false playwright
       - name: Enable KVM
         run: |
@@ -145,6 +154,7 @@ jobs:
           heap-size: 512M
           disk-size: 4096M
           disable-animations: true
+          enable-hw-keyboard: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: node tests/android-emulator.cjs
       - uses: actions/upload-artifact@v4
