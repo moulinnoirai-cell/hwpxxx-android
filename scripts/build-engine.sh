@@ -13,8 +13,8 @@ const lock=JSON.parse(fs.readFileSync('config/android-engine.json'));
 const sha=crypto.createHash('sha256').update(fs.readFileSync(lock.patch)).digest('hex');
 if(sha!==lock.patchSha256)throw new Error('Engine patch checksum mismatch');
 if(execFileSync('git',['-C',process.argv[2],'rev-parse','HEAD'],{encoding:'utf8'}).trim()!==lock.commit)throw new Error('Upstream commit mismatch');
-execFileSync('git',['-C',process.argv[2],'apply','--check',fs.realpathSync(lock.patch)],{stdio:'inherit'});
-execFileSync('git',['-C',process.argv[2],'apply',fs.realpathSync(lock.patch)],{stdio:'inherit'});
+execFileSync('git',['-C',process.argv[2],'apply','--check','--include=src/**',fs.realpathSync(lock.patch)],{stdio:'inherit'});
+execFileSync('git',['-C',process.argv[2],'apply','--include=src/**',fs.realpathSync(lock.patch)],{stdio:'inherit'});
 JS
 cd "$engine_dir"
 cargo build --target wasm32-unknown-unknown --lib --release --locked
