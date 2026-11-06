@@ -1,6 +1,8 @@
 // Shared conversions use the same units and bounds as hwpxxx desktop 1.6.1.
 export const CHAR_KEYS=['bold','italic','underline','fontSize','textColor','shadeColor','spacings','ratios'];
-export const PARA_KEYS=['alignment','lineSpacing','lineSpacingType','spacingBefore','spacingAfter','headType','numberingId','paraLevel','styleId'];
+export const COPY_CHAR_KEYS=[...CHAR_KEYS,'strikethrough','emboss','engrave','fontId','fontIds','underlineType','underlineColor','outlineType','shadowType','shadowColor','shadowOffsetX','shadowOffsetY','strikeColor','subscript','superscript','relativeSizes','charOffsets','emphasisDot','underlineShape','strikeShape','kerning'];
+export const CELL_ATTR_KEYS=['paddingLeft','paddingRight','paddingTop','paddingBottom','applyInnerMargin','verticalAlign','textDirection','isHeader','cellProtect','fieldName','editableInForm'];
+export const PARA_KEYS=['alignment','lineSpacing','lineSpacingType','spacingBefore','spacingAfter','headType','numberingId','paraLevel','marginLeft','marginRight','indent','widowOrphan','keepWithNext','keepLines','pageBreakBefore','fontLineHeight','singleLine','autoSpaceKrEn','autoSpaceKrNum','verticalAlign','englishBreakUnit','koreanBreakUnit','borderConnect','borderIgnoreMargin'];
 export const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
 export function numeric(value,min,max){
  const n=Number(value);if(value===''||!Number.isFinite(n))throw new Error('숫자를 입력해 주세요.');return clamp(n,min,max);
@@ -9,7 +11,8 @@ export const spacingToRaw=pt=>Math.round(numeric(pt,0,1000)*200);
 export const spacingToPt=px=>Math.round(px*75/200*10)/10;
 export function paragraphForWrite(p){
  const out={};for(const k of PARA_KEYS)if(p[k]!=null)out[k]=p[k];
- for(const k of ['spacingBefore','spacingAfter'])if(out[k]!=null)out[k]=Math.round(out[k]*75);
+ for(const k of ['spacingBefore','spacingAfter'])if(out[k]!=null)out[k]=Math.round(out[k]*75/20)*20;
+ for(const k of ['marginLeft','marginRight','indent'])if(out[k]!=null)out[k]=Math.round(out[k]*150);
  return out;
 }
 export function memoTarget(m){

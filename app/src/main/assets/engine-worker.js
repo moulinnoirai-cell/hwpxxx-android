@@ -1,4 +1,4 @@
-import {CHAR_KEYS,PARA_KEYS,spacingToRaw,spacingToPt,paragraphForWrite,memoTarget,expandCellRange} from './editor-features.mjs';
+import {CHAR_KEYS,COPY_CHAR_KEYS,CELL_ATTR_KEYS,PARA_KEYS,spacingToRaw,spacingToPt,paragraphForWrite,memoTarget,expandCellRange} from './editor-features.mjs';
 import init,{HwpDocument} from './engine/rhwp.js';
 let doc=null,selected=null,savedBytes=null,savedText='',history=[],future=[];
 // Dirty tracking: every successful edit gets a new revision; snapshots carry the revision they restore.
@@ -44,7 +44,7 @@ function split(c,off){const r=checked(c.path?doc.splitParagraphInCellByPath(c.se
 // The redo list is dropped only when a command succeeds (mark), so a refused or failed command keeps it.
 function takeSnapshot(range=null){const limit=Math.min(40,Math.max(1,doc.snapshotCapacity()-2-future.length));while(history.length>=limit){const x=history.shift();doc.discardSnapshot(x.id);}history.push({id:doc.saveSnapshot(),selected:selected?{...selected}:null,rev,fmt,range});}
 const editorRange=a=>Number.isInteger(a?.start)&&Number.isInteger(a?.end)?{start:a.start,end:a.end}:null;
-function rollback(){const s=history.pop();try{checked(doc.restoreSnapshot(s.id));selected=s.selected;}finally{doc.discardSnapshot(s.id);}}
+function rollback(){const s=history.pop();try{checked(doc.restoreSnapshot(s.id));selected=s.selected;rev=s.rev;fmt=s.fmt;dirtyRev=-1;}finally{doc.discardSnapshot(s.id);}}
 function mark(format){rev=++revSeq;if(format)fmt=true;for(const x of future)doc.discardSnapshot(x.id);future=[];}
 function fresh(){selected=null;history=[];future=[];fmtTargets=[];typing=null;painter=null;exported=null;rev=savedRev=++revSeq;fmt=false;dirtyRev=-1;sentCount=-1;}
 // Consecutive typing in one paragraph is one undo step (gaps under 1.5s, at most 8s per step).
@@ -80,6 +80,7 @@ function sameTarget(a){if(!selected)throw new Error('편집할 문장을 눌러 
 const points=(s,e)=>[...new Set([s,Math.floor((s+e-1)/2),e-1])];
 function verifyFormats(v){const lost=new Error('저장한 문서에서 서식을 다시 확인하지 못했어요. 원본은 변경하지 않았어요.');for(const t of fmtTargets){
  if(t.kind==='char'){for(const o of points(t.s,t.e)){let x;try{x=charAt(doc,t.c,o);}catch{break;}let y;try{y=charAt(v,t.c,o);}catch{throw lost;}for(const k of CHAR_KEYS)if(!same(x[k],y[k]))throw new Error('저장한 문서에서 글자 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}
+ else if(t.kind==='cell'){let x;try{x=checked(doc.getCellOwnProperties(t.c.sec,t.c.para,t.c.ctrl,t.c.cell));}catch{continue;}const y=checked(v.getCellOwnProperties(t.c.sec,t.c.para,t.c.ctrl,t.c.cell));for(const k of t.keys)if(!same(x[k],y[k]))throw lost;}
  else{const r=paraRef(t.c);if(!r)continue;let x;try{x=paraGet(doc,r);}catch{continue;}let y;try{y=paraGet(v,r);}catch{throw lost;}for(const k of PARA_KEYS)if(!same(x[k],y[k]))throw new Error('저장한 문서에서 문단 서식이 유지되지 않았어요. 원본은 변경하지 않았어요.');}}}
 function openError(e){const m=String(e?.message??e);if(/비밀번호가 필요한/.test(m))return new Error('PASSWORD_REQUIRED');if(/비밀번호가 일치하지/.test(m))return new Error('PASSWORD_WRONG');return e;}
 function memoList(d=doc){
@@ -193,20 +194,29 @@ async function operation(op,a){await ready;
    mark(true);return {...meta(),selection:selection(),memos:decoratedMemos()};
   }catch(e){rollback();throw e;}
  }
+
  if(op==='copyFormat'){
-  sameTarget(a);const {s,n}=span(a),c=charAt(doc,selected,Math.min(s,Math.max(0,n-1))),r=paraRef(selected);
+  sameTarget(a);const {s,n}=span(a),c=charAt(doc,selected,Math.min(s,Math.max(0,n-1))),r=paraRef(selected),hasCell=a.cellAttr||a.cellBorder;
   if(!['char','para','both','style'].includes(a.scope))throw new Error('복사할 모양을 골라 주세요.');
-  if(a.scope!=='char'&&!r)throw new Error('겹친 표의 문단 모양은 아직 복사할 수 없어요.');
-  painter={char:a.scope==='char'||a.scope==='both'?Object.fromEntries([...CHAR_KEYS,'fontIds','fontId'].filter(k=>c[k]!=null).map(k=>[k,c[k]])):{},para:a.scope==='para'||a.scope==='both'?paragraphForWrite(paraGet(doc,r)):a.scope==='style'?{styleId:paraGet(doc,r).styleId}:{}};
-  if(a.scope==='style'&&painter.para.styleId==null){painter=null;throw new Error('문단 스타일을 읽을 수 없어요.');}
+  if((a.scope!=='char'||hasCell)&&!r)throw new Error('겹친 표의 문단·셀 모양은 아직 복사할 수 없어요.');
+  if(hasCell&&r.cell==null)throw new Error('셀 모양은 표 안에서 복사해 주세요.');
+  const includeBody=!hasCell||!a.cellOnly,copyChar=includeBody&&(a.scope==='char'||a.scope==='both');
+  painter={char:copyChar?Object.fromEntries(COPY_CHAR_KEYS.filter(k=>c[k]!=null).map(k=>[k,c[k]])):{},para:includeBody&&(a.scope==='para'||a.scope==='both')?paragraphForWrite(paraGet(doc,r)):{},cell:null,styleId:null};
+  if(copyChar&&painter.char.fontIds==null&&painter.char.fontId==null&&c.fontFamily)painter.char.fontId=doc.findOrCreateFontId(c.fontFamily);
+  if(includeBody&&a.scope==='style'){const style=checked(r.cell!=null?doc.getCellStyleAt(r.sec,r.para,r.ctrl,r.cell,r.p):doc.getStyleAt(r.sec,r.para));painter.styleId=style.id;}
+  if(hasCell){const props=checked(doc.getCellOwnProperties(r.sec,r.para,r.ctrl,r.cell)),keys=[...(a.cellAttr?CELL_ATTR_KEYS:[]),...(a.cellBorder?['borderFillId']:[])];painter.cell=Object.fromEntries(keys.filter(k=>props[k]!=null).map(k=>[k,props[k]]));}
   return true;
  }
  if(op==='pasteFormat'){
   sameTarget(a);if(!painter)throw new Error('먼저 모양을 복사해 주세요.');const {s,e}=span(a),r=paraRef(selected),hasChar=Object.keys(painter.char).length,hasPara=Object.keys(painter.para).length;
-  if(hasChar&&e<=s)throw new Error('모양을 적용할 글자를 선택해 주세요.');if(hasPara&&!r)throw new Error('겹친 표의 문단 모양은 아직 바꿀 수 없어요.');
+  if(hasChar&&e<=s)throw new Error('모양을 적용할 글자를 선택해 주세요.');if((hasPara||painter.styleId!=null)&&!r)throw new Error('겹친 표의 문단 모양은 아직 바꿀 수 없어요.');
+  if(painter.cell&&(!r||r.cell==null))throw new Error('셀 모양을 적용할 표 칸을 눌러 주세요.');
   typing=null;takeSnapshot(editorRange(a));try{
    if(hasChar){applyChar(selected,s,e,JSON.stringify(painter.char));fmtTargets.push({kind:'char',c:{...selected},s,e});}
-   if(hasPara){paraSet(r,JSON.stringify(painter.para));fmtTargets.push({kind:'para',c:{...selected}});}
+   if(hasPara)paraSet(r,JSON.stringify(painter.para));
+   if(painter.styleId!=null)checked(r.cell!=null?doc.applyCellStyle(r.sec,r.para,r.ctrl,r.cell,r.p,painter.styleId):doc.applyStyle(r.sec,r.para,painter.styleId));
+   if(hasPara||painter.styleId!=null)fmtTargets.push({kind:'para',c:{...selected}});
+   if(painter.cell){checked(doc.setCellProperties(r.sec,r.para,r.ctrl,r.cell,JSON.stringify(painter.cell)));fmtTargets.push({kind:'cell',c:{...r},keys:Object.keys(painter.cell)});}
    mark(true);painter=null;return {...meta(),selection:selection(),rects:rects(selected,s,e)};
   }catch(e){rollback();throw e;}
  }

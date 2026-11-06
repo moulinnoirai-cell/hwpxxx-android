@@ -29,3 +29,19 @@ test('formatting, 10pt paragraph gap, copy format and save races preserve edits'
  const ex=await run('export',{format:'hwpx'});await run('change',{ident:c.ident,text:c.text+' 저장 중 추가',offset:0});
  assert.equal((await run('saved',{bytes:ex.bytes})).dirty,true);const ex2=await run('export',{format:'hwpx'});assert.equal((await run('saved',{bytes:ex2.bytes})).dirty,false);
 });
+test('table text paste stays in the cell; merged ranges expand before joining',async()=>{
+ await run('open',{bytes:fs.readFileSync(new URL('fixtures/table.hwpx',import.meta.url))});
+ let c=await run('select',{page:0,x:130,y:140});
+ let t=await run('tableState',{ident:c.ident});assert.equal(t.cells.length,4);
+ const cell=t.cells[0];
+ c=await run('select',{page:cell.pageIndex,x:cell.x+5,y:cell.y+5});
+ let r=await run('paste',{ident:c.ident,start:0,end:0,text:'칸 안\n붙여넣기'});assert.match(r.selection.text,/붙여넣기/);assert.match(r.selection.ident,/path|\[/);
+ await run('undo');
+ c=await run('select',{page:cell.pageIndex,x:cell.x+5,y:cell.y+5});t=await run('tableState',{ident:c.ident});
+ const top=t.cells.filter(x=>x.row===0).sort((a,b)=>a.col-b.col);
+ await run('tableMerge',{ident:c.ident,first:top[0].cellIdx,last:top.at(-1).cellIdx});
+ c=await run('select',{page:cell.pageIndex,x:cell.x+5,y:cell.y+5});t=await run('tableState',{ident:c.ident});assert(t.cells.some(x=>x.colSpan===2));
+ const bottom=t.cells.find(x=>x.row===1&&x.col===0);
+ await run('tableMerge',{ident:c.ident,first:t.cells.find(x=>x.row===0).cellIdx,last:bottom.cellIdx});
+ await run('export',{format:'hwpx'});
+});

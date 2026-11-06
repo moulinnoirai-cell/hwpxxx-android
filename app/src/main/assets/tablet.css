@@ -48,3 +48,6 @@
  #hwp-app .reader.is-editing .edit-tools .tool{min-height:44px;font-size:10px}
  #hwp-app .reader.is-editing .edit-tools .tool svg{width:18px;height:18px}
 }
+#hwp-app .copy-cell{border:1px solid var(--line);border-radius:10px;margin:12px 0;padding:8px;font-size:12px}
+#hwp-app .copy-cell label{display:flex;align-items:center;gap:8px;min-height:44px}
+#hwp-app .copy-cell input{width:20px;height:20px;accent-color:var(--brand)}
