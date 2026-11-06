@@ -12,6 +12,9 @@ async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now
 async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);await device.screenshot({path:`${qa}/${String(checks.length).padStart(2,'0')}.png`});}
 async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();}
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
+function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
+async function settingsVisible(){await until(()=>foreground().includes('AppManageExternalStorageActivity'));}
+async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));}
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
@@ -30,7 +33,7 @@ async function edit(){await click('edit');const p=page.locator('.page').first(),
 async function changed(text){const t=page.locator('#text-editor');await t.fill(text);await until(()=>a('save').isEnabled());}
 async function save(){
  await click('save');await click('save-yes');
- await page.waitForFunction(()=>document.querySelector('#overlay').hidden||['저장했어요','작업을 완료하지 못했어요'].includes(document.querySelector('#sheet-title')?.textContent));
+ await until(()=>page.evaluate(()=>document.querySelector('#overlay').hidden||['저장했어요','작업을 완료하지 못했어요'].includes(document.querySelector('#sheet-title')?.textContent)));
  if(await page.locator('#overlay').isVisible()){
   assert.equal(await page.locator('#sheet-title').innerText(),'저장했어요',await page.locator('#sheet').innerText());await click('close');
  }
@@ -54,15 +57,15 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
   await start();
   await record('fresh install: access denied shows onboarding, not files',async()=>{await a('allow').waitFor();assert.equal(await a('open').count(),0);});
-  await record('permission settings can be cancelled and revisited',async()=>{await click('allow');await pause(700);sh('input','keyevent','4');await a('allow').waitFor();});
+  await record('permission settings can be cancelled and revisited',async()=>{await click('allow');await settingsVisible();sh('input','keyevent','4');await appVisible();await a('allow').waitFor();});
   await record('grant all-files access through Android settings',async()=>{
-   await click('allow');await pause(1000);assert(sh('dumpsys','activity','activities').includes('com.android.settings'),'Android permission settings did not open');
+   await click('allow');await settingsVisible();
    let sw;for(let i=0;i<2&&!sw;i++)try{sh('rm','-f','/sdcard/window.xml');sh('uiautomator','dump','--compressed','/sdcard/window.xml');const xml=sh('cat','/sdcard/window.xml');sw=(xml.match(/<node\b[^>]*>/g)||[]).find(n=>/class="android.widget.Switch"|resource-id="[^"]*switch_widget"/.test(n));}catch{}
    if(sw){const b=sw.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
    else{permissionGrant='adb-appops; Settings navigation verified, UiAutomator root unavailable';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
    let mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');
    if(!mode.includes('allow')){permissionGrant+='; switch did not grant, normalized with adb-appops';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');}
-   console.log('PERMISSION_OS',mode);sh('input','keyevent','4');
+   console.log('PERMISSION_OS',mode);sh('input','keyevent','4');await appVisible();
    const nativeStatus=await page.evaluate(()=>new Promise(resolve=>{const old=window.NativeReply,id=900001;const timer=setTimeout(()=>{window.NativeReply=old;resolve('native status timeout');},5000);window.NativeReply=(rid,r)=>{if(rid===id){clearTimeout(timer);window.NativeReply=old;resolve(r);}else old(rid,r);};OfflineNative.postMessage(JSON.stringify({id,op:'status',args:{}}));}));console.log('PERMISSION_NATIVE',JSON.stringify(nativeStatus));
    await until(()=>a('open').count());
   });
