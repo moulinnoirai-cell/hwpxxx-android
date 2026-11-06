@@ -239,7 +239,7 @@ let tapStart=null;
 root.addEventListener('pointerdown',e=>{if(!e.target.closest('.page')||e.target.closest('textarea'))return;tapStart={x:e.clientX,y:e.clientY,t:Date.now()};});
 root.addEventListener('pointerup',async e=>{const start=tapStart;tapStart=null;if(!start||state.busy||Date.now()-start.t>350||Math.hypot(e.clientX-start.x,e.clientY-start.y)>10||$('.reader-scroll')?.dataset.pinching||!overlay.hidden)return;const page=e.target.closest('.page');if(!page)return;if(state.editing){showMenus(true);const i=Number(page.dataset.page),r=page.getBoundingClientRect(),s=state.meta.sizes[i];try{await chooseText(i,(e.clientX-r.left)*s.width/r.width,(e.clientY-r.top)*s.height/r.height);}catch(x){errorDialog(x.message);}}else showMenus(!state.menus);});
 document.addEventListener('visibilitychange',()=>{if(document.hidden){rememberPosition();persist();}});
-window.addEventListener('resize',()=>{updateRail(false);updateRail(true);updateInset(true);if(state.selection)relayoutEditor();});
+window.addEventListener('resize',()=>{updateRail(false);updateRail(true);updateInset(true);if(state.selection)relayoutEditor();renderMemoMarks();});
 // Resizes (e.g. the soft keyboard opening) only move the live editor; rebuilding it would drop focus, IME composition and unflushed text.
 function relayoutEditor(){const c=state.selection;if(!c)return;const t=$('#text-editor'),el=$(`[data-page="${c.start.pageIndex}"]`);if(t&&el&&t.parentElement===el)layoutEditor(t,c,el);else placeEditor(c);}
 // ---- Bottom edit toolbar (0.1.2): undo / redo / bold / underline / text panel / paragraph panel ----
@@ -290,7 +290,7 @@ async function formatPara(props){const id=state.selection?.ident;if(!id)return;c
 function nextSize(cur,dir){const pt=cur/100;return Math.round(Math.max(1,Math.min(96,dir>0?Math.floor(pt)+1:Math.ceil(pt)-1))*100);}
 function swatch(a,[hex,name],cur){const on=cur&&cur.toLowerCase()===hex.toLowerCase();return `<button type="button" class="swatch${on?' on':''}" data-action="tb-${a}" data-value="${hex}" aria-label="${name}" aria-pressed="${on}" style="--sw:${hex}">${on?icon('check'):''}</button>`;}
 function chip(a,v,label,on,dis=false){return `<button type="button" class="chip${on?' on':''}" data-action="tb-${a}" data-value="${v}" aria-pressed="${on}" ${dis?'disabled':''}>${label}</button>`;}
-function renderPanel(hint=''){const el=$('#edit-panel');if(!el)return;if(el.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))return;if(!state.panel){el.hidden=true;el.replaceChildren();updateInset(true);return;}el.hidden=false;
+function renderPanel(hint=''){const el=$('#edit-panel');if(!el)return;if(el.dataset.kind===state.panel&&el.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))return;el.dataset.kind=state.panel||'';if(!state.panel){el.hidden=true;el.replaceChildren();updateInset(true);return;}el.hidden=false;
  if(['memo','table','painter'].includes(state.panel)){renderFeaturePanel(el,hint);icons();updateInset(true);return;}
  if(state.panel==='char'){const c=state.fmt?.char,rg=hasRange(),size=rg&&c?c.fontSize:null,dis=rg?'':'disabled';
   el.innerHTML=`<h2 class="panel-title">글자</h2>${rg?'':`<p class="panel-hint">${esc(hint||'서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.')}</p>`}

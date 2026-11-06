@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +23,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - uses: actions/checkout@v4
         with:
@@ -73,4 +76,5 @@ jobs:
             app/build/reports/lint-results-release.html
             .qa/tablet-*.png
             app/src/main/assets/engine/build-info.json
+          include-hidden-files: true
           if-no-files-found: warn
