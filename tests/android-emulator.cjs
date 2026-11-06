@@ -10,11 +10,14 @@ const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevoca
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
 async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);await device.screenshot({path:`${qa}/${String(checks.length).padStart(2,'0')}.png`});}
-async function connect(){page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();}
+async function connect(){
+ for(let attempt=0;attempt<3;attempt++)try{page=await(await device.webView({pkg},{timeout:60000})).page();page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();return;}catch(e){if(!/closed/.test(e.message)||!appAlive()||attempt===2)throw e;console.log('CDP_ATTACH_RETRY',attempt+1);await Promise.race([device.close(),pause(5000)]);device=(await android.devices())[0];await pause(500);}
+}
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
-async function settingsVisible(){await until(()=>foreground().includes('AppManageExternalStorageActivity'));}
-async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));}
+async function settingsVisible(){await until(()=>foreground().includes('AppManageExternalStorageActivity'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('AppManageExternalStorageActivity')));await pause(700);}
+async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes(pkg)));}
+async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;sh('input','keyevent','4');await pause(1000);}await appVisible();}
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
@@ -57,7 +60,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
   await start();
   await record('fresh install: access denied shows onboarding, not files',async()=>{await a('allow').waitFor();assert.equal(await a('open').count(),0);});
-  await record('permission settings can be cancelled and revisited',async()=>{await click('allow');await settingsVisible();sh('input','keyevent','4');await appVisible();await a('allow').waitFor();});
+  await record('permission settings can be cancelled and revisited',async()=>{await click('allow');await settingsVisible();await returnFromSettings();await a('allow').waitFor();});
   await record('grant all-files access through Android settings',async()=>{
    await click('allow');await settingsVisible();
    let sw;for(let i=0;i<2&&!sw;i++)try{sh('rm','-f','/sdcard/window.xml');sh('uiautomator','dump','--compressed','/sdcard/window.xml');const xml=sh('cat','/sdcard/window.xml');sw=(xml.match(/<node\b[^>]*>/g)||[]).find(n=>/class="android.widget.Switch"|resource-id="[^"]*switch_widget"/.test(n));}catch{}
@@ -65,7 +68,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    else{permissionGrant='adb-appops; Settings navigation verified, UiAutomator root unavailable';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');}
    let mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');
    if(!mode.includes('allow')){permissionGrant+='; switch did not grant, normalized with adb-appops';sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');mode=sh('appops','get',pkg,'MANAGE_EXTERNAL_STORAGE');}
-   console.log('PERMISSION_OS',mode);sh('input','keyevent','4');await appVisible();
+   console.log('PERMISSION_OS',mode);await returnFromSettings();
    const nativeStatus=await page.evaluate(()=>new Promise(resolve=>{const old=window.NativeReply,id=900001;const timer=setTimeout(()=>{window.NativeReply=old;resolve('native status timeout');},5000);window.NativeReply=(rid,r)=>{if(rid===id){clearTimeout(timer);window.NativeReply=old;resolve(r);}else old(rid,r);};OfflineNative.postMessage(JSON.stringify({id,op:'status',args:{}}));}));console.log('PERMISSION_NATIVE',JSON.stringify(nativeStatus));
    await until(()=>a('open').count());
   });
@@ -171,6 +174,6 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk);await start();await page.locator('#search').fill('qa-edit.hwpx');assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
- }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(page)console.error('APP_DIAGNOSTIC',await page.evaluate(()=>({url:location.href,text:document.body.innerText.slice(0,5000),announce:document.querySelector('#announce')?.textContent})).catch(()=>({closed:true})));console.error('ANDROID_FOREGROUND',sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' '));if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
+ }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(page)console.error('APP_DIAGNOSTIC',await page.evaluate(()=>({url:location.href,text:document.body.innerText.slice(0,5000),announce:document.querySelector('#announce')?.textContent})).catch(()=>({closed:true})));console.error('CRASH_DIAGNOSTIC',adb('logcat','-d','-b','crash'));console.error('WEBVIEW_DIAGNOSTIC',adb('logcat','-d','-t','500').split('\n').filter(l=>/FATAL|signal [0-9]|RenderProcessGone|renderer process|Killing.*offline|chromium.* E /i.test(l)).slice(-25).join('\n'));console.error('ANDROID_FOREGROUND',sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' '));if(device)await device.screenshot({path:`${qa}/failure.png`}).catch(()=>{});if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
  finally{console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,permissionGrant,permissionRevocation,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,permissionRevocation,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));if(device)await Promise.race([device.close(),pause(5000)]);process.exit(process.exitCode||0);}
 })();

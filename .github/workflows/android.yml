@@ -137,6 +137,8 @@ jobs:
           name: android-test-fixtures
           path: .qa/fixtures
       - run: npm install --no-save --package-lock=false playwright@1.48.2
+      - name: Download official Termux for private-project integration tests
+        run: bash scripts/fetch-termux-qa.sh
       - name: Reserve disk space for emulator userdata
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk
@@ -160,7 +162,7 @@ jobs:
           disable-animations: true
           enable-hw-keyboard: true
           emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none -feature -Vulkan
-          script: node tests/legacy-webview-driver.cjs && timeout 12m node tests/android-emulator.cjs
+          script: node tests/legacy-webview-driver.cjs && node tests/android-suites.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

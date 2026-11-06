@@ -32,6 +32,8 @@ public class MainActivity extends Activity {
     private final Map<String,byte[]> blobs=new ConcurrentHashMap<>();
     private final AtomicBoolean scanStop=new AtomicBoolean();
     private FileStore store;
+    private TermuxFolders termux;
+    private long folderPickerRequest=-1;
     private List<File> roots;
     private boolean started=false, destroyed=false;
     private PdfDocument pdf; private String pdfTarget; private int pdfCount,pdfIndex;
@@ -54,7 +56,7 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onCreate(Bundle saved) {
-        super.onCreate(saved);
+        super.onCreate(saved);termux=new TermuxFolders(this);
         try {roots=volumeRoots();store=new FileStore(roots);}catch(IOException e){new AlertDialog.Builder(this).setMessage("저장공간을 확인하지 못했어요.").setPositiveButton("닫기",(d,w)->finish()).show();return;}
         web=new WebView(this);
         web.setBackgroundColor(surface());
@@ -123,9 +125,13 @@ public class MainActivity extends Activity {
                 JSONObject m=new JSONObject(message);long id=m.getLong("id");String op=m.getString("op");JSONObject a=m.optJSONObject("args");if(a==null)a=new JSONObject();final JSONObject args=a;
                 if(op.equals("cancelScan")){scanStop.set(true);reply(id,true,null);return;}
                 if(op.equals("exit")){runOnUiThread(()->finish());reply(id,true,null);return;}
+                if(op.equals("connectFolder")){runOnUiThread(()->{
+                    if(folderPickerRequest!=-1){reply(id,null,"폴더 선택을 마쳐 주세요.");return;}
+                    try{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION|Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);intent.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI,android.provider.DocumentsContract.buildDocumentUri(TermuxFolders.AUTHORITY,"/data/data/com.termux/files/home"));folderPickerRequest=id;startActivityForResult(intent,301);}catch(Exception e){folderPickerRequest=-1;reply(id,null,"폴더 선택 화면을 열지 못했어요. Termux 설치를 확인해 주세요.");}
+                });return;}
                 if(op.equals("permission")){runOnUiThread(()->{try{Intent intent=new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:"+getPackageName()));startActivity(intent);reply(id,true,null);}catch(Exception e){reply(id,null,"설정에서 hwpxxx의 모든 파일 접근을 허용해 주세요.");}});return;}
                 if(op.equals("scan"))scanStop.set(false);
-                io.execute(()->{try {if(!op.equals("status")&&!op.equals("release")&&!op.equals("abortSave")&&!op.equals("abortPdf")&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){upload=null;reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
+                io.execute(()->{try {if(!op.equals("status")&&!op.equals("release")&&!op.equals("abortSave")&&!op.equals("abortPdf")&&!op.equals("disconnectFolder")&&!op.equals("scan")&&!op.equals("read")&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){upload=null;reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
             }catch(Exception ignored){}
         }
     }
@@ -133,11 +139,12 @@ public class MainActivity extends Activity {
         String id=FileStore.sha(f.getPath().getBytes(StandardCharsets.UTF_8));documents.put(id,f);
         return obj("id",id,"name",f.getName(),"path",f.getPath(),"folder",f.getParent(),"size",f.length(),"modified",f.lastModified(),"format",FileStore.ext(f));
     }
-    private File document(String id)throws IOException {File f=documents.get(id);if(f==null)throw new IOException("문서 목록을 새로고침한 뒤 다시 선택해 주세요.");return store.resolve(f.getPath());}
+    private File document(String id)throws IOException {if(termux.find(id)!=null)throw new IOException("연결 폴더 원본은 유지해요. 다른 이름으로 저장해 주세요.");if(!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");File f=documents.get(id);if(f==null)throw new IOException("문서 목록을 새로고침한 뒤 다시 선택해 주세요.");return store.resolve(f.getPath());}
     private Object operation(String op,JSONObject a)throws Exception {
         switch(op){
-            case "status": {roots=volumeRoots();store=new FileStore(roots);JSONArray volumes=new JSONArray();for(int i=0;i<roots.size();i++)volumes.put(obj("path",roots.get(i).getPath(),"name",i==0?"내장 저장공간":"SD 카드 · "+roots.get(i).getName()));return obj("permission",Environment.isExternalStorageManager(),"volumes",volumes,"version",BuildConfig.VERSION_NAME,"engine","rhwp 0.8.7");}
+            case "status": {roots=volumeRoots();store=new FileStore(roots);JSONArray volumes=new JSONArray();for(int i=0;i<roots.size();i++)volumes.put(obj("path",roots.get(i).getPath(),"name",i==0?"내장 저장공간":"SD 카드 · "+roots.get(i).getName()));return obj("permission",Environment.isExternalStorageManager(),"connectedFolders",termux.list(),"volumes",volumes,"version",BuildConfig.VERSION_NAME,"engine","rhwp 0.8.7");}
             case "scan": return scan();
+            case "disconnectFolder":termux.disconnect(a.getString("id"));event("foldersChanged",Boolean.TRUE);return true;
             case "listDirs": {
                 File dir=store.resolve(a.getString("path"));if(!dir.isDirectory()||!dir.canRead())throw new IOException("폴더를 열 수 없어요. 접근 권한을 확인해 주세요.");
                 File[] children=dir.listFiles();if(children==null)throw new IOException("폴더 목록을 읽지 못했어요.");JSONArray result=new JSONArray();int n=0;
@@ -146,8 +153,10 @@ public class MainActivity extends Activity {
             }
             case "mkdir": {File f=store.createFolder(a.getString("parent"),a.getString("name"));return obj("path",f.getPath());}
             case "read": {
-                File f=document(a.getString("id"));byte[] data=store.read(f.getPath());FileStore.validate(data,FileStore.ext(f));
-                if(blobs.size()>=2)throw new IOException("다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.");String token=UUID.randomUUID().toString();blobs.put(token,data);return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",record(f));
+                String id=a.getString("id");TermuxFolders.Ref linked=termux.find(id);byte[] data;JSONObject meta;String format;
+                if(linked!=null){data=termux.read(linked);meta=termux.record(linked);format=linked.format;}else{File f=document(id);data=store.read(f.getPath());meta=record(f);format=FileStore.ext(f);}
+                FileStore.validate(data,format);
+                if(blobs.size()>=2)throw new IOException("다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.");String token=UUID.randomUUID().toString();blobs.put(token,data);return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",meta);
             }
             case "release":blobs.remove(a.getString("token"));return true;
             case "delete": {String id=a.getString("id");File f=document(id);if(!f.isFile()||!f.delete())throw new IOException("문서를 삭제하지 못했어요.");documents.remove(id);return true;}
@@ -181,7 +190,7 @@ public class MainActivity extends Activity {
             case "beginSave": {
                 // A session older than two minutes is treated as abandoned rather than blocking every later save.
                 if(upload!=null&&System.currentTimeMillis()-upload.started<120000)throw new IOException("저장 중이에요. 잠시 기다려 주세요.");
-                Upload u=new Upload();u.token=UUID.randomUUID().toString();u.sourceId=a.getString("id");File src=document(u.sourceId);u.target=store.resolve(a.getString("target")).getPath();u.replace=a.optBoolean("replace",false);u.backup=u.replace&&a.optBoolean("backup",false);u.sha=a.optString("sha","");u.length=a.getInt("length");
+                Upload u=new Upload();u.token=UUID.randomUUID().toString();u.sourceId=a.getString("id");TermuxFolders.Ref linked=termux.find(u.sourceId);File src=linked==null?document(u.sourceId):new File(linked.name);if(linked!=null&&a.optBoolean("replace",false))throw new IOException("연결 폴더 원본은 유지해요. 다른 이름으로 저장해 주세요.");u.target=store.resolve(a.getString("target")).getPath();u.replace=a.optBoolean("replace",false);u.backup=u.replace&&a.optBoolean("backup",false);u.sha=a.optString("sha","");u.length=a.getInt("length");
                 if(u.length<8||u.length>FileStore.MAX_BYTES)throw new IOException("저장할 문서가 너무 커요.");
                 if(!FileStore.ext(new File(u.target)).equals(FileStore.ext(src)))throw new IOException("원래 문서 형식을 유지해 주세요.");
                 if(u.replace&&!u.target.equals(src.getPath()))throw new IOException("원본 저장 경로가 일치하지 않아요.");
@@ -200,7 +209,7 @@ public class MainActivity extends Activity {
     }
     private Upload requireUpload(JSONObject a)throws Exception{if(upload==null||!upload.token.equals(a.getString("token")))throw new IOException("저장 세션이 만료되었어요.");return upload;}
     private Object scan()throws Exception {
-        ArrayDeque<File> dirs=new ArrayDeque<>(roots);Set<String> seen=new HashSet<>();JSONArray batch=new JSONArray();int visited=0,count=0,skipped=0;boolean limit=false;
+        ArrayDeque<File> dirs=new ArrayDeque<>(Environment.isExternalStorageManager()?roots:Collections.emptyList());Set<String> seen=new HashSet<>();JSONArray batch=new JSONArray();int visited=0,count=0,skipped=0;boolean limit=false;
         while(!dirs.isEmpty()&&!scanStop.get()) {
             File d=dirs.removeFirst();try{d=store.resolve(d.getPath());}catch(IOException e){continue;}
             if(!seen.add(d.getPath()))continue;if(++visited>50000){limit=true;break;}
@@ -218,7 +227,13 @@ public class MainActivity extends Activity {
             if(visited%25==0)event("scanProgress",obj("folders",visited,"documents",count));
         }
         if(batch.length()>0)event("scanBatch",batch);
+        if(!limit&&!scanStop.get()){TermuxFolders.Scan linked=termux.scan(scanStop,Math.max(0,10000-count),b->event("scanBatch",b));count+=linked.count;skipped+=linked.skipped;limit=linked.limited;}
         return obj("cancelled",scanStop.get(),"limited",limit,"skipped",skipped,"count",count);
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data){
+        super.onActivityResult(request,result,data);if(request!=301)return;final long id=folderPickerRequest;folderPickerRequest=-1;if(id<0)return;
+        if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,false,null);return;}
+        final Uri tree=data.getData();io.execute(()->{try{termux.connect(tree);reply(id,true,null);event("foldersChanged",Boolean.TRUE);}catch(Exception e){reply(id,null,e.getMessage()==null?"폴더를 연결하지 못했어요.":e.getMessage());}});
     }
     @Override protected void onResume(){super.onResume();if(web!=null)event("resume",Boolean.TRUE);}
     @Override public void onBackPressed(){if(web!=null&&started)web.evaluateJavascript("window.AppBack&&window.AppBack()",null);else super.onBackPressed();}

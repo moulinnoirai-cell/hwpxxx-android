@@ -189,3 +189,7 @@
 #hwp-app .hw-intro-slide .hw-intro-subtitle{font-size:14px;line-height:1.7;margin:0;font-weight:400}
 #hwp-app .hw-intro-slide .hw-flat-scene{height:264px;flex:none}
 #hwp-app .hw-intro-slide{transition:none!important;transform:none!important}
+
+
+#hwp-app .termux-settings>h3,#hwp-app .termux-settings>p,#hwp-app .termux-settings>.row{margin:12px 16px}
+#hwp-app .termux-settings .textbtn{padding:8px;white-space:nowrap}

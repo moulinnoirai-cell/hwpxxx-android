@@ -71,3 +71,7 @@ node tests/intro-timing.cjs http://localhost:8765
 
 미리보기 서버는 Android 대신 가짜 브리지를 쓰고, `tests/fixtures`의 임시 사본에서 실제로 파일을 바꿉니다. Android 기기 시험을 대신하지 않습니다.
 
+
+## Termux 프로젝트 검색
+
+설정의 **Termux 프로젝트 폴더 연결**로 Android 폴더 선택 화면에서 프로젝트 폴더를 선택합니다. 하위 폴더의 HWP/HWPX를 검색하고 열 수 있으며, 편집 결과는 기기 저장공간에 복사본으로 저장합니다. 연결은 재시작 후에도 유지됩니다. 연결 해제는 Termux 파일을 삭제하지 않습니다. 자세한 동작과 실제 APK 검증 범위는 [DeX 시험 문서](docs/DEX-QA.md)를 참고하세요.
