@@ -6,7 +6,7 @@
 #hwp-app .metric-field span{display:flex;align-items:center;gap:4px}
 #hwp-app .metric-field input{width:72px;max-width:100%;min-height:44px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;font:inherit}
 #hwp-app .panel-row{flex-wrap:wrap}
-#hwp-app .pages{margin-inline:auto}
+#hwp-app .pages{margin-left:auto;margin-right:auto;margin-inline:auto}
 #hwp-app .page{overflow:visible}
 #hwp-app .page>img{width:100%;display:block}
 #hwp-app .memo-mark{position:absolute;min-height:0!important;min-width:0!important;padding:0!important;border:0;border-inline:2px solid #269557;background:#40c87830;border-radius:1px;z-index:1;pointer-events:none}
@@ -24,7 +24,7 @@
  #hwp-app .reader.is-editing{--sidebar:300px;--editor-top:72px}
  #hwp-app .reader.is-editing .edit-top{height:var(--editor-top);padding:8px 20px;grid-template-columns:minmax(100px,140px) minmax(100px,140px) minmax(180px,240px);justify-content:end}
  #hwp-app .reader.is-editing .edit-top button{min-height:44px}
- #hwp-app .reader.is-editing .reader-scroll{right:var(--sidebar);padding-inline:24px}
+ #hwp-app .reader.is-editing .reader-scroll{right:var(--sidebar);padding-left:24px;padding-right:24px;padding-inline:24px}
  #hwp-app .reader.is-editing .edit-bottom{top:var(--editor-top);bottom:0;left:auto;right:0;width:var(--sidebar);display:flex;flex-direction:column;border-top:0;border-left:1px solid var(--line)}
  #hwp-app .reader.is-editing .edit-tools{order:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));flex-shrink:0;overflow:visible;padding:8px}
  #hwp-app .reader.is-editing .edit-tools .tool{min-height:52px;flex-direction:column;padding:5px 0}

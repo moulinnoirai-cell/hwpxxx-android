@@ -20,7 +20,7 @@ with sync_playwright() as pw:
         page=browser.new_page(viewport={'width':width,'height':height})
         page.on('pageerror',lambda error:errors.append(str(error)))
         if width==1280:
-            page.add_init_script('Array.prototype.at=undefined;Element.prototype.replaceChildren=undefined;')
+            page.add_init_script('Array.prototype.at=undefined;Element.prototype.replaceChildren=undefined;const cssSupports=CSS.supports.bind(CSS);CSS.supports=(...args)=>args[0]==="aspect-ratio"?false:cssSupports(...args);')
         body=(ROOT/'tests/fixtures/문서.hwpx').read_bytes()
         meta={'id':'test','name':'시험.hwpx','path':'/storage/시험.hwpx','folder':'/storage','format':'hwpx','size':len(body),'modified':1700000000000}
         def route(req):
