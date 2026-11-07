@@ -64,7 +64,9 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   sh('wm','size','2560x1600');sh('wm','density','320');
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
-  sh('mkdir','-p',dir);for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
+  // sys.boot_completed can precede the emulated shared-storage FUSE mount.
+  await until(()=>{try{sh('mkdir','-p',dir);sh('touch',dir+'/.ready');sh('rm',dir+'/.ready');return true;}catch{return false;}},60000);console.log('ANDROID_SHARED_STORAGE_READY');
+  for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
   for(const f of fs.readdirSync('.qa/fixtures'))adb('push',`.qa/fixtures/${f}`,`${dir}/${f}`);
   sh('touch',`${dir}/qa-empty.hwpx`);sh('dd','if=/dev/zero',`of=${dir}/qa-oversize.hwp`,'bs=1048576','count=33');
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
@@ -124,7 +126,16 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   });
   await record('dark theme applies and remains usable with mouse',async()=>{await click('settings');await page.locator('[data-action="set-theme"][data-value="dark"]').click();await click('close');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');});
   await open('qa-edit.hwpx');await edit();
-  await record('Android input dispatcher types through the installed WebView',async()=>{const t=page.locator('#text-editor');await t.click();const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');sh('input','text','DEX_OS_KEYS');await until(async()=>(await page.locator('#text-editor').inputValue()).includes('DEX_OS_KEYS'));});
+  await record('Android input dispatcher types through the installed WebView',async()=>{
+   const t=page.locator('#text-editor');await t.click();
+   // Wait for the keyboard/viewport transition before computing a native tap.
+   await pause(1000);const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);
+   if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');
+   await until(()=>t.evaluate(t=>document.activeElement===t));await pause(1000);
+   const before=await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd}));
+   sh('input','text','DEX_OS_KEYS');
+   try{await until(async()=>(await t.inputValue())===before.text.slice(0,before.start)+'DEX_OS_KEYS'+before.text.slice(before.end));}catch(e){console.error('NATIVE_INPUT_DIAGNOSTIC',JSON.stringify({before,after:await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd,active:document.activeElement===t,connected:t.isConnected}))}));throw e;}
+  });
   await record('DeX: clicking text never zooms; Ctrl+wheel zooms only document',async()=>{
    const before=await page.locator('#pages').evaluate(e=>parseFloat(e.style.width));await page.locator('#text-editor').click();assert.equal(await page.locator('#pages').evaluate(e=>parseFloat(e.style.width)),before);
    const p=await page.locator('.page').first().boundingBox();await page.mouse.move(p.x+200,p.y+150);await page.keyboard.down('Control');await page.mouse.wheel(0,-120);await page.keyboard.up('Control');

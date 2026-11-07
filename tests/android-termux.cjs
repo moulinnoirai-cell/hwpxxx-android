@@ -36,11 +36,13 @@ async function chooseProject(){
   const drawer=uiMatch(nodes,/content-desc="(?:Show roots|Open navigation drawer)"/);if(drawer){tapNode(drawer);await pause(400);}
   await uiTap(/text="Termux"/);
  }
- await uiTap(/text="hwpxxx-project"/);
+ // DocumentsUI can retain mouse selection mode after the preceding DeX suite.
+ // Open the directory with a real mouse double-click if a touch only selects it.
+ if(!uiMatch(uiNodes(),/text="nested"/))await uiTap(/text="hwpxxx-project"/);
  // Wait for directory navigation, rather than selecting the previous home tree
  // while DocumentsUI is still loading the clicked folder.
- let entered=false;try{entered=await until(()=>!!uiMatch(uiNodes(),/text="nested"/),7000);}catch{}
- if(!entered){sh('input','keyevent','66');await until(()=>!!uiMatch(uiNodes(),/text="nested"/));}
+ let entered=false;try{entered=await until(()=>!!uiMatch(uiNodes(),/text="nested"/),4000);}catch{}
+ if(!entered){const n=uiMatch(uiNodes(),/text="hwpxxx-project"/);assert(n,'Project folder row is missing');const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);const x=String((+b[1]+ +b[3])/2|0),y=String((+b[2]+ +b[4])/2|0);sh('input','mouse','tap',x,y);sh('input','mouse','tap',x,y);await until(()=>!!uiMatch(uiNodes(),/text="nested"/));console.log('TERMUX_DIRECTORY_INPUT','mouse double-click');}
  console.log('TERMUX_DIRECTORY_CONFIRMED','hwpxxx-project/nested is visible');
  await uiTap(/text="(?:USE THIS FOLDER|Use this folder)"/i);await uiTap(/text="(?:ALLOW|Allow)"/i);
  await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await page.locator('#overlay').waitFor({state:'hidden'});const selected=await native('status');assert.equal(selected.data.connectedFolders[0]?.name,'Termux · hwpxxx-project','System picker connected the wrong tree');console.log('TERMUX_GRANTED_TREE',selected.data.connectedFolders[0].name);await page.locator('#search').fill('termux-');await until(async()=>await a('open').count()===2);
