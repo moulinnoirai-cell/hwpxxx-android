@@ -2,7 +2,7 @@
 const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),assert=require('node:assert/strict');
-const {waitForWindow,recoverSystemAnr}=require('./android-system.cjs');
+const {waitForWindow,recoverSystemAnr,disableNetwork}=require('./android-system.cjs');
 const pkg='kr.offline.hwp.preview',home='/data/data/com.termux/files/home',project=home+'/hwpxxx-project',qa='.qa/android-termux-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});let page,browser,lastXml='';const checks=[],errors=[];
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:45000}).trim();
@@ -59,11 +59,11 @@ async function native(op,args={}){const r=await page.evaluate(({op,args})=>new P
  try{
   assert.equal(adb('get-state'),'device');
   sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
-  sh('wm','size','2560x1600');sh('wm','density','320');sh('settings','put','system','font_scale','1.0');sh('settings','put','secure','show_ime_with_hard_keyboard','0');
+  sh('wm','size','1920x1080');sh('wm','density','160');sh('settings','put','system','font_scale','1.0');sh('settings','put','secure','show_ime_with_hard_keyboard','0');
   console.log('TERMUX_SETUP install official APK');adb('install','-r','.qa/termux.apk');console.log('TERMUX_SETUP create private fixtures');
   sh('run-as','com.termux','mkdir','-p',project+'/nested',home+'/outside-project');
   privateWrite(project+'/nested/termux-nested.hwpx','tests/fixtures/문서.hwpx');privateWrite(project+'/termux-remove.hwp','tests/fixtures/문서.hwp');privateWrite(home+'/outside-project/outside-secret.hwpx','tests/fixtures/문서.hwpx');
-  const original=privateHash();console.log('TERMUX_SETUP fixtures verified');sh('pm','clear',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');sh('svc','wifi','disable');sh('svc','data','disable');console.log('TERMUX_SETUP start preview');await start();console.log('TERMUX_SETUP WebView connected');
+  const original=privateHash();console.log('TERMUX_SETUP fixtures verified');sh('pm','clear',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','deny');disableNetwork();console.log('TERMUX_SETUP start preview');await start();console.log('TERMUX_SETUP WebView connected');
   await check('private projects stay hidden before connection; system picker cancellation returns safely',async()=>{
    assert.equal(await a('open').count(),0);await picker();sh('input','keyevent','4');await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await click('close');assert.equal(await a('open').count(),0);
   });

@@ -14,7 +14,12 @@ function recoverSystemAnr(){
  const current=focus();if(!/Application Error|ApplicationError|Not Responding/i.test(current))return false;
  sh('uiautomator','dump','--compressed','/sdcard/system-dialog.xml');const xml=sh('cat','/sdcard/system-dialog.xml'),decoded=xml.replaceAll('&apos;',"'");
  const message=decoded.match(/text="((?:System UI|Pixel Launcher) (?:isn't responding|is not responding))"/);
- if(!message)throw new Error('Unexpected Android error dialog; not dismissed: '+current);
+ if(!message){
+  // WindowManager can retain the dismissed error-window title for a few frames.
+  // Wait for real focus instead of treating a normal picker tree as a new ANR.
+  if(/aerr_|isn(?:'|’|&apos;)t responding|is not responding/.test(decoded))throw new Error('Unexpected Android error dialog; not dismissed: '+current);
+  return false;
+ }
  const records=events();if(records.length>=4)throw new Error('Repeated emulator OS ANRs; refusing further recovery');
  const wait=(xml.match(/<node\b[^>]*>/g)||[]).find(n=>/resource-id="android:id\/aerr_wait"|text="Wait"/.test(n));
  const b=wait?.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);if(!b)throw new Error('Android OS ANR Wait button is unavailable');
@@ -27,7 +32,12 @@ function recoverSystemAnr(){
 }
 async function waitForWindow(component,timeout=45000){
  const end=Date.now()+timeout;
- while(Date.now()<end){recoverSystemAnr();if(focus().includes(component))return;await pause(300);}
+ while(Date.now()<end){recoverSystemAnr();const current=focus();if(!/Application Error|ApplicationError|Not Responding/i.test(current)&&current.includes(component))return;await pause(300);}
  throw new Error('Android window did not receive focus: '+component+'; '+focus());
 }
-module.exports={recoverSystemAnr,waitForWindow,events};
+function disableNetwork(){
+ sh('svc','wifi','disable');
+ if(!sh('service','check','phone').includes('not found'))sh('svc','data','disable');
+ else console.log('ANDROID_OFFLINE','Wi-Fi disabled; this tablet image has no phone service');
+}
+module.exports={recoverSystemAnr,waitForWindow,events,disableNetwork};

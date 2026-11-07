@@ -16,7 +16,7 @@ with sync_playwright() as pw:
     launch={'headless':True,'args':['--no-sandbox']}
     if os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'):launch['executable_path']=os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE']
     browser=pw.chromium.launch(**launch)
-    for width,height in [(1280,800),(1600,1000),(800,1280),(390,844)]:
+    for width,height in [(1280,800),(1920,1080),(800,1280),(390,844)]:
         page=browser.new_page(viewport={'width':width,'height':height})
         page.on('pageerror',lambda error:errors.append(str(error)))
         if width==1280:

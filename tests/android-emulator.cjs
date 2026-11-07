@@ -2,7 +2,7 @@
 const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const {waitForWindow}=require('./android-system.cjs');
+const {waitForWindow,disableNetwork}=require('./android-system.cjs');
 const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/android-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
@@ -75,11 +75,11 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
  try{
   assert.equal(adb('get-state'),'device');
   sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
-  sh('wm','size','2560x1600');sh('wm','density','320');
+  sh('wm','size','1920x1080');sh('wm','density','160');
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
   // Let initial launcher/taskbar work finish after configuring the tablet display.
   await pause(15000);
-  adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
+  adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);disableNetwork();
   // sys.boot_completed can precede the emulated shared-storage FUSE mount.
   await until(()=>{try{sh('mkdir','-p',dir);sh('touch',dir+'/.ready');sh('rm',dir+'/.ready');return true;}catch{return false;}},60000);console.log('ANDROID_SHARED_STORAGE_READY');
   for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
@@ -204,7 +204,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await page.locator('#search').fill('duplicate');await a('open').first().click({button:'right'});await click('rename');await page.locator('#rename').fill('../bad');await click('rename-confirm');assert(await page.locator('#operation-error').innerText());await page.locator('#rename').fill('qa-edit');await click('rename-confirm');await page.locator('#operation-error').filter({hasText:/같은 이름/}).waitFor();assert(sh('ls',dir).includes('duplicate.hwpx'));await click('close');
   });
   await record('font scale and small DeX-like window retain controls',async()=>{
-   sh('settings','put','system','font_scale','1.5');await open('qa-table.hwpx');await edit();assert(await a('save-as').isVisible());sh('wm','size','1400x1000');await pause(1000);assert(await a('save-as').isVisible());assert(await page.locator('#text-editor').isVisible());await click('save-as');await page.locator('#filename').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('wm','size','2560x1600');sh('settings','put','system','font_scale','1.0');await pause(700);await library();
+   sh('settings','put','system','font_scale','1.5');await open('qa-table.hwpx');await edit();assert(await a('save-as').isVisible());sh('wm','size','700x500');await pause(1000);assert(await a('save-as').isVisible());assert(await page.locator('#text-editor').isVisible());await click('save-as');await page.locator('#filename').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('wm','size','1920x1080');sh('settings','put','system','font_scale','1.0');await pause(700);await library();
   });
   await record('saved documents persist after process death; unsaved bytes never touch disk',async()=>{
    await open('duplicate.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' SAVED');await save();const disk=await hash('duplicate.hwpx');
