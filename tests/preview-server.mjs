@@ -110,7 +110,7 @@ const shim = `(()=>{const q=[];
 window.OfflineNative={postMessage(m){const {id,op,args}=JSON.parse(m);fetch('/__native',{method:'POST',body:m}).then(r=>r.json()).then(r=>{for(const [n,d] of r.events)window.NativeEvent&&window.NativeEvent(n,d);window.NativeReply(id,r.reply);if(op==='permission')setTimeout(()=>window.NativeEvent&&window.NativeEvent('resume',true),400);});}};
 window.__mock={grant:v=>fetch('/__grant?'+(v?1:0)).then(()=>window.NativeEvent('resume',true)),resume:()=>window.NativeEvent('resume',true)};})();`;
 
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs':'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs':'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.svg':'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8' };
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   // /__delay?op=finishSave&ms=7000 makes the bridge take that long to START an operation, like a save that is slow to finish (0 = off).

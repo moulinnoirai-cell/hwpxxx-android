@@ -1,0 +1,88 @@
+/* PC 1.6.1 Studio chrome: menu / icon toolbox / format strip / workspace / status.
+   Reference: pinned rhwp-studio base, menu-bar, toolbar, style-bar and status-bar CSS. */
+#hwp-app{--desk-workspace:#e0e0e0;--desk-toolbar:#f0f0f0;--desk-hover:#e0e0e0;--desk-accent:#3e62bb}
+#hwp-app[data-theme=dark]{--desk-workspace:#24262b;--desk-toolbar:#292d35;--desk-hover:#3b4350;--desk-accent:#b6c7ff}
+@media(prefers-color-scheme:dark){#hwp-app[data-theme=system]{--desk-workspace:#24262b;--desk-toolbar:#292d35;--desk-hover:#3b4350;--desk-accent:#b6c7ff}}
+#hwp-app .reader.studio-reader{background:var(--desk-workspace)}
+#hwp-app .reader.studio-reader .studio-chrome.reader-top,#hwp-app .reader.studio-reader .studio-chrome.edit-top{display:block;height:auto;min-height:0;padding:0;border-radius:0;border-bottom:1px solid var(--line);background:var(--surface);z-index:5}
+#hwp-app .studio-titlebar{display:flex;align-items:center;gap:8px;min-height:34px;padding:0 10px;border-bottom:1px solid var(--line)}
+#hwp-app .studio-brand{font-weight:700;letter-spacing:-.4px;color:var(--brand);font-size:14px}
+#hwp-app .studio-titlebar .reader-name{display:block;flex:1;min-width:0;min-height:30px!important;height:30px;padding:0 8px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:400;border:0!important;box-shadow:none!important;border-radius:2px;background:transparent!important;color:var(--ink)!important}
+#hwp-app .studio-file-actions{display:flex;align-items:center;gap:4px}
+#hwp-app .studio-chrome button{font-family:inherit;cursor:pointer}
+#hwp-app .studio-file-actions button,#hwp-app .studio-home{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:none!important;min-height:28px!important;min-width:28px!important;padding:3px 9px!important;border:1px solid var(--line);border-radius:3px;box-shadow:none!important;background:var(--surface)!important;color:var(--ink)!important;font-size:12px;white-space:nowrap}
+#hwp-app .studio-file-actions [data-action=save]:not(:disabled){background:var(--soft)!important;color:var(--brand)!important}
+#hwp-app .studio-chrome button:disabled{opacity:.4;cursor:default}
+#hwp-app .studio-chrome svg{width:18px;height:18px;flex:none}
+#hwp-app .studio-menu-bar{display:flex;align-items:center;gap:0;padding:0 8px;min-height:28px;border-bottom:1px solid var(--line);background:var(--desk-toolbar);font-size:12px}
+#hwp-app .studio-menu{position:relative;flex:none}
+#hwp-app .studio-menu summary{list-style:none;cursor:pointer;padding:5px 13px;line-height:18px;border-radius:2px;user-select:none}
+#hwp-app .studio-menu summary::-webkit-details-marker{display:none}
+#hwp-app .studio-menu[open]>summary{background:var(--desk-accent);color:var(--surface)}
+#hwp-app .studio-dropdown{position:absolute;top:100%;left:0;min-width:230px;padding:4px;background:var(--surface);border:1px solid var(--line);box-shadow:2px 4px 10px #0003;z-index:20;border-radius:2px;max-height:65vh;overflow:auto}
+#hwp-app .studio-menu:last-child .studio-dropdown,#hwp-app .studio-menu:nth-last-child(2) .studio-dropdown{left:auto;right:0}
+#hwp-app .studio-dropdown .studio-menu-command{display:flex;justify-content:space-between;align-items:center;width:100%;gap:24px;min-height:30px;padding:5px 12px;font-size:12px;text-align:left;border:0;border-radius:2px;background:transparent;color:var(--ink);font-weight:400}
+#hwp-app .studio-dropdown kbd{font:11px system-ui;color:var(--muted);white-space:nowrap}
+#hwp-app .studio-chrome button:not(:disabled):hover,#hwp-app .studio-menu summary:hover{background:var(--desk-hover)!important}
+#hwp-app .studio-chrome :is(button,summary,select):focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
+#hwp-app .reader.studio-reader .edit-bottom{position:static;display:block;width:auto;border:0;background:var(--surface)}
+#hwp-app .reader.studio-reader .edit-tools{display:flex;align-items:center;overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;height:58px;padding:2px 8px;gap:2px;background:linear-gradient(var(--surface),var(--desk-toolbar));border-bottom:1px solid var(--line)}
+#hwp-app .reader.studio-reader .edit-tools .tool{display:flex;flex-direction:column;flex:0 0 58px;min-width:58px;min-height:50px;height:50px;gap:4px;padding:4px 2px;border:1px solid transparent;border-radius:3px;font-size:11px;font-weight:400;color:var(--ink);background:transparent;white-space:nowrap}
+#hwp-app .reader.studio-reader .edit-tools .tool svg{width:20px;height:20px}
+#hwp-app .reader.studio-reader .edit-tools .tool[aria-pressed=true],#hwp-app .reader.studio-reader .edit-tools .tool.open{border-color:var(--brand);background:var(--soft)}
+#hwp-app .studio-separator{height:32px;border-left:1px solid var(--line);margin:0 7px;flex:none}
+#hwp-app .studio-style-bar{display:flex;align-items:center;gap:8px;padding:5px 10px;min-height:44px;background:var(--desk-toolbar);overflow-x:auto;border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap}
+#hwp-app .studio-style-bar label{display:flex;align-items:center;gap:6px;color:var(--muted)}
+#hwp-app .studio-style-bar select{width:82px;min-height:28px;border:1px solid var(--line);border-radius:2px;background:var(--surface);color:var(--ink);font:12px inherit}
+#hwp-app .studio-style-bar .studio-align{display:flex;align-items:center;justify-content:center;min-height:28px;min-width:30px;padding:3px;border:1px solid transparent;border-radius:2px;background:transparent;color:var(--ink)}
+#hwp-app .studio-align[aria-pressed=true]{border-color:var(--brand);background:var(--soft)}
+#hwp-app .studio-group-label{font-size:10px;color:var(--muted);margin-left:8px}
+#hwp-app .reader.studio-reader .edit-panel{position:absolute;top:100%;left:auto;right:12px;width:320px;max-width:calc(100vw - 24px);max-height:45vh;padding:14px;border:1px solid var(--line);border-radius:3px;box-shadow:0 4px 12px #0003;background:var(--surface);overflow:auto;z-index:6}
+#hwp-app .reader.studio-reader .edit-panel[hidden]{display:none!important}
+#hwp-app .reader.studio-reader .reader-scroll{right:0!important;left:0;top:0;bottom:0;padding-left:32px;padding-right:32px;scrollbar-width:thin}
+#hwp-app .reader.studio-reader .reader-scroll::-webkit-scrollbar{display:block;width:10px;height:10px}
+#hwp-app .reader.studio-reader .reader-scroll::-webkit-scrollbar-thumb{background:var(--line);border:2px solid var(--desk-workspace);border-radius:5px}
+#hwp-app .reader.studio-reader .page{box-shadow:0 2px 6px #0003;margin-bottom:20px}
+#hwp-app .reader.studio-reader .reader-rail{right:0}
+#hwp-app .studio-status{display:flex;align-items:center;gap:14px;position:absolute;bottom:0;left:0;right:0;z-index:4;min-height:30px;padding:0 12px;border-top:1px solid var(--line);background:var(--desk-toolbar);font-size:11px}
+#hwp-app .studio-status .page-label{font-size:11px;white-space:nowrap}
+#hwp-app .studio-mode{border-left:1px solid var(--line);padding-left:14px;color:var(--muted)}
+#hwp-app .studio-status .zoom-tools{margin-left:auto;border:0;padding:0;gap:4px}
+#hwp-app .studio-status .chip{min-height:28px;min-width:28px;padding:2px 7px;border-radius:2px;background:transparent;color:var(--ink);font-size:11px}
+#hwp-app .studio-status svg{width:16px;height:16px}
+#hwp-app .studio-status #document-zoom{font-size:11px}
+@media(min-width:1600px){#hwp-app .reader.studio-reader.is-editing .reader-scroll{padding-right:228px}}
+@media(max-width:600px){#hwp-app .studio-titlebar{flex-wrap:wrap;gap:4px;padding:4px 8px}#hwp-app .studio-file-actions{margin-left:auto}#hwp-app .studio-brand{font-size:12px}#hwp-app .studio-menu-bar{padding:0 2px}#hwp-app .studio-menu summary{padding-inline:9px}#hwp-app .studio-dropdown{min-width:200px}#hwp-app .studio-menu:nth-child(n+4) .studio-dropdown{left:auto;right:0}#hwp-app .studio-group-label{display:none}#hwp-app .reader.studio-reader .reader-scroll{padding-inline:12px}#hwp-app .studio-mode{display:none}}
+@media(pointer:coarse){#hwp-app .studio-menu summary{min-height:44px;display:flex;align-items:center;box-sizing:border-box;padding-inline:8px}#hwp-app .studio-dropdown .studio-menu-command{min-height:44px}#hwp-app .studio-file-actions button,#hwp-app .studio-home{min-height:44px!important}#hwp-app .studio-style-bar select,#hwp-app .studio-style-bar .studio-align{min-height:44px}#hwp-app .studio-status .chip{min-height:44px}}
+@media print{#hwp-app .studio-chrome,#hwp-app .studio-status{display:none}}
+
+#hwp-app .studio-chrome .studio-titlebar .studio-file-actions{flex:0 0 auto;display:flex}
+#hwp-app .studio-chrome .studio-titlebar{width:100%;box-sizing:border-box}
+
+#hwp-app .studio-library-title{display:flex;align-items:center;gap:18px;padding:8px 18px;border-bottom:1px solid var(--line);background:var(--desk-toolbar);font-size:12px}
+#hwp-app .studio-library-title strong{color:var(--brand);font-size:14px}
+#hwp-app .hw-screen .hw-search{border-radius:3px}
+#hwp-app .hw-screen .hw-doc{border-radius:4px}
+#hwp-app .studio-chrome{font-family:system-ui,OfflineNoto,sans-serif}
+
+#hwp-app{--studio-sprite:url('branding/desktop-icons.svg')}
+#hwp-app[data-theme=dark]{--studio-sprite:url('branding/desktop-icons-dark.svg')}
+@media(prefers-color-scheme:dark){#hwp-app[data-theme=system]{--studio-sprite:url('branding/desktop-icons-dark.svg')}}
+#hwp-app .studio-sprite{display:block;width:18px;height:18px;background-image:var(--studio-sprite);background-repeat:no-repeat;flex:none}
+#hwp-app .desktop-undo{background-position:0 -40px}#hwp-app .desktop-redo{background-position:-40px -40px}
+#hwp-app .desktop-char-shape{background-position:-480px -320px}#hwp-app .desktop-para-shape{background-position:-520px -320px}
+#hwp-app .desktop-table{background-position:-80px -120px}#hwp-app .desktop-comment{background-position:-120px -160px}#hwp-app .desktop-format-copy{background-position:0 -400px}
+#hwp-app .studio-glyph{font-size:19px;line-height:20px;font-family:serif;height:20px}#hwp-app .studio-bold{font-weight:bold}#hwp-app .studio-italic{font-style:italic}#hwp-app .studio-underline{text-decoration:underline}
+#hwp-app .reader.studio-reader .studio-style-bar .studio-align{flex:0 0 30px!important;width:30px;max-width:30px}
+#hwp-app .reader.studio-reader .studio-chrome .studio-home,#hwp-app .reader.studio-reader .studio-file-actions button{border-radius:3px!important}
+
+#hwp-app .reader.studio-reader .studio-panel-close{position:absolute;right:4px;top:4px;min-height:32px;min-width:32px;display:grid;place-items:center;border:0;border-radius:2px;background:transparent;color:var(--ink)}
+
+#hwp-app .reader.studio-reader .studio-toolbox{margin-left:auto;flex:0 0 28px;min-height:26px;min-width:28px;padding:0;border:0;background:transparent;color:var(--muted)}
+#hwp-app .reader.studio-reader .studio-compact .edit-bottom{display:none}
+@media(pointer:coarse){#hwp-app .reader.studio-reader .studio-toolbox,#hwp-app .reader.studio-reader .studio-panel-close{min-height:44px;min-width:44px}}
+
+#hwp-app .reader.studio-reader:not(.is-editing) .studio-toolbox{display:none}
+
+#hwp-app .reader.studio-reader .studio-chrome .studio-toolbox{height:26px;min-height:26px!important;padding:0!important;line-height:26px;box-sizing:border-box}
+@media(pointer:coarse){#hwp-app .reader.studio-reader .studio-chrome .studio-toolbox{height:44px;min-height:44px!important}}

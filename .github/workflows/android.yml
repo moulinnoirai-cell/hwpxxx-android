@@ -107,6 +107,7 @@ jobs:
           python tests/tablet-ui.py
           python tests/dex-ui.py
           python tests/review-ui.py
+          python tests/desktop-ui.py
       - name: Build installable debug and unsigned release APKs
         run: bash gradlew assembleDebug assembleRelease lintRelease --no-daemon
       - uses: actions/upload-artifact@v4
@@ -123,6 +124,8 @@ jobs:
             .qa/tablet-*.png
             .qa/dex-*.png
             .qa/review-*.png
+            .qa/desktop-*.png
+            .qa/desktop-ui-results.json
             app/src/main/assets/engine/build-info.json
           include-hidden-files: true
           if-no-files-found: warn

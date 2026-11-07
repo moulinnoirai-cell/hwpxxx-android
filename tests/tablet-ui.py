@@ -94,8 +94,10 @@ with sync_playwright() as pw:
         page.set_viewport_size({'width':width,'height':height});page.wait_for_timeout(150)
         if width>=1000 and width>height:
             scroll=page.locator('.reader-scroll').bounding_box();panel=page.locator('.edit-bottom').bounding_box()
-            assert scroll['x']+scroll['width']<=panel['x']+1
-            assert panel['width']>=280
+            chrome=page.locator('.studio-chrome').bounding_box()
+            assert abs(scroll['width']-width)<2, 'document workspace spans the window'
+            assert panel['y']+panel['height']<=chrome['y']+chrome['height']+1
+            assert float(page.locator('.reader-scroll').evaluate('(e)=>e.style.paddingTop.replace("px","")'))>=chrome['height'], 'paper starts below the PC toolbars'
             # Simulate keyboard opening in landscape.
             page.set_viewport_size({'width':width,'height':340});page.wait_for_timeout(100)
             assert page.locator('[data-action="save"]').is_visible()
