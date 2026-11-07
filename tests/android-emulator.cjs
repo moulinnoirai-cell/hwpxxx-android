@@ -29,7 +29,20 @@ async function ensureConnection(){if(!page.isClosed())return;assert(appAlive(),'
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
 const a=name=>page.locator(`[data-action="${name}"]`);
-async function click(name){try{await a(name).click();}catch(e){if(name!=='allow'||!/closed/.test(e.message))throw e;await settingsVisible();console.log('CDP_DETACHED_DURING_NATIVE_SETTINGS');}}
+async function click(name){
+ await ensureConnection();
+ try{await a(name).click();}catch(e){
+  if(name!=='allow'||!/closed/.test(e.message))throw e;
+  await pause(500);
+  // A startup target replacement can close CDP before the permission click is
+  // delivered. Retry this idempotent action only while our onboarding is on top.
+  if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity')){
+   await ensureConnection();console.log('CDP_PERMISSION_CLICK_REATTACHED');
+   try{await a(name).click();}catch(retry){if(!/closed/.test(retry.message))throw retry;}
+  }
+  await settingsVisible();console.log('CDP_DETACHED_DURING_NATIVE_SETTINGS');
+ }
+}
 async function backPrompt(){sh('input','keyevent','4');await pause(700);if(!await a('exit-discard').isVisible()){assert(foreground().includes(pkg),'Back left the editor without a confirmation');backInputDismissals++;console.log('BACK_DISMISSED_INPUT_UI_FIRST');sh('input','keyevent','4');}await a('exit-discard').waitFor();}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
 async function library(){

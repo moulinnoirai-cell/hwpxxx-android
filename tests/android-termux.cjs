@@ -7,7 +7,7 @@ fs.mkdirSync(qa,{recursive:true});let page,browser,lastXml='';const checks=[],er
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:45000}).trim();
 const sh=(...args)=>adb('shell',...args),pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=30000){const end=Date.now()+ms;let error;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){error=e;}await pause(300);}throw error||new Error('Condition timed out');}
-const a=name=>page.locator(`[data-action="${name}"]`),click=async name=>a(name).click();
+const a=name=>page.locator(`[data-action="${name}"]`),click=async name=>{await ensureConnection();await a(name).click();};
 async function check(name,fn){try{await fn();checks.push({name,passed:true});console.log('PASS TERMUX',name);screenshot(`${qa}/${checks.length}.png`);}catch(e){e.scenario=name;throw e;}}
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
 function screenshot(file){fs.writeFileSync(file,execFileSync('adb',['exec-out','screencap','-p'],{timeout:45000}));}
@@ -26,16 +26,19 @@ function privateHash(){return sh('run-as','com.termux','sha256sum',project+'/nes
 function privateWrite(name,src){const bytes=fs.readFileSync(src).toString('base64');adb('shell',`run-as com.termux sh -c 'printf %s ${bytes} | base64 -d > ${name}'`);assert.equal(sh('run-as','com.termux','stat','-c','%s',name),String(fs.statSync(src).size));}
 function uiNodes(){sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump','--compressed','/sdcard/termux-ui.xml');lastXml=sh('cat','/sdcard/termux-ui.xml');return lastXml.match(/<node\b[^>]*>/g)||[];}
 function uiMatch(nodes,regex){return nodes.find(n=>regex.test(n)&&!/enabled="false"/.test(n));}
-function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);sh('input','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
+function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);console.log('TERMUX_NATIVE_TAP',n);sh('input','touchscreen','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
 async function uiTap(regex){await until(()=>{const n=uiMatch(uiNodes(),regex);if(!n)return false;tapNode(n);return true;});await pause(400);}
 async function ensureConnection(){if(!page.isClosed())return;assert(sh('pidof',pkg),'Android app terminated unexpectedly');console.log('TERMUX_CDP_REATTACH_WITHOUT_APP_RELAUNCH');await disconnect();await connect();}
 async function picker(){await click('settings');try{await click('connect-folder');}catch(e){if(!/closed/.test(e.message))throw e;}await until(()=>foreground().includes('documentsui'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('documentsui')));await pause(500);}
 async function chooseProject(){
- let nodes=await until(()=>{const n=uiNodes();return n.length?n:false;});
- if(!uiMatch(nodes,/text="hwpxxx-project"/)){
-  const drawer=uiMatch(nodes,/content-desc="(?:Show roots|Open navigation drawer)"/);if(drawer){tapNode(drawer);await pause(400);}
-  await uiTap(/text="Termux"/);
- }
+ // Do not assume that a root-row tap was delivered during a drawer transition.
+ // Verify the provider's folder list, repeating only navigation if necessary.
+ await until(async()=>{
+  const nodes=uiNodes();if(uiMatch(nodes,/text="hwpxxx-project"/)||uiMatch(nodes,/text="nested"/))return true;
+  const root=uiMatch(nodes,/text="Termux"/),drawer=uiMatch(nodes,/content-desc="(?:Show roots|Open navigation drawer)"/);
+  if(root)tapNode(root);else if(drawer)tapNode(drawer);
+  await pause(700);return false;
+ },45000);
  // DocumentsUI can retain mouse selection mode after the preceding DeX suite.
  // Open the directory with a real mouse double-click if a touch only selects it.
  if(!uiMatch(uiNodes(),/text="nested"/))await uiTap(/text="hwpxxx-project"/);
