@@ -25,6 +25,7 @@
 - Rust 패치 줄 단위 검토: 두 번째 Opus 리뷰가 4,275줄 전부를 읽었고 Android 앱에 영향을 주는 추가 결함을 찾지 못했습니다(§4 요약은 부록 B). 리뷰어가 PC 패치와 바이트 비교는 하지 않았다고 밝혔습니다(줄 수와 일부 구간 비교).
 - 여러 문단 선택·복구 초안·Termux 순회기 등 초기 리뷰 이후의 코드: 두 번째 리뷰가 봤습니다. 그 결과가 §2-B의 7건입니다.
 - 실제 기기·Samsung DeX/IME·Bluetooth, 한컴에서의 재열기, CI 산출물(화면·`results.json`·logcat)은 여전히 범위 밖이고 **미검증**입니다. GitHub API가 정책으로 차단돼(`api.github.com` CONNECT 403) 현재 소스의 CI 실행이 없습니다.
+| 네 번째 Opus 재리뷰(N1·N2·이력) | `claude-opus-5-5` / `--effort high`, init 활성 확인 | 같은 읽기 전용 리뷰 세션을 별도 CLI 실행으로 재개, 7턴, 권한 거부 0건 | 새 P0·P1·P2 없음, P3 3건. 코드 판정이며 PR 승인 아님. 원문 부록 D, 응답 SHA-256 `bd762f8fdc3edd3644f699770523e7d3ea8d3e2d7598079285ac51a3a96de43b` |
 
 ## 2-A. 초기 리뷰(F1~F18, H1~H7) 항목별 처리
 
@@ -144,8 +145,6 @@
 - 2 likely-P1 hypotheses that each need one reproducer: H1 and H2.
 
 ---
-| 네 번째 Opus 재리뷰(N1·N2·이력) | `claude-opus-5-5` / `--effort high`, init 활성 확인 | 같은 읽기 전용 리뷰 세션을 별도 CLI 실행으로 재개, 7턴, 권한 거부 0건 | 새 P0·P1·P2 없음, P3 3건. 코드 판정이며 PR 승인 아님. 원문 부록 D, 응답 SHA-256 `bd762f8fdc3edd3644f699770523e7d3ea8d3e2d7598079285ac51a3a96de43b` |
-
 
 ## 2. Confirmed defects
 
@@ -720,6 +719,8 @@ All paths are relative to `baseline-snapshot/`.
 
 
 ## 2-D. 네 번째 재리뷰 후 조정자 기록
+
+- 조정자가 실행 기록 행을 잘못된 위치에 넣은 것을 원문 무결성 검사로 발견해, 초기 응답 원문을 복원하고 행을 실행 기록 표로 옮겼습니다. 아래 원문 4개는 모두 실제 저장 응답과 대조했습니다. 제품 코드·시험 로직 변경은 없습니다.
 
 - 검토 대상 전체 diff SHA-256: `84ec64eab5d16c3fafcd6445ae75cb6631260363faa98635f4449eb33fe6e3c2` (`5986d59…` + 당시 작업 트리). 이후 제품 코드·시험 로직은 그대로이며, 이 검토 기록·문서 표현과 `tests/dex-ui.py`의 줄끝 공백 1개만 정리했습니다.
 - `checks-n1n2-final/results.tsv` 18개 항목은 모두 종료 코드 0: Node 75 통과·실패 0·건너뜀 0, JVM FileStore 53·TermuxWalker/TimedCall 152·DraftStore 38 검사, 브라우저 3종, 엔진 검증·구문·debug/release 빌드·lintRelease·debug 서명. Sonnet 응답은 일부 백그라운드 시험이 끝나기 전에 종료됐고, 조정자가 남은 시험의 실제 완료를 확인했습니다.
