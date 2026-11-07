@@ -2,6 +2,7 @@
 const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const {waitForWindow}=require('./android-system.cjs');
 const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/android-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
@@ -22,8 +23,8 @@ async function connect(){
 }
 async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();await pause(1500);if(page.isClosed()){console.log('CDP_STARTUP_TARGET_CHANGED');await disconnect();await connect();}}
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
-async function settingsVisible(){await until(()=>foreground().includes('com.android.settings'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('com.android.settings')));await pause(700);}
-async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes(pkg)));}
+async function settingsVisible(){await until(()=>foreground().includes('com.android.settings'));await waitForWindow('com.android.settings');await pause(700);}
+async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await waitForWindow(pkg);}
 async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;sh('input','keyevent','4');await pause(1000);}await appVisible();await ensureConnection();}
 async function ensureConnection(){if(!page.isClosed())return;assert(appAlive(),'Android app terminated unexpectedly');console.log('CDP_REATTACH_WITHOUT_APP_RELAUNCH');await disconnect();await connect();}
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
@@ -76,6 +77,8 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
   sh('wm','size','2560x1600');sh('wm','density','320');
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
+  // Let initial launcher/taskbar work finish after configuring the tablet display.
+  await pause(15000);
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);sh('svc','wifi','disable');sh('svc','data','disable');
   // sys.boot_completed can precede the emulated shared-storage FUSE mount.
   await until(()=>{try{sh('mkdir','-p',dir);sh('touch',dir+'/.ready');sh('rm',dir+'/.ready');return true;}catch{return false;}},60000);console.log('ANDROID_SHARED_STORAGE_READY');

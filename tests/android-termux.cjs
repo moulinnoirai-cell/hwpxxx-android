@@ -2,6 +2,7 @@
 const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),assert=require('node:assert/strict');
+const {waitForWindow,recoverSystemAnr}=require('./android-system.cjs');
 const pkg='kr.offline.hwp.preview',home='/data/data/com.termux/files/home',project=home+'/hwpxxx-project',qa='.qa/android-termux-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});let page,browser,lastXml='';const checks=[],errors=[];
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:45000}).trim();
@@ -24,12 +25,12 @@ async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActi
 async function restart(){sh('am','force-stop',pkg);await start();}
 function privateHash(){return sh('run-as','com.termux','sha256sum',project+'/nested/termux-nested.hwpx').split(/\s/)[0];}
 function privateWrite(name,src){const bytes=fs.readFileSync(src).toString('base64');adb('shell',`run-as com.termux sh -c 'printf %s ${bytes} | base64 -d > ${name}'`);assert.equal(sh('run-as','com.termux','stat','-c','%s',name),String(fs.statSync(src).size));}
-function uiNodes(){sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump','--compressed','/sdcard/termux-ui.xml');lastXml=sh('cat','/sdcard/termux-ui.xml');return lastXml.match(/<node\b[^>]*>/g)||[];}
+function uiNodes(){recoverSystemAnr();sh('rm','-f','/sdcard/termux-ui.xml');sh('uiautomator','dump','--compressed','/sdcard/termux-ui.xml');lastXml=sh('cat','/sdcard/termux-ui.xml');return lastXml.match(/<node\b[^>]*>/g)||[];}
 function uiMatch(nodes,regex){return nodes.find(n=>regex.test(n)&&!/enabled="false"/.test(n));}
 function tapNode(n){const b=n.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);assert(b,n);console.log('TERMUX_NATIVE_TAP',n);sh('input','touchscreen','tap',String((+b[1]+ +b[3])/2|0),String((+b[2]+ +b[4])/2|0));}
 async function uiTap(regex){await until(()=>{const n=uiMatch(uiNodes(),regex);if(!n)return false;tapNode(n);return true;});await pause(400);}
 async function ensureConnection(){if(!page.isClosed())return;assert(sh('pidof',pkg),'Android app terminated unexpectedly');console.log('TERMUX_CDP_REATTACH_WITHOUT_APP_RELAUNCH');await disconnect();await connect();}
-async function picker(){await click('settings');try{await click('connect-folder');}catch(e){if(!/closed/.test(e.message))throw e;}await until(()=>foreground().includes('documentsui'));await until(()=>sh('dumpsys','window').split('\n').some(l=>l.includes('mCurrentFocus')&&l.includes('documentsui')));await pause(500);}
+async function picker(){await click('settings');try{await click('connect-folder');}catch(e){if(!/closed/.test(e.message))throw e;}await until(()=>foreground().includes('documentsui'));await waitForWindow('documentsui');await pause(500);}
 async function chooseProject(){
  // Do not assume that a root-row tap was delivered during a drawer transition.
  // Verify the provider's folder list, repeating only navigation if necessary.

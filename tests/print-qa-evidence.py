@@ -7,7 +7,8 @@ from pathlib import Path
 from PIL import Image
 
 api=os.environ['ANDROID_API']
-for folder,names in [(Path('.qa/android-'+api),['failure.png','17.png','28.png']),
+for folder,names in [(Path('.qa/android-system-'+api),['1.png','4.png']),
+                     (Path('.qa/android-'+api),['failure.png','17.png','28.png']),
                      (Path('.qa/android-termux-'+api),['failure.png','2.png','6.png'])]:
     for name in names:
         source=folder/name
