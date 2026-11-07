@@ -18,7 +18,7 @@ Android 엔진은 WebAssembly MVP 대상으로 표준 라이브러리까지 빌�
 
 1. WASM Worker 시험: Unicode·여러 문단 붙여넣기, 메모 겹침 거부, 잘못된 서식, 과도한 요청, stale selection, 저장 bytes 검증, 되돌리기 분기, 문서 탐색.
 2. Chromium 시험: 네 가지 창 크기에서 실제 휠/키 이벤트, 배율과 입력 요소 유지, 형광펜과 메모, 회전·창 크기 변경.
-3. 설치 APK 시험: Android API 30, 33(탭 S7 최종 Android 세대), 35. 실제 WebView/OfflineNative/공유 저장공간과 Android 설정을 사용합니다. 저장·재열기·백업·충돌·암호 문서·손상 파일·PDF·이동·권한 회수·백그라운드·프로세스 종료를 확인합니다. 브리지를 가짜로 바꾸지 않습니다.
+3. 설치 APK 시험: 사용자 기기인 갤럭시탭 S7의 Android 13(API 33)을 최종 검증 대상으로 사용합니다. 실제 WebView/OfflineNative/공유 저장공간과 Android 설정을 사용합니다. 저장·재열기·백업·충돌·암호 문서·손상 파일·PDF·이동·권한 회수·백그라운드·프로세스 종료를 확인합니다. 브리지를 가짜로 바꾸지 않습니다.
 4. Termux 통합 시험: 공식 GitHub v0.118.3 x86_64 APK를 설치하고 실제 `com.termux.documents` 제공자와 시스템 폴더 선택 화면을 사용합니다. 앱 내부 HOME의 프로젝트·중첩 폴더 검색, 선택하지 않은 형제 폴더 제외, 선택 취소, 재시작 후 권한 유지, 중복 연결, 삭제된 파일, 복사본 저장, 연결 해제를 검증합니다. 테스트용 Termux는 배포 APK에 포함하지 않습니다.
 
 각 에뮬레이터의 `.qa/android-<API>/results.json`, 시나리오별 PNG, logcat을 Actions artifact에 보관합니다. 통과 여부는 해당 커밋의 실행 결과를 기준으로 판단합니다.

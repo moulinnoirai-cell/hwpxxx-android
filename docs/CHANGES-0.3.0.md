@@ -23,6 +23,6 @@ GitHub Actions `Android tablet build`는 엔진 빌드, 문서 왕복 시험, Fi
 
 ## 확인 범위
 
-로컬에서는 변환·병합 범위·메모 경로 단위 시험 3건과 JS/Python 구문 검사를 실행했습니다. 로컬 네트워크 프록시 연결이 되지 않고 Android SDK와 javac가 없어 전체 엔진 및 APK 빌드는 GitHub Actions 결과로 확인해야 합니다. 실제 Tab S7/S Pen/삼성 키보드 및 한컴 프로그램에서의 재열기 시험은 아직 수행하지 않았습니다.
+GitHub Actions에서 엔진/편집 회귀 시험 11건, FileStore 48건, 브라우저 화면 크기 4종, lint와 debug/release APK 빌드를 확인했습니다. 설치 APK의 최종 검증 대상은 사용자 요청에 따라 갤럭시탭 S7의 Android 13(API 33)입니다. 해당 최종 커밋의 실행 상태와 APK·화면·로그 링크는 PR #2에 기록합니다. 실제 Tab S7/DeX/삼성 키보드/Bluetooth 연결 및 한컴 프로그램에서의 재열기 시험은 아직 수행하지 않았습니다.
 
 Windows Electron 앱 및 PC MCP 등록·외부 AI 연결은 Android 앱의 범위가 아닙니다. Android는 계속 오프라인 앱으로 동작합니다.
