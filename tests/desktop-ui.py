@@ -15,6 +15,9 @@ try:
    page.locator('[data-action=open]').click();page.locator('.page img').first.wait_for();page.locator('[data-action=edit]').click()
    page.locator('.studio-menu summary').first.click();assert page.locator('.studio-menu').first.get_attribute('open') is not None
    page.keyboard.press('Escape');assert page.locator('.studio-menu[open]').count()==0
+   page.locator('.studio-menu summary').first.click();page.evaluate('window.AppBack()')
+   assert page.locator('.studio-menu[open]').count()==0 and page.locator('.reader.is-editing').count()==1
+   assert page.locator('#overlay').is_hidden()
    for index in range(8):
     page.locator('.studio-menu summary').nth(index).click();page.wait_for_timeout(30)
     bounds=page.locator('.studio-menu[open] .studio-dropdown').bounding_box()
