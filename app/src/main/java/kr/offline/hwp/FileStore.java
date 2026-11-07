@@ -180,6 +180,8 @@ public final class FileStore {
         File dest=resolve(target);name(dest.getName());validate(bytes,ext(dest));
         File parent=dest.getParentFile();if(!parent.isDirectory()||!parent.canWrite())throw new IOException("저장할 폴더에 쓸 수 없어요.");
         if(parent.getUsableSpace()<bytes.length+1024*1024L)throw new IOException("저장공간이 부족해요.");
+        if(replace&&dest.isFile()&&!dest.canWrite())throw new IOException("읽기 전용 문서예요. 원본은 그대로 두고 다른 이름으로 저장해 주세요.");
+        removeStaleTemps(parent);
         File temp=File.createTempFile(".hwp-offline-",".tmp",parent);
         try {
             try(FileOutputStream out=new FileOutputStream(temp)){out.write(bytes);out.getFD().sync();}
@@ -204,6 +206,12 @@ public final class FileStore {
             }
             return dest;
         } finally {temp.delete();}
+    }
+    /** A killed process can leave its own temp file behind; remove only our exact name pattern once it is clearly abandoned. */
+    static final long STALE_TEMP_MS=6L*60*60*1000;
+    static void removeStaleTemps(File parent){
+        File[] files=parent.listFiles();if(files==null)return;long now=System.currentTimeMillis();
+        for(File f:files)if(f.isFile()&&f.getName().matches("\\.hwp-offline-[0-9]+\\.tmp")&&now-f.lastModified()>STALE_TEMP_MS)f.delete();
     }
     /** Copies the current HWP next to itself before its first in-place save; HWPX returns null. */
     public File backup(String target,String expectedSha,String stamp)throws IOException {

@@ -1,0 +1,12 @@
+{
+  "upstream": "https://github.com/edwardkim/rhwp",
+  "commit": "1a76570e833917d15817415a53c09ad61ab3203f",
+  "version": "0.8.7-hwpxxx1",
+  "desktopVersion": "1.6.1",
+  "patch": "patches/rhwp-engine/0001-rhwp-pr8269-memo-api-backport-to-v0.8.7.patch",
+  "patchSha256": "5fefe4f252c45c54551ff3f6a673291545298e8c5839796d2122d21c82de300b",
+  "rust": "nightly-2026-02-01",
+  "wasmBindgen": "0.2.127",
+  "rustFlags": "-Ctarget-cpu=mvp",
+  "buildStd": true
+}

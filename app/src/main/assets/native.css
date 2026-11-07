@@ -8,7 +8,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f5f6fa;overscroll-beh
 #hwp-app .nav{flex:none;padding-bottom:8px}#hwp-app .settings-body{height:auto;flex:1;min-height:0}
 #hwp-app .thumb img{width:100%;height:100%;object-fit:cover;object-position:top center;background:white;box-shadow:0 2px 8px #15294d18}
 #hwp-app .reader{height:100%;width:100%;flex:1;min-height:0}
-#hwp-app .reader-scroll{padding:76px 18px 16px;touch-action:pan-x pan-y;scrollbar-width:none;overflow:auto;position:absolute;inset:0}
+#hwp-app .reader-scroll{padding:76px 18px 16px;touch-action:pan-x pan-y;scrollbar-width:none;overflow:auto;position:absolute;top:0;right:0;bottom:0;left:0;inset:0}
 #hwp-app .reader-scroll::-webkit-scrollbar{display:none}
 #hwp-app .pages{position:relative;width:100%;transform-origin:0 0}
 #hwp-app .page{background:white;position:relative;width:100%;margin:0 0 14px;overflow:hidden;box-shadow:0 2px 8px #17254118;contain:layout style;touch-action:pan-x pan-y}
@@ -22,7 +22,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f5f6fa;overscroll-beh
 #hwp-app .reader-thumb::before{content:'';position:absolute;right:3px;top:3px;bottom:3px;width:7px;background:var(--muted);opacity:.55;border-radius:6px}
 #hwp-app .page-bubble{position:absolute;right:32px;top:4px;background:var(--ink);color:var(--surface);padding:5px 9px;border-radius:8px;font-size:12px;white-space:nowrap;display:none}
 #hwp-app .reader-rail:active .page-bubble{display:block}
-#hwp-app .folder-list{height:auto}#hwp-app .folder-overlay .sheet{inset:8px;max-height:none}
+#hwp-app .folder-list{height:auto}#hwp-app .folder-overlay .sheet{top:8px;right:8px;bottom:8px;left:8px;inset:8px;max-height:none}
 #hwp-app .folder-order .field{min-height:40px;font-size:13px}
 #hwp-app .folder-path .crumb{max-width:110px}#hwp-app .folder-error{padding:0 18px}
 #hwp-app .folder-footer .field-label{margin-top:0}#hwp-app .folder-footer .name-entry{margin-bottom:12px}
@@ -125,3 +125,10 @@ html:has(#hwp-app[data-theme=dark]),html:has(#hwp-app[data-theme=dark]) body{bac
 #hwp-app .hw-main-button:focus-visible,#hwp-app .hw-intro-dot:focus-visible,#hwp-app .hw-star:focus-visible,#hwp-app .hw-icon:focus-visible,#hwp-app .hw-open:focus-visible{outline:3px solid var(--brand);outline-offset:-3px}
 @media(min-width:650px){#hwp-app .hw-docs:not([data-view=list]){grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}}
 @media(prefers-reduced-motion:reduce){#hwp-app .hw-permission-needed{animation:none}}
+
+
+/* Multi-paragraph selection: the textarea only carries focus and the joined text; the marks are drawn by the engine rectangles. */
+#hwp-app .edit-layer.range-layer{pointer-events:none}
+#hwp-app .draft-row{display:grid;gap:4px;padding:10px 0;border-top:1px solid #8883}
+#hwp-app .draft-row small{opacity:.75;overflow-wrap:anywhere}
+#hwp-app #grid-paste{width:100%;box-sizing:border-box;font-family:inherit}

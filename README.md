@@ -1,4 +1,4 @@
-# hwpxxx for Android 0.2.0
+# hwpxxx for Android 0.3.0
 
 개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.8.7(MIT).
 인터넷 권한이 없고 광고·분석·원격 글꼴·외부 전송이 없습니다. 문서는 기기 안에서만 처리합니다.
@@ -27,7 +27,13 @@
 | `design/latest-inline-fragment.html` | 승인 디자인 원본 |
 | `tests/` | FileStore JVM 시험, 브라우저 미리보기 서버, 안내 화면 타이밍 시험, rhwp 샘플 문서 |
 
+## 0.3.0 편집 및 태블릿 지원
+
+PC 1.6.1의 메모·형광펜 모드·모양 복사·문단 간격·자간/장평·표 칸 합치기를 추가했습니다. 갤럭시 탭 S7 가로 화면에서는 오른쪽 편집 패널을 사용하고 회전 중에도 입력을 유지합니다. 범위와 기기 시험 상태는 [변경 안내](docs/CHANGES-0.3.0.md)를 참고하세요.
+
 ## 빌드
+
+먼저 `config/android-engine.json`의 커밋을 별도 rhwp 작업 사본에 체크아웃하고 Rust nightly-2026-02-01(rust-src 및 wasm32-unknown-unknown 타깃), wasm-bindgen-cli 0.2.127로 `bash scripts/build-engine.sh <rhwp 작업 사본>`을 실행하세요. 새 엔진은 GitHub Actions에서도 빌드합니다.
 
 JDK 17과 Android SDK(platform 35, build-tools 35.0.0)가 필요합니다. `local.properties`에 다음을 적습니다. 이 파일은 커밋하지 않습니다.
 
@@ -64,3 +70,8 @@ node tests/intro-timing.cjs http://localhost:8765
 ```
 
 미리보기 서버는 Android 대신 가짜 브리지를 쓰고, `tests/fixtures`의 임시 사본에서 실제로 파일을 바꿉니다. Android 기기 시험을 대신하지 않습니다.
+
+
+## Termux 프로젝트 검색
+
+설정의 **Termux 프로젝트 폴더 연결**로 Android 폴더 선택 화면에서 프로젝트 폴더를 선택합니다. 하위 폴더의 HWP/HWPX를 검색하고 열 수 있으며, 편집 결과는 기기 저장공간에 복사본으로 저장합니다. 연결은 재시작 후에도 유지됩니다. 연결 해제는 Termux 파일을 삭제하지 않습니다. 자세한 동작과 실제 APK 검증 범위는 [DeX 시험 문서](docs/DEX-QA.md)를 참고하세요.

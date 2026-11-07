@@ -1,0 +1,189 @@
+name: Android tablet build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: actions/cache/restore@v4
+        id: memo-engine
+        with:
+          path: .build/engine
+          key: rhwp-memo-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'patches/rhwp-engine/*.patch', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
+      - uses: actions/checkout@v4
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        with:
+          repository: edwardkim/rhwp
+          ref: 1a76570e833917d15817415a53c09ad61ab3203f
+          path: .build/rhwp
+          sparse-checkout: |
+            src
+            crates
+            tools
+            bindings
+            vendor
+            scripts
+            assets
+            fonts
+            resources
+            .cargo
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        with:
+          toolchain: 'nightly-2026-02-01'
+          components: rust-src
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        with:
+          workspaces: .build/rhwp
+          key: android-memo-v2
+          cache-on-failure: true
+      - name: Install pinned wasm-bindgen CLI
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 -o /tmp/wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz
+          echo '61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a  /tmp/wasm-bindgen.tar.gz' | sha256sum --check
+          mkdir -p .build/wasm-bindgen
+          tar -xzf /tmp/wasm-bindgen.tar.gz --strip-components=1 -C .build/wasm-bindgen
+          echo "$PWD/.build/wasm-bindgen" >> "$GITHUB_PATH"
+      - name: Fetch embedded blank document
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .build/rhwp/saved
+          git -C .build/rhwp show HEAD:saved/blank2010.hwp > .build/rhwp/saved/blank2010.hwp
+      - run: bash scripts/build-engine.sh .build/rhwp
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+      - run: node scripts/install-engine.mjs .build/engine
+      - uses: actions/cache/save@v4
+        if: steps.memo-engine.outputs.cache-hit != 'true'
+        with:
+          path: .build/engine
+          key: ${{ steps.memo-engine.outputs.cache-primary-key }}
+      - run: node tests/build-qa-fixtures.mjs
+      - name: Engine integrity gate (pinned build, build-info.json hashes, CI pins)
+        run: |
+          node scripts/verify-engine.mjs
+          node --test tests/engine-integrity.test.mjs
+      - name: Document worker regression tests
+        run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
+      - name: Emulator test harness (ANR guard parsers and decisions, no device needed)
+        run: |
+          node --test tests/android-anr.test.mjs tests/android-termux-fixtures.test.mjs
+          for f in tests/android-emulator.cjs tests/android-termux.cjs tests/android-suites.cjs tests/android-system.cjs tests/android-anr-parse.cjs tests/legacy-webview-driver.cjs; do node --check "$f"; done
+      - name: File store regression tests
+        run: |
+          mkdir -p build/fs-test
+          javac -encoding UTF-8 -d build/fs-test app/src/main/java/kr/offline/hwp/FileStore.java app/src/main/java/kr/offline/hwp/TimedCall.java app/src/main/java/kr/offline/hwp/TermuxWalker.java app/src/main/java/kr/offline/hwp/DraftStore.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java
+          java -cp build/fs-test kr.offline.hwp.FileStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
+          java -cp build/fs-test kr.offline.hwp.TermuxWalkerTest
+          java -cp build/fs-test kr.offline.hwp.DraftStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
+      - name: Browser regression tests
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+          python tests/tablet-ui.py
+          python tests/dex-ui.py
+          python tests/review-ui.py
+      - name: Build installable debug and unsigned release APKs
+        run: bash gradlew assembleDebug assembleRelease lintRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-test-fixtures
+          path: .qa/fixtures/*
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hwpxxx-android-0.3.0
+          path: |
+            app/build/outputs/apk/**/*.apk
+            app/build/reports/lint-results-release.html
+            .qa/tablet-*.png
+            .qa/dex-*.png
+            .qa/review-*.png
+            app/src/main/assets/engine/build-info.json
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  emulator:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [33]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: hwpxxx-android-0.3.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-test-fixtures
+          path: .qa/fixtures
+      - run: npm install --no-save --package-lock=false playwright@1.48.2
+      - run: python -m pip install pillow
+      - name: Download official Termux for private-project integration tests
+        run: bash scripts/fetch-termux-qa.sh
+      - name: Reserve disk space for emulator userdata
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk
+          df -h /
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        env:
+          ANDROID_API: ${{ matrix.api }}
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          cores: 2
+          ram-size: 3072M
+          heap-size: 512M
+          disk-size: 4096M
+          disable-animations: true
+          enable-hw-keyboard: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader -noaudio -no-boot-anim -no-metrics -camera-back none -camera-front none -feature -Vulkan
+          script: node tests/legacy-webview-driver.cjs && node tests/android-suites.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-emulator-api-${{ matrix.api }}
+          path: .qa/android-*
+          include-hidden-files: true
+          if-no-files-found: warn

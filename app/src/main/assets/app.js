@@ -1,3 +1,4 @@
+import {numeric,clampZoom,probeScale} from './editor-features.mjs';
 import {introMarkup,createIntro} from './intro.js';
 const $=s=>document.querySelector(s),root=$('#hwp-app'),content=$('#content'),overlay=$('#overlay'),sheet=$('#sheet');
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -6,33 +7,33 @@ const btn=(action,label,cls='secondary',attrs='')=>`<button type="button" class=
 const fmtSize=n=>n<1024?`${n} B`:n<1048576?`${Math.round(n/1024)} KB`:`${(n/1048576).toFixed(1)} MB`;
 const fmtDate=n=>new Date(n).toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric'});
 let seq=0;const pending=new Map();
-function native(op,args={}){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('작업 시간이 초과됐어요. 다시 시도해 주세요.'));},op==='scan'?300000:op==='pdf'?70000:30000);pending.set(id,{resolve,reject,timer});if(!globalThis.OfflineNative){clearTimeout(timer);pending.delete(id);reject(new Error('Android 앱에서 실행해 주세요.'));return;}OfflineNative.postMessage(JSON.stringify({id,op,args}));});}
+function native(op,args={}){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);if(op==='scan'&&globalThis.OfflineNative){try{OfflineNative.postMessage(JSON.stringify({id:++seq,op:'cancelScan',args:{}}));}catch{}}reject(new Error('작업 시간이 초과됐어요. 다시 시도해 주세요.'));},op==='scan'?300000:op==='connectFolder'?600000:op==='pdf'?70000:op==='read'||op==='readDraft'?60000:30000);pending.set(id,{resolve,reject,timer});if(!globalThis.OfflineNative){clearTimeout(timer);pending.delete(id);reject(new Error('Android 앱에서 실행해 주세요.'));return;}OfflineNative.postMessage(JSON.stringify({id,op,args}));});}
 window.NativeReply=(id,r)=>{const p=pending.get(id);if(!p)return;clearTimeout(p.timer);pending.delete(id);r.ok?p.resolve(r.data):p.reject(new Error(r.error));};
 class Engine {
  constructor(){this.seq=0;this.pending=new Map();this.worker=new Worker('engine-worker.js',{type:'module'});this.worker.onmessage=e=>{const p=this.pending.get(e.data.id);if(p){this.pending.delete(e.data.id);e.data.ok?p.resolve(e.data.data):p.reject(new Error(e.data.error));}this.arm();};this.worker.onerror=()=>this.stop('문서 엔진을 실행하지 못했어요. 앱을 다시 열어 주세요.');}
  // Watchdog = no reply for a while with work pending (not a per-request deadline), longer while opening/saving,
  // so a burst of queued page renders or a long save on a slow phone does not kill the worker holding the edits.
  arm(){clearTimeout(this.timer);if(!this.pending.size)return;let ms=30000;for(const p of this.pending.values())if(p.long)ms=120000;this.timer=setTimeout(()=>this.stop('문서 처리가 오래 걸려 중지했어요. 원본은 변경하지 않았어요.'),ms);}
- run(op,args={}){if(this.dead)return Promise.reject(new Error(this.reason||'문서 엔진이 중지되었어요. 문서를 다시 열어 주세요.'));return new Promise((resolve,reject)=>{const id=++this.seq;this.pending.set(id,{resolve,reject,long:op==='open'||op==='export'||op==='cancel'});this.worker.postMessage({id,op,args});if(this.pending.size===1)this.arm();});}
+ run(op,args={}){if(this.dead)return Promise.reject(new Error(this.reason||'문서 엔진이 중지되었어요. 문서를 다시 열어 주세요.'));return new Promise((resolve,reject)=>{const id=++this.seq;this.pending.set(id,{resolve,reject,long:op==='open'||op==='export'||op==='cancel'||op==='draft'});this.worker.postMessage({id,op,args});if(this.pending.size===1)this.arm();});}
  stop(message){clearTimeout(this.timer);this.reason=message;this.worker.terminate();for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error(message));}this.pending.clear();this.dead=true;}
 }
 let saved={};try{saved=JSON.parse(localStorage.getItem('offline-hwp-settings')||'{}');}catch{}
-const state={tab:'all',permission:false,known:false,version:'',volumes:[],docs:[],favorites:saved.favorites||{},positions:saved.positions||{},sort:saved.sort||'recent',view:saved.view||'grid',theme:saved.theme||'system',term:saved.term||'',hinted:!!saved.hinted,libraryScroll:0,scanning:false,scanSeen:new Set(),current:null,engine:null,meta:null,editing:false,dirty:false,menus:true,busy:false,notice:'',zoom:100,folder:null,selection:null};
+const state={tab:'all',permission:false,sharedPermission:false,connectedFolders:[],known:false,version:'',volumes:[],docs:[],favorites:saved.favorites||{},positions:saved.positions||{},sort:saved.sort||'recent',view:saved.view||'grid',theme:saved.theme||'system',term:saved.term||'',hinted:!!saved.hinted,libraryScroll:0,scanning:false,scanSeen:new Set(),current:null,engine:null,meta:null,editing:false,dirty:false,menus:true,busy:false,notice:'',zoom:100,folder:null,selection:null,memos:[],showMemos:saved.showMemos!==false,memoGuides:saved.memoGuides!==false,memoAuthor:saved.memoAuthor||'hwpxxx',highlight:false,highlightColor:saved.highlightColor||'#FFF2B3',painter:false,rangeSel:null,clip:null,saving:false,recovered:false,draftId:null,draftRev:-1,draftExists:false,draftBusy:false,drafts:[],draftOffered:new Set()};
 const thumbs=new Map(),pageUrls=new Map();let libraryObserver,thumbEngine,thumbRunning=false,scanPromise,lastFocus,folderReturn,editQueue=Promise.resolve(),composing=false,readerObserver,toolbarObserver,railTimer,scrollTimer,loadingGeneration=0;
 // The intro pauses while any dialog covers the library and whenever a document is open.
 const intro=createIntro(()=>!overlay.hidden||!!state.current);
-function persist(){try{localStorage.setItem('offline-hwp-settings',JSON.stringify({favorites:state.favorites,positions:state.positions,sort:state.sort,view:state.view,theme:state.theme,term:state.term,hinted:state.hinted}));}catch{}}
+function persist(){try{localStorage.setItem('offline-hwp-settings',JSON.stringify({favorites:state.favorites,positions:state.positions,sort:state.sort,view:state.view,theme:state.theme,term:state.term,hinted:state.hinted,showMemos:state.showMemos,memoGuides:state.memoGuides,memoAuthor:state.memoAuthor,highlightColor:state.highlightColor}));}catch{}}
 function icons(){globalThis.lucide?.createIcons();}
 function announce(t){$('#announce').textContent=t;}
 function applyTheme(){root.dataset.theme=state.theme;root.style.colorScheme=state.theme==='system'?'light dark':state.theme;document.documentElement.style.colorScheme=root.style.colorScheme;}
 function sheetOpen(title,body,actions='',cls=''){if(overlay.hidden)lastFocus=document.activeElement;content.inert=true;overlay.className='overlay '+cls;sheet.className='sheet';sheet.style.top='';overlay.hidden=false;intro.pause();sheet.innerHTML=`<h2 id="sheet-title">${esc(title)}</h2>${body}<div class="sheet-actions">${actions}</div>`;icons();sheet.querySelector('input,select,button')?.focus({preventScroll:true});sheet.scrollTop=0;}
-function sheetClose(){if(state.busy)return;overlay.hidden=true;overlay.className='overlay';sheet.className='sheet';content.inert=false;state.folder=null;sheet.replaceChildren();intro.resume();$('[data-action="settings"]')?.setAttribute('aria-expanded','false');(lastFocus?.isConnected?lastFocus:content.querySelector('[data-action="settings"],[data-action="back"],button,input'))?.focus({preventScroll:true});}
+function sheetClose(){if(state.busy)return;overlay.hidden=true;overlay.className='overlay';sheet.className='sheet';content.inert=false;state.folder=null;sheet.textContent='';intro.resume();$('[data-action="settings"]')?.setAttribute('aria-expanded','false');(lastFocus?.isConnected?lastFocus:content.querySelector('[data-action="settings"],[data-action="back"],button,input'))?.focus({preventScroll:true});}
 function hwDialog(title,body,{back=false,cls=''}={}){if(overlay.hidden)lastFocus=document.activeElement;content.inert=true;overlay.className='overlay hw-modal';sheet.className='sheet hw-dialog '+cls;sheet.style.top='';overlay.hidden=false;intro.pause();
  sheet.innerHTML=`<header class="hw-dialog-header">${back?btn('settings',icon('arrow-left'),'hw-icon','aria-label="설정으로 돌아가기"'):''}<h2 id="sheet-title">${esc(title)}</h2>${btn('close',icon('x'),'hw-icon','aria-label="닫기"')}</header>${body}`;icons();sheet.querySelector('button')?.focus({preventScroll:true});sheet.scrollTop=0;}
 function errorDialog(message){state.busy=false;sheetOpen('작업을 완료하지 못했어요',`<p>${esc(message)}</p>`,btn('close','닫기','primary'));}
 function inlineError(message){const e=$('#operation-error');if(e)e.textContent=message;else errorDialog(message);}
 function settingsSheet(){
- hwDialog('설정',`<section class="hw-setting-group hw-theme-group"><h3>화면 테마</h3><div class="hw-theme-options" role="group" aria-label="화면 테마">${[['system','monitor','기기 설정'],['light','sun','밝게'],['dark','moon','어둡게']].map(([value,ic,label])=>btn('set-theme',`${icon(ic)}<span>${label}</span>`,'',`data-value="${value}" aria-pressed="${state.theme===value}"`)).join('')}</div></section><div class="hw-setting-group">${btn('help',`${icon('circle-help')}<span class="hw-setting-copy">사용 방법</span>${icon('chevron-right')}`,'hw-setting')}${btn('about',`${icon('info')}<span class="hw-setting-copy">앱 정보</span>${icon('chevron-right')}`,'hw-setting')}</div>`);
+ hwDialog('설정',`<section class="hw-setting-group hw-theme-group"><h3>화면 테마</h3><div class="hw-theme-options" role="group" aria-label="화면 테마">${[['system','monitor','기기 설정'],['light','sun','밝게'],['dark','moon','어둡게']].map(([value,ic,label])=>btn('set-theme',`${icon(ic)}<span>${label}</span>`,'',`data-value="${value}" aria-pressed="${state.theme===value}"`)).join('')}</div></section><section class="hw-setting-group termux-settings"><h3>Termux 프로젝트</h3><p>프로젝트 폴더를 연결하면 하위 폴더의 HWP·HWPX도 검색해요. 편집한 문서는 기기 저장공간에 복사본으로 저장해요.</p>${btn('connect-folder',icon('folder-plus')+'<span class="hw-setting-copy">Termux 프로젝트 폴더 연결</span>','hw-setting')}${state.drafts.length?btn('draft-list',icon('history')+'<span class="hw-setting-copy">복구할 편집 내용 '+state.drafts.length+'개</span>','hw-setting'):''}${state.connectedFolders.map(f=>`<div class="row"><span class="hw-setting-copy">${esc(f.name)}${f.active?'':' · 다시 연결 필요'}</span>${btn('disconnect-folder','연결 해제','textbtn',`data-id="${esc(f.id)}"`)}</div>`).join('')}</section><div class="hw-setting-group">${btn('help',`${icon('circle-help')}<span class="hw-setting-copy">사용 방법</span>${icon('chevron-right')}`,'hw-setting')}${btn('about',`${icon('info')}<span class="hw-setting-copy">앱 정보</span>${icon('chevron-right')}`,'hw-setting')}</div>`);
  $('[data-action="settings"]')?.setAttribute('aria-expanded','true');
 }
 function render(){applyTheme();if(state.current)return renderReader();state.tab='all';renderLibrary();}
@@ -41,6 +42,8 @@ function renderLibrary(){
  content.innerHTML=`<div class="hw-screen"><header class="hw-header"><label class="hw-search">${icon('search')}<input id="search" type="search" autocomplete="off" aria-label="문서 이름 검색" placeholder="문서 이름 검색" value="${esc(state.term)}">${btn('clear',icon('x'),'hw-icon hw-clear',`aria-label="검색어 지우기" ${state.term?'':'hidden'}`)}</label>${btn('settings',icon('settings'),'hw-icon hw-settings','aria-label="설정" aria-haspopup="dialog" aria-expanded="false"')}</header><div class="notice" role="status" id="notice">${esc(state.notice)}</div><div class="hw-tools" ${ready?'':'hidden'}><span id="count"></span><div class="hw-sort-tools"><select id="sort" aria-label="문서 정렬"><option value="recent">최근 수정순</option><option value="name">이름순</option><option value="size">큰 파일순</option></select>${btn('view',icon(state.view==='grid'?'list':'grid-2x2'),'hw-icon',`aria-label="${state.view==='grid'?'목록 보기':'격자 보기'}"`)}</div></div><div id="scan" class="scan" ${state.scanning?'':'hidden'}><span id="scan-status" role="status">기기의 문서를 찾고 있어요</span>${btn('cancel-scan','중지','textbtn')}</div><div class="hw-doc-area"><div class="hw-doc-scroll" id="library-scroll"><div class="hw-docs" data-view="${state.view}" id="docs"></div><div class="hw-empty" id="empty" hidden></div></div><div class="hw-rail library-rail" ${ready?'':'hidden'}><button type="button" class="hw-rail-thumb" id="library-thumb" role="scrollbar" aria-label="문서함 빠르게 스크롤" aria-controls="library-scroll" aria-valuemin="0" aria-valuemax="100"></button></div></div></div>`;
  $('#sort').value=state.sort;renderDocs();$('#library-scroll').scrollTop=state.libraryScroll;bindPull($('#library-scroll'));$('#library-scroll').addEventListener('scroll',()=>{state.libraryScroll=$('#library-scroll').scrollTop;cancelLongPress();updateRail(false);scheduleThumbs();},{passive:true});bindRail(false);libraryObserver?.disconnect();libraryObserver=new ResizeObserver(()=>updateRail(false));libraryObserver.observe($('#library-scroll'));icons();updateRail(false);
 }
+// Documents from shared storage cannot be opened without all-files access; linked Termux documents (external) stay.
+function dropSharedDocs(){for(const d of state.docs)if(!d.external&&thumbs.has(d.id)){URL.revokeObjectURL(thumbs.get(d.id));thumbs.delete(d.id);}state.docs=state.docs.filter(d=>d.external);}
 function listDocs(){return state.docs.filter(d=>d.name.toLocaleLowerCase().includes(state.term.trim().toLocaleLowerCase())).sort((a,b)=>{
  const favorite=Number(!!state.favorites[b.id])-Number(!!state.favorites[a.id]);
  return favorite||(state.sort==='name'?a.name.localeCompare(b.name,'ko'):state.sort==='size'?b.size-a.size:b.modified-a.modified);
@@ -56,15 +59,18 @@ function renderDocs(){if(!$('#docs'))return;const granted=state.known&&state.per
  icons();intro.mount(locked?empty.querySelector('.hw-onboarding'):null);updateRail(false);scheduleThumbs();
 }
 function shortPath(path){for(const v of state.volumes)if(path===v.path||path.startsWith(v.path+'/'))return path===v.path?v.name:path.slice(v.path.length+1);return path;}
-async function status(){const s=await native('status');const newly=s.permission&&!state.permission;state.permission=s.permission;state.volumes=s.volumes;state.version=s.version||state.version;state.known=true;return newly;}
+async function status(){const s=await native('status');const had=state.permission,shared=state.sharedPermission;state.connectedFolders=s.connectedFolders||[];state.sharedPermission=s.permission;state.permission=s.permission||state.connectedFolders.some(f=>f.active);const newly=(!had&&state.permission)||(!shared&&state.sharedPermission);state.volumes=s.volumes;state.version=s.version||state.version;state.known=true;return newly;}
 async function refresh(){if(state.scanning||!state.permission)return;state.scanning=true;state.notice='';state.scanSeen=new Set();render();
  try{const r=await(scanPromise=native('scan'));if(!r.cancelled&&!r.limited)state.docs=state.docs.filter(d=>state.scanSeen.has(d.id));if(r.limited)state.notice='검색 한도에 도달했어요. 찾은 문서는 계속 볼 수 있어요.';else if(r.skipped)state.notice='접근할 수 없는 일부 폴더는 건너뛰었어요.';announce(r.cancelled?'새로고침을 중지했습니다.':'새로고침을 완료했습니다.');}
  catch(e){state.notice=e.message;}finally{state.scanning=false;scanPromise=null;if(!state.current)render();}
 }
 // Returning from Android settings (or any resume) re-reads the real permission: newly granted scans,
 // revoked hides the list again, unchanged leaves the screen and any open dialog as they are.
-window.NativeEvent=async(name,data)=>{if(name==='resume'){try{const had=state.permission,grant=await status();if(state.current)return;if(grant){if(!state.busy)sheetClose();await refresh();}else if(had&&!state.permission){if(scanPromise)native('cancelScan').catch(()=>{});if(!state.busy)sheetClose();render();}}catch{}return;}
- if(name==='scanBatch'){for(const d of data){state.scanSeen.add(d.id);const i=state.docs.findIndex(x=>x.id===d.id);if(i>=0)state.docs[i]=d;else state.docs.push(d);}if(!state.current)renderDocs();}
+window.NativeEvent=async(name,data)=>{if(name==='foldersChanged'){await status();if(!state.current){sheetClose();if(state.permission)await refresh();else render();}return;}if(name==='resume'){textScaleCache=null;try{const had=state.permission,hadShared=state.sharedPermission,grant=await status();if(state.current)return;
+  // All-files access was revoked while a Termux link still keeps the library usable: the shared results are stale. Drop them and rescan only the links.
+  const revoked=hadShared&&!state.sharedPermission;if(revoked){const running=scanPromise;if(running)native('cancelScan').catch(()=>{});await running?.catch(()=>{});dropSharedDocs();}
+  if(grant||(revoked&&state.permission)){if(!state.busy)sheetClose();await refresh();}else if(had&&!state.permission||revoked){if(scanPromise)native('cancelScan').catch(()=>{});if(!state.busy)sheetClose();render();}}catch{}return;}
+ if(name==='scanBatch'){for(const d of data){if(!d.external&&!state.sharedPermission)continue;state.scanSeen.add(d.id);const i=state.docs.findIndex(x=>x.id===d.id);if(i>=0)state.docs[i]=d;else state.docs.push(d);}if(!state.current)renderDocs();}
  if(name==='scanProgress'&&$('#scan-status'))$('#scan-status').textContent=`${data.folders}개 폴더 확인 · ${data.documents}개 문서`;
 };
 const safeTags=new Set('svg g defs clipPath rect text tspan path line polyline polygon circle ellipse image use symbol linearGradient radialGradient stop pattern mask marker title desc'.toLowerCase().split(' '));
@@ -91,7 +97,7 @@ async function makeThumbs(){if(thumbRunning||state.current||state.view==='list')
  }finally{thumbRunning=false;}
 }
 function migrate(oldId,d){const idx=state.docs.findIndex(x=>x.id===oldId);if(idx>=0)state.docs[idx]=d;else state.docs.push(d);if(oldId!==d.id){if(state.favorites[oldId])state.favorites[d.id]=true;if(state.positions[oldId])state.positions[d.id]=state.positions[oldId];delete state.favorites[oldId];delete state.positions[oldId];}if(thumbs.has(oldId)){const url=thumbs.get(oldId);thumbs.delete(oldId);thumbs.set(d.id,url);}persist();}
-function menu(id){const d=state.docs.find(x=>x.id===id);if(!d)return;hwDialog(d.name,[['rename','pencil','이름 변경'],['move','folder-input','파일 이동'],['pdf','file-down','PDF 저장'],['info','info','파일 정보']].map(([a,i,t])=>btn(a,`${icon(i)}<span>${t}</span>`,'hw-menu-action',`data-id="${id}"`)).join(''),{cls:'hw-library-menu'});}
+function menu(id){const d=state.docs.find(x=>x.id===id);if(!d)return;hwDialog(d.name,(d.external?[['pdf','file-down','PDF 저장'],['info','info','파일 정보']]:[['rename','pencil','이름 변경'],['move','folder-input','파일 이동'],['pdf','file-down','PDF 저장'],['info','info','파일 정보']]).map(([a,i,t])=>btn(a,`${icon(i)}<span>${t}</span>`,'hw-menu-action',`data-id="${id}"`)).join(''),{cls:'hw-library-menu'});}
 function deleteConfirm(id){const d=state.docs.find(x=>x.id===id);sheetOpen('문서를 삭제할까요?',`<p class="context-file">${esc(d.name)}</p><p>삭제한 문서는 되돌릴 수 없어요.</p><p class="operation-error" id="operation-error" role="status"></p>`,btn('close','아니오')+btn('delete-yes','예, 삭제','primary danger',`data-id="${id}"`));}
 async function deleteDoc(id){const d=state.docs.find(x=>x.id===id);if(!d||state.busy)return;state.busy=true;sheet.querySelectorAll('button').forEach(b=>b.disabled=true);
  try{await native('delete',{id});state.docs=state.docs.filter(x=>x.id!==id);delete state.favorites[id];delete state.positions[id];if(thumbs.has(id)){URL.revokeObjectURL(thumbs.get(id));thumbs.delete(id);}persist();state.busy=false;sheetClose();renderDocs();announce(`${d.name} 문서를 삭제했어요.`);}
@@ -105,6 +111,7 @@ function renameDialog(id){const d=state.docs.find(x=>x.id===id);sheetOpen('이�
 function nameError(s){if(!s.trim())return '이름을 입력해 주세요.';if(s!==s.trim()||s==='.'||s==='..'||/[\/\\\u0000-\u001f\u007f]/.test(s))return '앞뒤 공백, /, \\ 또는 제어 문자는 사용할 수 없어요.';if(new TextEncoder().encode(s).length>230)return '이름을 조금 줄여 주세요.';return '';}
 async function renameConfirm(id){const d=state.docs.find(x=>x.id===id),name=$('#rename').value;const e=nameError(name);if(e)return inlineError(e);if(name+'.'+d.format===d.name){sheetClose();return;}state.busy=true;sheet.querySelectorAll('button').forEach(b=>b.disabled=true);try{const r=await native('rename',{id,name:name+'.'+d.format});migrate(id,r);state.busy=false;sheetClose();renderDocs();}catch(e){state.busy=false;sheet.querySelectorAll('button').forEach(b=>b.disabled=false);inlineError(e.message);}}
 async function pickFolder(kind,id){
+ if(!state.sharedPermission){sheetOpen('파일 접근이 필요해요','<p>복사본을 저장하려면 기기 파일 접근을 허용해 주세요. 편집 내용은 유지돼요.</p>',btn('close','닫기')+btn('allow','파일 접근 허용','primary'));return;}
  const d=state.docs.find(x=>x.id===id)||state.current;
  const home=state.volumes.some(v=>d.folder===v.path||d.folder?.startsWith(v.path+'/'))?d.folder:state.volumes[0]?.path;
  state.folder={kind,id,source:d,root:state.volumes[0]?.path,path:home,folders:[],touched:false,term:'',sort:'date',desc:true,creating:false,name:d.name.replace(/\.[^.]+$/,''),filename:kind==='pdf'?d.name.replace(/\.[^.]+$/,'.pdf'):d.name,writable:false};
@@ -118,7 +125,7 @@ async function enterFolder(path,touched=true){const f=state.folder;if(!f)return;
 function folderRender(){const f=state.folder;if(!f)return;
  const v=state.volumes.find(v=>f.path===v.path||f.path.startsWith(v.path+'/'));if(!v)return;f.root=v.path;
  const segments=f.path.slice(v.path.length).split('/').filter(Boolean);let p=v.path;const crumbs=segments.map(x=>{p+='/'+x;return {name:x,path:p};});
- sheet.innerHTML=`<div class="folder-head"><div class="row"><h2 id="sheet-title">폴더 선택</h2>${btn('folder-search',icon('search'),'icon','aria-label="폴더 검색"')}${btn('folder-new',icon('folder-plus'),'icon','aria-label="새 폴더 만들기"')}</div><label class="folder-search" ${f.search?'':'hidden'}>${icon('search')}<input id="folder-query" aria-label="현재 폴더에서 검색" placeholder="현재 폴더에서 검색" value="${esc(f.term)}">${btn('folder-clear',icon('x'),'icon','aria-label="검색어 지우기"')}</label></div><div class="folder-path">${btn('folder-up',icon('arrow-up'),'icon',`aria-label="상위 폴더" ${f.path===v.path?'disabled':''}`)}${btn('volume',esc(v.name)+icon('chevron-down'),'storage-pill')}${crumbs.slice(-2).map(c=>icon('chevron-right')+btn('folder-enter',esc(c.name),'crumb',`data-path="${esc(c.path)}" title="${esc(c.path)}"`)).join('')}</div><div class="folder-order"><select id="folder-sort" aria-label="폴더 정렬"><option value="date">날짜순</option><option value="name">이름순</option></select>${btn('folder-direction',icon(f.desc?'arrow-down':'arrow-up'),'icon',`aria-label="${f.desc?'오름차순':'내림차순'}으로 전환"`)}</div><div id="create-area"></div><div id="folder-list" class="folder-list"></div><div id="operation-error" class="error folder-error" role="alert"></div><footer class="folder-footer">${f.kind==='move'?`<div class="moving-file">${icon('file-text')}<span>${esc(f.source.name)}</span></div>`:`<label for="filename" class="field-label">파일 이름</label><div class="name-entry"><input id="filename" class="field" value="${esc(f.name)}" autocomplete="off"><span class="extension">.${f.kind==='pdf'?'pdf':f.source.format}</span></div>`}<div class="sheet-actions">${btn('close','취소')}${btn('folder-confirm',f.kind==='move'?'여기로 이동':'여기에 저장','primary',canChoose(f)?'':'disabled')}</div></footer>`;
+ sheet.innerHTML=`<div class="folder-head"><div class="row"><h2 id="sheet-title">폴더 선택</h2>${btn('folder-search',icon('search'),'icon','aria-label="폴더 검색"')}${btn('folder-new',icon('folder-plus'),'icon','aria-label="새 폴더 만들기"')}</div><label class="folder-search" ${f.search?'':'hidden'}>${icon('search')}<input id="folder-query" aria-label="현재 폴더에서 검색" placeholder="현재 폴더에서 검색" value="${esc(f.term)}">${btn('folder-clear',icon('x'),'icon','aria-label="검색어 지우기"')}</label></div>${f.kind==='save'&&f.source.draft?'<p class="context-file">복구한 내용은 원본을 바꾸지 않고 새 파일로 저장해요.</p>':f.kind==='save'&&f.source.external?'<p class="context-file">연결 폴더의 원본은 유지하고 복사본을 저장해요.</p>':''}<div class="folder-path">${btn('folder-up',icon('arrow-up'),'icon',`aria-label="상위 폴더" ${f.path===v.path?'disabled':''}`)}${btn('volume',esc(v.name)+icon('chevron-down'),'storage-pill')}${crumbs.slice(-2).map(c=>icon('chevron-right')+btn('folder-enter',esc(c.name),'crumb',`data-path="${esc(c.path)}" title="${esc(c.path)}"`)).join('')}</div><div class="folder-order"><select id="folder-sort" aria-label="폴더 정렬"><option value="date">날짜순</option><option value="name">이름순</option></select>${btn('folder-direction',icon(f.desc?'arrow-down':'arrow-up'),'icon',`aria-label="${f.desc?'오름차순':'내림차순'}으로 전환"`)}</div><div id="create-area"></div><div id="folder-list" class="folder-list"></div><div id="operation-error" class="error folder-error" role="alert"></div><footer class="folder-footer">${f.kind==='move'?`<div class="moving-file">${icon('file-text')}<span>${esc(f.source.name)}</span></div>`:`<label for="filename" class="field-label">파일 이름</label><div class="name-entry"><input id="filename" class="field" value="${esc(f.name)}" autocomplete="off"><span class="extension">.${f.kind==='pdf'?'pdf':f.source.format}</span></div>`}<div class="sheet-actions">${btn('close','취소')}${btn('folder-confirm',f.kind==='move'?'여기로 이동':'여기에 저장','primary',canChoose(f)?'':'disabled')}</div></footer>`;
  $('#folder-sort').value=f.sort;folderRows();icons();if(f.search)$('#folder-query').focus();}
 function canChoose(f){return !f.creating&&f.writable&&(f.kind!=='move'||f.path!==f.source.folder);}
 function folderRows(){const f=state.folder;if(!f||!$('#folder-list'))return;const list=f.folders.filter(x=>x.name.toLocaleLowerCase().includes(f.term.toLocaleLowerCase())).sort((a,b)=>(f.sort==='name'?a.name.localeCompare(b.name,'ko'):a.modified-b.modified)*(f.desc?-1:1));$('#folder-list').innerHTML=list.map(d=>btn('folder-enter',icon('folder')+`<span class="folder-row-text"><span class="folder-row-name">${esc(d.name)}</span><span class="folder-row-date">${fmtDate(d.modified)}</span></span><span class="folder-count">${d.count==null?'':d.count+'개'}</span>`,'folder-row',`data-path="${esc(d.path)}"`)).join('')||`<div class="folder-empty">${f.term?'일치하는 폴더가 없어요':'하위 폴더가 없어요'}</div>`;icons();}
@@ -128,20 +135,26 @@ async function folderConfirm(){const f=state.folder;if(!f||!canChoose(f)||state.
  const target=f.path+'/'+(f.kind==='move'?f.source.name:base+'.'+(f.kind==='pdf'?'pdf':f.source.format));
  state.busy=true;sheet.querySelectorAll('button,input,select').forEach(b=>b.disabled=true);$('#operation-error').textContent=f.kind==='pdf'?'PDF를 만들고 있어요…':f.kind==='move'?'파일을 이동하고 있어요…':'문서를 저장하고 있어요…';
  try{if(f.kind==='move'){const r=await native('move',{id:f.id,parent:f.path});migrate(f.id,r);}else if(f.kind==='pdf')await createPdf(f.id,target);else await saveDocument(target,false);state.busy=false;sheetClose();if(state.current){const n=$('.reader-name');if(n)n.textContent=state.current.name;updateEditorButtons();}else renderDocs();announce(f.kind==='move'?'파일을 이동했습니다.':'저장했습니다.');}
- catch(e){state.busy=false;sheet.querySelectorAll('button,input,select').forEach(b=>b.disabled=false);inlineError(e.message);}
+ catch(e){state.busy=false;if(f.kind==='pdf'&&/^PASSWORD_/.test(e.message)){state.pdfJob={id:f.id,target};return askPdfPassword(e.message==='PASSWORD_WRONG');}sheet.querySelectorAll('button,input,select').forEach(b=>b.disabled=false);inlineError(e.message);}
 }
-async function openDoc(id,password){if(state.busy)return;state.busy=true;const d=state.docs.find(x=>x.id===id);sheetOpen('문서 열기',`<p>${esc(d.name)}</p><p class="busy-status">문서를 읽고 있어요…</p>`);try{const r=await bytesFor(id);if(state.engine)state.engine.stop('새 문서를 열었습니다.');state.engine=new Engine();const meta=await state.engine.run('open',password==null?{bytes:r.bytes}:{bytes:r.bytes,password});state.current=r.meta;state.sha=r.sha;state.meta=meta;state.sessionSaved=false;state.lastBackup=null;state.editing=false;state.dirty=false;state.selection=null;state.busy=false;sheetClose();renderReader();}catch(e){state.busy=false;if(e.message==='PASSWORD_REQUIRED'||e.message==='PASSWORD_WRONG')return askPassword(id,e.message==='PASSWORD_WRONG');errorDialog(e.message);}}
+// The password stays in this closure and the worker's memory only. The PDF itself is a plain (unencrypted) file, so say so first.
+function askPdfPassword(wrong){const job=state.pdfJob,d=state.docs.find(x=>x.id===job.id);sheetOpen('암호가 걸린 문서를 PDF로 저장',`<p>${esc(d?.name)}</p><p><strong>저장되는 PDF에는 암호가 걸리지 않아요.</strong> 보관 위치를 확인해 주세요.</p><label class="field-label" for="doc-password">문서 암호</label><input id="doc-password" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go"><div id="operation-error" class="error" role="alert">${wrong?'암호가 맞지 않아요. 다시 입력해 주세요.':''}</div>`,btn('close','취소')+btn('pdf-pw-go','PDF로 저장','primary'));$('#doc-password').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('[data-action="pdf-pw-go"]')?.click();}});}
+async function pdfWithPassword(password){const job=state.pdfJob;if(!job||state.busy)return;state.busy=true;sheet.querySelectorAll('button,input').forEach(b=>b.disabled=true);
+ try{await createPdf(job.id,job.target,password);state.pdfJob=null;state.busy=false;sheetClose();renderDocs();announce('PDF로 저장했습니다.');}
+ catch(e){state.busy=false;if(/^PASSWORD_/.test(e.message))return askPdfPassword(e.message==='PASSWORD_WRONG');state.pdfJob=null;errorDialog(e.message);}}
+async function openDoc(id,password){if(state.busy)return;state.busy=true;const d=state.docs.find(x=>x.id===id);sheetOpen('문서 열기',`<p>${esc(d.name)}</p><p class="busy-status">문서를 읽고 있어요…</p>`);try{const r=await bytesFor(id);if(state.engine)state.engine.stop('새 문서를 열었습니다.');state.engine=new Engine();const meta=await state.engine.run('open',password==null?{bytes:r.bytes}:{bytes:r.bytes,password});state.current=r.meta;state.sha=r.sha;state.meta=meta;state.sessionSaved=false;state.lastBackup=null;state.memos=[];state.highlight=false;state.painter=false;state.editing=false;state.dirty=false;state.selection=null;state.rangeSel=null;state.clip=null;state.recovered=false;state.draftId=r.meta.id+'#'+sessionId();state.draftExists=false;state.draftRev=-1;state.busy=false;sheetClose();renderReader();await refreshMemos();}catch(e){state.busy=false;if(e.message==='PASSWORD_REQUIRED'||e.message==='PASSWORD_WRONG')return askPassword(id,e.message==='PASSWORD_WRONG');errorDialog(e.message);}}
+const sessionId=()=>globalThis.crypto?.randomUUID?.()||Math.random().toString(36).slice(2)+Date.now().toString(36);
 // Encrypted HWP/HWPX: the password goes only to the document worker's memory (never stored or logged); saving keeps the encryption.
-function askPassword(id,wrong){const d=state.docs.find(x=>x.id===id);sheetOpen('암호가 걸린 문서',`<p>${esc(d?.name)}</p><label class="field-label" for="doc-password">문서 암호</label><input id="doc-password" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">${wrong?'<div class="error" role="alert">암호가 맞지 않아요. 다시 입력해 주세요.</div>':''}`,btn('close','취소')+btn('pw-open','열기','primary',`data-id="${id}"`));const i=$('#doc-password');i.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('[data-action="pw-open"]')?.click();}});}
+function askPassword(id,wrong,key){const d=key?state.drafts.find(x=>x.key===key):state.docs.find(x=>x.id===id);sheetOpen('암호가 걸린 문서',`<p>${esc(d?.name)}</p><label class="field-label" for="doc-password">문서 암호</label><input id="doc-password" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">${wrong?'<div class="error" role="alert">암호가 맞지 않아요. 다시 입력해 주세요.</div>':''}`,btn('close','취소')+btn('pw-open','열기','primary',`data-id="${esc(id||'')}" data-key="${esc(key||'')}"`));const i=$('#doc-password');i.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('[data-action="pw-open"]')?.click();}});}
 function revokePages(){for(const u of pageUrls.values())URL.revokeObjectURL(u);pageUrls.clear();readerObserver?.disconnect();toolbarObserver?.disconnect();}
 function renderReader(){
- revokePages();const d=state.current,p=state.positions[d.id]||{},meta=state.meta;state.zoom=Math.max(100,Math.min(400,p.zoom||100));state.menus=true;const generation=++loadingGeneration;
+ revokePages();const d=state.current,p=state.positions[d.id]||{},meta=state.meta;state.zoom=clampZoom(p.zoom||100);state.menus=true;const generation=++loadingGeneration;
  content.innerHTML=`<section class="reader ${state.editing?'is-editing':''}"><header class="reader-top read-controls" ${state.editing?'hidden':''}><div class="row">${btn('back',icon('arrow-left'),'icon','aria-label="문서함으로"')}<div class="reader-title">${btn('info',esc(d.name),'reader-name',`data-id="${d.id}"`)}<span class="page-label" id="page-label">1 / ${meta.count} 페이지</span></div>${btn('edit',icon('pencil'),'edit-trigger','aria-label="문서 편집"')}</div></header><div class="edit-top read-controls" ${state.editing?'':'hidden'}>${btn('cancel-edit','취소','textbtn')}${btn('save','저장','textbtn','disabled')}${btn('save-as','다른 이름으로 저장','textbtn')}</div>${state.editing?editBottom():''}<div class="reader-scroll"><div id="pages" class="pages">${meta.sizes.map((s,i)=>`<section class="page" data-page="${i}" style="aspect-ratio:${s.width}/${s.height}" aria-label="${i+1}페이지"></section>`).join('')}</div></div><div class="reader-rail" id="reader-rail"><button type="button" id="reader-thumb" class="reader-thumb" role="scrollbar" aria-label="문서 페이지 빠르게 이동" aria-controls="pages" aria-valuemin="1" aria-valuemax="${meta.count}"><span class="page-bubble">1 / ${meta.count}</span></button></div></section>`;
  const sc=$('.reader-scroll');setPageWidth();updateInset();sc.scrollTop=p.scroll>0?Math.max(0,p.scroll+parseFloat(sc.style.paddingTop)-(p.chromeInset??parseFloat(sc.style.paddingTop))):0;sc.scrollLeft=p.left||0;
  readerObserver=new IntersectionObserver(entries=>{for(const e of entries)if(e.isIntersecting)renderPage(Number(e.target.dataset.page),generation);},{root:sc,rootMargin:'900px 0px'});document.querySelectorAll('.page').forEach(p=>readerObserver.observe(p));
  let scrollFrame=0;sc.addEventListener('scroll',()=>{if(scrollFrame)return;scrollFrame=requestAnimationFrame(()=>{scrollFrame=0;rememberPosition();showReaderRail();updateRail(true);updatePageLabel();evictPages();});},{passive:true});
  toolbarObserver=new ResizeObserver(()=>updateInset(true));toolbarObserver.observe(state.editing?$('.edit-top'):$('.reader-top'));if(state.editing)toolbarObserver.observe($('.edit-bottom'));
- bindRail(true);bindPinch(sc);icons();updateEditorButtons();updatePageLabel();showReaderRail();
+ bindRail(true);bindPinch(sc);icons();updateEditorButtons();updatePageLabel();showReaderRail();renderMemoMarks();if(state.panel)renderPanel();
 }
 // Page renders go one at a time; a request whose page scrolled out of range is dropped (the observer asks again),
 // and a forced re-render requested while one is in flight runs again afterwards so no pre-edit image stays.
@@ -149,53 +162,78 @@ let pageChain=Promise.resolve();
 function nearView(el){const sc=$('.reader-scroll');if(!sc)return false;const r=sc.getBoundingClientRect(),b=el.getBoundingClientRect();return b.bottom>r.top-900&&b.top<r.bottom+900;}
 async function renderPage(index,generation=loadingGeneration,force=false){const el=$(`[data-page="${index}"]`);if(!el)return;if(el.dataset.loading){if(force)el.dataset.stale='1';return;}if(el.dataset.loaded&&!force)return;el.dataset.loading='1';
  const job=pageChain.then(async()=>{if(generation!==loadingGeneration||!el.isConnected)return null;if(!force&&!nearView(el))return null;return state.engine.run('page',{index});});pageChain=job.catch(()=>{});
- try{const p=await job;if(!p||generation!==loadingGeneration)return;const u=svgUrl(p.svg);if(pageUrls.has(index))URL.revokeObjectURL(pageUrls.get(index));pageUrls.set(index,u);let image=el.querySelector('img');if(!image){image=new Image();el.prepend(image);}image.src=u;image.alt=`${index+1}페이지`;el.dataset.loaded='1';}catch(e){if(generation===loadingGeneration)el.innerHTML=`<div class="page-error">${esc(e.message)}</div>`;}finally{delete el.dataset.loading;if(el.dataset.stale){delete el.dataset.stale;renderPage(index,generation,true);}}}
+ try{const p=await job;if(!p||generation!==loadingGeneration)return;const u=svgUrl(p.svg);if(pageUrls.has(index))URL.revokeObjectURL(pageUrls.get(index));pageUrls.set(index,u);let image=el.querySelector('img');if(!image){image=new Image();el.prepend(image);}image.src=u;image.alt=`${index+1}페이지`;el.dataset.loaded='1';renderMemoMarks(index);}catch(e){if(generation===loadingGeneration)el.innerHTML=`<div class="page-error">${esc(e.message)}</div>`;}finally{delete el.dataset.loading;if(el.dataset.stale){delete el.dataset.stale;renderPage(index,generation,true);}}}
 function evictPages(){if(pageUrls.size<=24)return;const sc=$('.reader-scroll');if(!sc)return;const r=sc.getBoundingClientRect();for(const [i,u] of pageUrls){if(state.editing&&state.selection?.start.pageIndex===i)continue;const p=$(`[data-page="${i}"]`),b=p?.getBoundingClientRect();if(b&&(b.bottom<r.top-2500||b.top>r.bottom+2500)){URL.revokeObjectURL(u);pageUrls.delete(i);p.querySelector('img')?.remove();delete p.dataset.loaded;}}}
 function rememberPosition(){const sc=$('.reader-scroll');if(!sc||!state.current)return;state.positions[state.current.id]={scroll:sc.scrollTop,left:sc.scrollLeft,zoom:state.zoom,chromeInset:parseFloat(sc.style.paddingTop)||16};clearTimeout(scrollTimer);scrollTimer=setTimeout(persist,150);}
-function updateInset(preserve=false){const sc=$('.reader-scroll');if(!sc)return;const h=state.menus?(state.editing?$('.edit-top'):$('.reader-top')).getBoundingClientRect().height+16:16;const old=parseFloat(sc.style.paddingTop)||parseFloat(getComputedStyle(sc).paddingTop);const y=sc.scrollTop;sc.style.paddingTop=h+'px';const eb=state.editing&&$('.edit-bottom');if(eb)sc.style.paddingBottom=(state.menus?eb.getBoundingClientRect().height:0)+30+'px';if(preserve&&y>0)sc.scrollTop=Math.max(0,y+h-old);}
-function showMenus(show){if(!show&&state.editing&&(state.panel||hasRange()))return;state.menus=show;const r=$('.reader');if(!r)return;r.classList.toggle('menus-hidden',!show);for(const el of r.querySelectorAll('.read-controls')){el.inert=!show;el.setAttribute('aria-hidden',String(!show));}updateInset(true);}
-function setPageWidth(){const p=$('#pages');if(p)p.style.width=state.zoom+'%';}
+function updateInset(preserve=false){const sc=$('.reader-scroll');if(!sc)return;const h=state.menus?(state.editing?$('.edit-top'):$('.reader-top')).getBoundingClientRect().height+16:16;const old=parseFloat(sc.style.paddingTop)||parseFloat(getComputedStyle(sc).paddingTop);const y=sc.scrollTop;sc.style.paddingTop=h+'px';const eb=state.editing&&$('.edit-bottom');if(eb)sc.style.paddingBottom=(state.menus&&!tabletLayout()?eb.getBoundingClientRect().height:0)+30+'px';if(preserve&&y>0)sc.scrollTop=Math.max(0,y+h-old);}
+function showMenus(show){if(!show&&state.editing&&(tabletLayout()||desktopInput()))return;if(!show&&state.editing&&(state.panel||hasRange()))return;state.menus=show;const r=$('.reader');if(!r)return;r.classList.toggle('menus-hidden',!show);for(const el of r.querySelectorAll('.read-controls')){el.inert=!show;el.setAttribute('aria-hidden',String(!show));}updateInset(true);}
+function setPageWidth(){const p=$('#pages');if(p){p.style.width=state.zoom+'%';p.style.maxWidth=(960*state.zoom/100)+'px';if(!CSS.supports('aspect-ratio','1 / 1')){const width=p.clientWidth;for(const el of p.querySelectorAll('.page')){const size=state.meta?.sizes[Number(el.dataset.page)];if(size)el.style.height=(width*size.height/size.width)+'px';}}}}
+function zoomDocument(value,x,y){
+ const sc=$('.reader-scroll'),pages=$('#pages');if(!sc||!pages)return;
+ const before=pages.getBoundingClientRect(),viewport=sc.getBoundingClientRect();
+ x=x??viewport.left+sc.clientWidth/2;y=y??viewport.top+Math.min(sc.clientHeight/2,250);
+ state.zoom=clampZoom(value);setPageWidth();
+ const after=pages.getBoundingClientRect(),ratio=after.width/before.width;
+ sc.scrollLeft+=after.left+(x-before.left)*ratio-x;
+ sc.scrollTop+=after.top+(y-before.top)*ratio-y;
+ if(state.selection||state.rangeSel)relayoutEditor();renderMemoMarks();rememberPosition();showReaderRail();
+ const out=$('#document-zoom');if(out)out.textContent=Math.round(state.zoom)+'%';
+}
 function bindPinch(sc){
- if(state.editing){const block=e=>{if(e.touches?.length>1){sc.dataset.pinching='1';e.preventDefault();}else if(e.ctrlKey)e.preventDefault();};sc.addEventListener('touchstart',block,{passive:false});sc.addEventListener('touchmove',block,{passive:false});sc.addEventListener('wheel',block,{passive:false});const end=()=>setTimeout(()=>delete sc.dataset.pinching,350);sc.addEventListener('touchend',end,{passive:true});sc.addEventListener('touchcancel',end,{passive:true});return;}
+ sc.addEventListener('wheel',e=>{if(!e.ctrlKey)return;e.preventDefault();const delta=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?sc.clientHeight:1);zoomDocument(state.zoom*Math.exp(-Math.max(-125,Math.min(125,delta))*.002),e.clientX,e.clientY);},{passive:false});
+ if(state.editing){const block=e=>{if(e.touches?.length>1){sc.dataset.pinching='1';e.preventDefault();}else if(e.ctrlKey)e.preventDefault();};sc.addEventListener('touchstart',block,{passive:false});sc.addEventListener('touchmove',block,{passive:false});const end=()=>setTimeout(()=>delete sc.dataset.pinching,350);sc.addEventListener('touchend',end,{passive:true});sc.addEventListener('touchcancel',end,{passive:true});return;}
  let start=null;sc.addEventListener('touchstart',e=>{if(e.touches.length===2){flushEdit();const a=e.touches[0],b=e.touches[1],r=sc.getBoundingClientRect(),x=(a.clientX+b.clientX)/2-r.left,y=(a.clientY+b.clientY)/2-r.top;start={dist:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),zoom:state.zoom,x,y,docX:sc.scrollLeft+x,docY:sc.scrollTop+y-parseFloat(sc.style.paddingTop)};sc.dataset.pinching='1';cancelLongPress();}},{passive:true});
- sc.addEventListener('touchmove',e=>{if(!start||e.touches.length!==2)return;e.preventDefault();const a=e.touches[0],b=e.touches[1],z=Math.max(100,Math.min(400,start.zoom*Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)/start.dist));state.zoom=z;setPageWidth();const ratio=z/start.zoom;sc.scrollLeft=start.docX*ratio-start.x;sc.scrollTop=start.docY*ratio-start.y+parseFloat(sc.style.paddingTop);showReaderRail();},{passive:false});
+ sc.addEventListener('touchmove',e=>{if(!start||e.touches.length!==2)return;e.preventDefault();const a=e.touches[0],b=e.touches[1],z=clampZoom(start.zoom*Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)/start.dist);state.zoom=z;setPageWidth();const ratio=z/start.zoom;sc.scrollLeft=start.docX*ratio-start.x;sc.scrollTop=start.docY*ratio-start.y+parseFloat(sc.style.paddingTop);showReaderRail();},{passive:false});
  const end=()=>{if(start){start=null;rememberPosition();if(state.selection)placeEditor(state.selection);setTimeout(()=>delete sc.dataset.pinching,350);}};sc.addEventListener('touchend',end,{passive:true});sc.addEventListener('touchcancel',end,{passive:true});
- sc.addEventListener('wheel',e=>{if(!e.ctrlKey)return;e.preventDefault();state.zoom=Math.max(100,Math.min(400,state.zoom*(e.deltaY<0?1.1:1/1.1)));setPageWidth();rememberPosition();},{passive:false});
 }
 function updatePageLabel(){const sc=$('.reader-scroll');if(!sc)return;const top=sc.getBoundingClientRect().top+sc.clientHeight*.3;let page=1;for(const p of document.querySelectorAll('.page')){if(p.getBoundingClientRect().top<=top)page=Number(p.dataset.page)+1;else break;}if($('#page-label'))$('#page-label').textContent=`${page} / ${state.meta.count} 페이지`;$('[id="reader-thumb"] .page-bubble').textContent=`${page} / ${state.meta.count}`;$('#reader-thumb').setAttribute('aria-valuenow',page);}
 function showReaderRail(){const el=$('#reader-rail');if(!el)return;el.classList.add('active');clearTimeout(railTimer);railTimer=setTimeout(()=>{if(!railDrag)el.classList.remove('active');},1400);}
 let railDrag=null;
 function updateRail(reader){const sc=reader?$('.reader-scroll'):$('#library-scroll'),thumb=reader?$('#reader-thumb'):$('#library-thumb'),rail=reader?$('#reader-rail'):$('.library-rail');if(!sc||!thumb||!rail)return;const h=rail.clientHeight,range=Math.max(0,sc.scrollHeight-sc.clientHeight),th=Math.min(h,Math.max(48,h*sc.clientHeight/sc.scrollHeight));thumb.style.height=th+'px';thumb.style.top=(range?sc.scrollTop/range*(h-th):0)+'px';thumb.disabled=!range;if(!reader)thumb.setAttribute('aria-valuenow',Math.round(range?100*sc.scrollTop/range:0));}
 function bindRail(reader){const thumb=reader?$('#reader-thumb'):$('#library-thumb');thumb.addEventListener('pointerdown',e=>{if(thumb.disabled)return;e.preventDefault();thumb.setPointerCapture(e.pointerId);railDrag={reader,y:e.clientY,top:parseFloat(thumb.style.top)||0};});thumb.addEventListener('pointermove',e=>{if(!railDrag||railDrag.reader!==reader)return;const sc=reader?$('.reader-scroll'):$('#library-scroll'),rail=thumb.parentElement,h=rail.clientHeight-thumb.clientHeight;if(h>0)sc.scrollTop=(railDrag.top+e.clientY-railDrag.y)/h*(sc.scrollHeight-sc.clientHeight);updateRail(reader);});const end=()=>{railDrag=null;if(reader)showReaderRail();};thumb.addEventListener('pointerup',end);thumb.addEventListener('pointercancel',end);thumb.addEventListener('keydown',e=>{const sc=reader?$('.reader-scroll'):$('#library-scroll');if(['ArrowDown','ArrowUp','PageDown','PageUp','Home','End'].includes(e.key)){e.preventDefault();sc.scrollTop=e.key==='Home'?0:e.key==='End'?sc.scrollHeight:sc.scrollTop+(e.key.includes('Down')?1:-1)*sc.clientHeight*(e.key.startsWith('Arrow')?.15:.8);}});updateRail(reader);}
-async function startEdit(){state.editing=true;state.selection=null;state.panel=null;state.range=null;state.fmt={};rememberPosition();renderReader();announce('편집할 문장의 글자를 눌러 주세요.');}
-async function chooseText(page,x,y){await flushEdit();const c=await state.engine.run('select',{page,x,y});state.selection=c;placeEditor(c,true);showMenus(true);}
-function layoutEditor(t,c,el){const size=state.meta.sizes[c.start.pageIndex],scale=el.clientWidth/size.width,right=Math.min(size.width-8,Math.max(c.start.x+80,c.end.x+8));Object.assign(t.style,{left:Math.max(0,c.start.x*scale)+'px',top:Math.max(0,c.start.y*scale)+'px',width:Math.max(80,(right-c.start.x)*scale)+'px',height:Math.max(32,(c.end.y-c.start.y+c.end.height+6)*scale)+'px',fontSize:Math.max(1,c.start.height*scale*.85)+'px',lineHeight:Math.max(1,c.start.height*scale)+'px'});}
-function placeEditor(c,focus=false,quiet=false){if(!c||!state.editing)return;$('.edit-layer')?.remove();clearMarks();const el=$(`[data-page="${c.start.pageIndex}"]`);if(!el)return;const t=document.createElement('textarea');t.className='edit-layer';t.id='text-editor';t.dataset.ident=c.ident||'';t.setAttribute('aria-label','선택한 문단 편집');t.spellcheck=false;t.value=c.text;
- layoutEditor(t,c,el);el.appendChild(t);t.addEventListener('compositionstart',()=>composing=true);t.addEventListener('compositionend',()=>{composing=false;queueEdit();});t.addEventListener('input',()=>{showMenus(false);if(!composing)queueEdit();});t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();structuralEdit('split');}});t.addEventListener('beforeinput',e=>{if(e.inputType==='insertParagraph'||e.inputType==='insertLineBreak'){e.preventDefault();if(!composing)structuralEdit('split');}if(e.inputType==='deleteContentBackward'&&t.selectionStart===0&&t.selectionEnd===0){e.preventDefault();structuralEdit('merge');}});t.addEventListener('paste',e=>{const text=e.clipboardData?.getData('text/plain');if(text&&/[\r\n]/.test(text)){e.preventDefault();structuralEdit('paste',text);}});t.addEventListener('pointerup',()=>showMenus(true));for(const ev of ['select','keyup','pointerup'])t.addEventListener(ev,saveRange);for(const ev of ['beforeinput','compositionstart','pointerdown'])t.addEventListener(ev,endPreview);if(focus){if(quiet)t.inputMode='none';t.focus({preventScroll:true});const off=[...t.value].slice(0,c.offset).join('').length;t.setSelectionRange(off,off);}}
+async function startEdit(){state.editing=true;state.selection=null;state.rangeSel=null;state.panel=null;state.range=null;state.fmt={};state.highlight=false;state.painter=false;rememberPosition();renderReader();announce('편집할 문장의 글자를 눌러 주세요.');}
+async function chooseText(page,x,y){await flushEdit();const c=await state.engine.run('select',{page,x,y});state.rangeSel=null;state.selection=c;placeEditor(c,true,desktopInput());showMenus(true);scheduleToolState();}
+let textScaleCache=null;
+function textScale(){if(textScaleCache)return textScaleCache;const make=lh=>{const p=document.createElement('div');p.style.cssText=`position:absolute;visibility:hidden;left:-9999px;top:0;display:inline-block;margin:0;padding:0;border:0;font:100px/${lh} sans-serif;white-space:nowrap`;p.textContent='M';document.body.appendChild(p);const h=p.getBoundingClientRect().height;p.remove();return h;};
+ textScaleCache={font:probeScale(make('1')),line:probeScale(make('100px'))};return textScaleCache;}
+window.addEventListener('resize',()=>{textScaleCache=null;});
+function layoutEditor(t,c,el){const size=state.meta.sizes[c.start.pageIndex],scale=el.clientWidth/size.width,right=Math.min(size.width-8,Math.max(c.start.x+80,c.end.x+8));Object.assign(t.style,{left:Math.max(0,c.start.x*scale)+'px',top:Math.max(0,c.start.y*scale)+'px',width:Math.max(80,(right-c.start.x)*scale)+'px',height:Math.max(32,(c.end.y-c.start.y+c.end.height+6)*scale)+'px',fontSize:Math.max(1,c.start.height*scale*.85/textScale().font)+'px',lineHeight:Math.max(1,c.start.height*scale/textScale().line)+'px'});}
+function placeEditor(c,focus=false,quiet=false){if(!c||!state.editing)return;composing=false;$('.edit-layer')?.remove();clearMarks();const el=$(`[data-page="${c.start.pageIndex}"]`);if(!el)return;const t=document.createElement('textarea');t.className='edit-layer';t.id='text-editor';t.dataset.ident=c.ident||'';t.setAttribute('aria-label','선택한 문단 편집');t.spellcheck=false;t.value=c.text;
+ layoutEditor(t,c,el);el.appendChild(t);t.addEventListener('compositionstart',()=>composing=true);t.addEventListener('compositionend',()=>{composing=false;queueEdit();});t.addEventListener('input',()=>{showMenus(false);if(!composing)queueEdit();});t.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();structuralEdit('split');}});t.addEventListener('beforeinput',e=>{if(e.inputType==='insertParagraph'||e.inputType==='insertLineBreak'){e.preventDefault();if(!composing)structuralEdit('split');}if(e.inputType==='deleteContentForward'&&t.selectionStart===t.value.length&&t.selectionEnd===t.value.length){e.preventDefault();structuralEdit('mergeNext');}if(e.inputType==='deleteContentBackward'&&t.selectionStart===0&&t.selectionEnd===0){e.preventDefault();structuralEdit('merge');}});t.addEventListener('paste',e=>{const text=e.clipboardData?.getData('text/plain');
+  // Text that was copied inside this document pastes through the engine clipboard (formatting kept); anything else is plain text.
+  if(text&&state.clip&&clipKey(text)===state.clip.key){e.preventDefault();structuralEdit('pasteClip',text,()=>structuralEdit('paste',text));return;}
+  if(text&&/[\r\n]/.test(text)){e.preventDefault();structuralEdit('paste',text);}});for(const ev of ['copy','cut'])t.addEventListener(ev,()=>copyEditorSelection(t));t.addEventListener('pointerup',()=>showMenus(true));for(const ev of ['select','keyup','pointerup'])t.addEventListener(ev,saveRange);for(const ev of ['beforeinput','compositionstart','pointerdown'])t.addEventListener(ev,endPreview);if(focus){if(quiet&&!desktopInput())t.inputMode='none';t.focus({preventScroll:true});const off=[...t.value].slice(0,c.offset).join('').length;t.setSelectionRange(off,off);}}
 // The worker sends page sizes only when they may have changed; keep the previous ones otherwise.
 function applyMeta(r){if(!r.sizes&&state.meta?.sizes&&state.meta.sizes.length===r.count)r.sizes=state.meta.sizes;state.meta=r;}
-async function structuralEdit(op,text=''){const input=$('#text-editor');if(!input||state.busy)return;const start=input.selectionStart,end=input.selectionEnd;try{await flushEdit();state.busy=true;updateEditorButtons();const r=await state.engine.run(op,{start,end,text,ident:input.dataset.ident});if(r.stale)return;await refreshPages(r);placeEditor(r.selection,true);showMenus(false);}catch(e){errorDialog(e.message);}finally{state.busy=false;updateEditorButtons();}}
+async function structuralEdit(op,text='',fallback=null){const input=$('#text-editor');if(!input||state.busy)return;const start=input.selectionStart,end=input.selectionEnd;try{await flushEdit();state.busy=true;updateEditorButtons();const r=await state.engine.run(op,{start,end,text,ident:input.dataset.ident});if(r.stale)return;await refreshPages(r);placeEditor(r.selection,true,desktopInput());showMenus(false);}catch(e){if(fallback){state.busy=false;updateEditorButtons();return fallback();}errorDialog(e.message);}finally{state.busy=false;updateEditorButtons();}}
+const clipKey=t=>String(t).replace(/\r\n?/g,'\n');
+function copyEditorSelection(t){const s=t.selectionStart,e=t.selectionEnd;if(e<=s||!state.engine)return;state.engine.run('copyText',{ident:t.dataset.ident,start:s,end:e}).then(r=>{if(!r.stale&&r.text)state.clip={key:clipKey(r.text)};}).catch(()=>{state.clip=null;});}
 let editTimer;
 function queueEdit(){clearTimeout(editTimer);editTimer=setTimeout(commitEdit,80);updateEditorButtons();}
 function commitEdit(){const input=$('#text-editor');if(!input||composing)return editQueue;const value=input.value,offset=input.selectionStart;clearTimeout(editTimer);editTimer=null;
- editQueue=editQueue.then(async()=>{if(!state.editing)return;const r=await state.engine.run('change',{text:value,offset,ident:input.dataset.ident});if(r.stale)return;await refreshPages(r);updateEditorButtons();saveRange();}).catch(e=>{showMenus(true);errorDialog(e.message);});return editQueue;}
-async function flushEdit(){if(composing)throw new Error('한글 입력을 마친 뒤 다시 눌러 주세요.');if(editTimer)commitEdit();await editQueue;}
-function updateEditorButtons(){const b=$('[data-action="save"]');if(b)b.disabled=!state.dirty||state.busy||!!editTimer;const as=$('[data-action="save-as"]');if(as)as.disabled=state.busy;updateTools();}
-async function cancelEdit(){await flushEdit();const r=await state.engine.run('cancel');applyMeta(r);state.editing=false;state.dirty=false;state.selection=null;state.panel=null;state.range=null;rememberPosition();renderReader();}
-async function saveDocument(target,replace){await flushEdit();const r=await state.engine.run('export',{format:state.current.format});const bytes=new Uint8Array(r.bytes);let token;
+ editQueue=editQueue.then(async()=>{if(!state.editing)return;const r=await state.engine.run('change',{text:value,offset,ident:input.dataset.ident});if(r.stale)return;await refreshPages(r,true);updateEditorButtons();saveRange();}).catch(e=>{showMenus(true);errorDialog(e.message);});return editQueue;}
+async function flushEdit(){if(composing){const t=$('#text-editor');t?.blur();await new Promise(r=>setTimeout(r,0));if(composing)throw new Error('한글 입력을 마친 뒤 다시 눌러 주세요.');commitEdit();}if(editTimer)commitEdit();await editQueue;}
+function updateEditorButtons(){document.querySelectorAll('.memo-anchor,.memo-mark,.memo-box').forEach(n=>{n.disabled=state.busy;});const b=$('[data-action="save"]');if(b)b.disabled=(!state.dirty&&!state.recovered)||state.busy||!!editTimer;const as=$('[data-action="save-as"]');if(as)as.disabled=state.busy;updateTools();}
+async function cancelEdit(){if(state.saving)throw new Error('저장 중이에요. 잠시 기다려 주세요.');await flushEdit();const r=await state.engine.run('cancel');applyMeta(r);state.editing=false;state.dirty=false;state.selection=null;state.rangeSel=null;state.panel=null;state.range=null;rememberPosition();renderReader();
+ // An explicit discard also discards the draft, except for a recovered edit: that stays available until it is saved or deleted.
+ if(!state.recovered)await dropDraft();}
+async function saveDocument(target,replace){await flushEdit();if(state.saving)throw new Error('저장 중이에요. 잠시 기다려 주세요.');state.saving=true;try{await saveDocumentNow(target,replace);}finally{state.saving=false;}}
+async function saveDocumentNow(target,replace){await flushEdit();const exportedAt=Date.now();const r=await state.engine.run('export',{format:state.current.format});const bytes=new Uint8Array(r.bytes);let token;
  try{// First overwrite of an HWP in this session keeps the on-disk original beside it (rhwp #7899 can drop memos/extended master pages).
- const backup=replace&&state.current.format==='hwp'&&!state.sessionSaved;token=await native('beginSave',{id:state.current.id,target,replace,backup,sha:state.sha,length:bytes.length});await uploadChunks(token,bytes);const result=await native('finishSave',{token});if(replace)migrate(state.current.id,result.meta);else state.docs.push(result.meta);state.current=result.meta;state.sha=result.sha;state.sessionSaved=true;if(result.backup){state.docs.push(result.backup);state.lastBackup=result.backup;}await state.engine.run('saved',{bytes:r.bytes});state.dirty=false;if(thumbs.has(result.meta.id)){URL.revokeObjectURL(thumbs.get(result.meta.id));thumbs.delete(result.meta.id);}persist();}
+ const backup=replace&&state.current.format==='hwp'&&!state.sessionSaved;token=await native('beginSave',{id:state.current.id,target,replace,backup,sha:state.sha,length:bytes.length});await uploadChunks(token,bytes);const result=await native('finishSave',{token});if(replace)migrate(state.current.id,result.meta);else state.docs.push(result.meta);state.current=result.meta;state.sha=result.sha;state.sessionSaved=true;if(result.backup){state.docs.push(result.backup);state.lastBackup=result.backup;}const m=await state.engine.run('saved',{bytes:r.bytes});applyMeta(m);state.dirty=m.dirty;if(thumbs.has(result.meta.id)){URL.revokeObjectURL(thumbs.get(result.meta.id));thumbs.delete(result.meta.id);}persist();
+  // The disk copy now holds everything up to the export; the recovery draft of the older state is obsolete (later edits get a new one).
+  await dropDraft();state.recovered=false;state.draftId=state.current.id+'#'+sessionId();if(state.dirty){draftSince=exportedAt;scheduleDraft();}}   // edits made during the save are newer than the export: their deadline counts from it
  catch(e){if(token)await native('abortSave',{token}).catch(()=>{});throw e;}}
 // Cancel with unsaved changes asks first; the captions say what each answer does.
-async function cancelConfirm(){await flushEdit();if(!state.dirty)return cancelEdit();sheetOpen('편집을 취소할까요?','<p>저장하지 않은 변경 내용은 사라져요.</p>',btn('close','<span>아니오<small>계속 편집하기</small></span>','secondary captioned')+btn('cancel-yes','<span>예<small>저장하지 않고 끝내기</small></span>','primary captioned danger'));}
-async function saveConfirm(){await flushEdit();if(!state.dirty)return;sheetOpen('저장하시겠습니까?','',btn('close','아니오')+btn('save-yes','예','primary'));}
-async function saveYes(){state.busy=true;sheet.querySelectorAll('button').forEach(b=>b.disabled=true);try{state.lastBackup=null;await saveDocument(state.current.path,true);state.busy=false;updateEditorButtons();const bak=state.lastBackup;if(bak){sheetOpen('저장했어요',`<p>저장하기 전 원본을 같은 폴더에 남겨 두었어요.</p><p><strong>${esc(bak.name)}</strong></p><p>저장 후 메모나 일부 바탕쪽이 빠졌다면 이 파일을 열어 확인해 주세요.</p>`,btn('close','확인','primary'));}else sheetClose();announce('저장했습니다.');}catch(e){state.busy=false;errorDialog(e.message);}}
-async function leaveReader(){rememberPosition();persist();revokePages();if(state.engine&&!state.engine.dead)await state.engine.run('close').catch(()=>{});state.engine?.stop('문서를 닫았어요.');state.engine=null;state.current=null;state.editing=false;state.dirty=false;state.selection=null;render();scheduleThumbs();}
+async function cancelConfirm(){if(state.saving||state.busy)return;await flushEdit();if(!state.dirty)return cancelEdit();sheetOpen('편집을 취소할까요?','<p>저장하지 않은 변경 내용은 사라져요.</p>',btn('close','<span>아니오<small>계속 편집하기</small></span>','secondary captioned')+btn('cancel-yes','<span>예<small>저장하지 않고 끝내기</small></span>','primary captioned danger'));}
+async function saveConfirm(){await flushEdit();await commitHighlight();if(!state.dirty&&!state.recovered)return;if(state.current.external)return pickFolder('save',state.current.id);sheetOpen('저장하시겠습니까?','',btn('close','아니오')+btn('save-yes','예','primary'));}
+async function saveYes(){state.busy=true;sheet.querySelectorAll('button').forEach(b=>b.disabled=true);try{state.lastBackup=null;await saveDocument(state.current.path,true);state.busy=false;updateEditorButtons();const bak=state.lastBackup;if(bak){sheetOpen('저장했어요',`<p>저장하기 전 원본을 같은 폴더에 남겨 두었어요.</p><p><strong>${esc(bak.name)}</strong></p><p>저장 후 메모나 일부 바탕쪽이 빠졌다면 이 파일을 열어 확인해 주세요.</p>`,btn('close','확인','primary'));}else sheetClose();announce('저장했습니다.');}catch(e){state.busy=false;if(/다른 앱에서 문서가 바뀌었어요/.test(e.message)){sheetOpen('다른 앱에서 문서가 바뀌었어요',`<p>원본은 그대로 두었어요. 지금 편집한 내용은 유지돼요. 다른 이름으로 저장하면 두 파일을 비교할 수 있어요.</p>`,btn('close','닫기')+btn('save-as','다른 이름으로 저장','primary'));return;}errorDialog(e.message);}}
+async function leaveReader(){if(state.saving)throw new Error('저장 중이에요. 잠시 기다려 주세요.');if(state.draftExists&&!state.recovered&&!state.dirty)await dropDraft();clearTimeout(draftTimer);draftTimer=null;draftSince=0;rememberPosition();persist();revokePages();if(state.engine&&!state.engine.dead)await state.engine.run('close').catch(()=>{});state.engine?.stop('문서를 닫았어요.');state.engine=null;state.current=null;state.editing=false;state.dirty=false;state.selection=null;state.rangeSel=null;state.recovered=false;state.draftId=null;state.draftExists=false;state.draftRev=-1;render();scheduleThumbs();offerDrafts();}
 async function back(){if(state.busy)return;if(!overlay.hidden&&sheet.querySelector('.hw-dialog-header [data-action="settings"]'))return settingsSheet();if(!overlay.hidden){if(state.folder?.creating){state.folder.creating=false;folderRender();}else if(state.folder&&state.folder.path!==state.folder.root)await enterFolder(state.folder.path.slice(0,state.folder.path.lastIndexOf('/')));else sheetClose();return;}
  if(state.current){await flushEdit();if(state.editing&&state.dirty){sheetOpen('변경한 내용을 저장할까요?','',btn('exit-save','저장','primary')+btn('exit-discard','저장 안 함')+btn('close','계속 편집'));return;}await leaveReader();return;}await native('exit');}
 window.AppBack=()=>back().catch(e=>errorDialog(e.message));
 async function uploadChunks(token,bytes){for(let i=0,n=0;i<bytes.length;i+=196608,n++){const part=bytes.subarray(i,i+196608);let raw='';for(let j=0;j<part.length;j+=8192)raw+=String.fromCharCode(...part.subarray(j,j+8192));await native('saveChunk',{token,seq:n,base64:btoa(raw)});}}
-async function createPdf(id,target){const r=await bytesFor(id),engine=new Engine();try{const meta=await engine.run('open',{bytes:r.bytes}).catch(e=>{throw /^PASSWORD_/.test(e.message)?new Error('암호가 걸린 문서는 아직 PDF로 저장할 수 없어요.'):e;});if(meta.count>100)throw new Error('PDF 저장은 한 번에 100페이지까지 지원해요.');await native('beginPdf',{target,count:meta.count});
+async function createPdf(id,target,password){const r=await bytesFor(id),engine=new Engine();try{const meta=await engine.run('open',password==null?{bytes:r.bytes}:{bytes:r.bytes,password});if(meta.count>100)throw new Error('PDF 저장은 한 번에 100페이지까지 지원해요.');await native('beginPdf',{target,count:meta.count});
  for(let i=0;i<meta.count;i++){const p=await engine.run('page',{index:i}),u=svgUrl(p.svg);try{const image=new Image();image.src=u;await image.decode();const s=meta.sizes[i],scale=Math.min(2.25,1800/s.width,2600/s.height),canvas=document.createElement('canvas');canvas.width=Math.ceil(s.width*scale);canvas.height=Math.ceil(s.height*scale);const ctx=canvas.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('PDF 페이지를 만들지 못했어요.');const bytes=new Uint8Array(await blob.arrayBuffer());const token=await native('beginPdfPage',{index:i,length:bytes.length,width:Math.round(s.width*.75),height:Math.round(s.height*.75)});await uploadChunks(token,bytes);await native('finishPdfPage',{token});canvas.width=canvas.height=1;}
  finally{URL.revokeObjectURL(u);}}
  await native('finishPdf');}catch(e){await native('abortPdf').catch(()=>{});throw e;}finally{engine.stop('PDF 생성 완료');}}
@@ -207,7 +245,8 @@ root.addEventListener('pointermove',e=>{if(longPointer&&Math.hypot(e.clientX-lon
 root.addEventListener('click',e=>{const b=e.target.closest('[data-action]');if(b&&!b.disabled)action(b.dataset.action,b).catch(x=>errorDialog(x.message));});
 async function action(a,b){
  const id=b.dataset.id;
- if(a==='close')return sheetClose();if(a==='settings')return settingsSheet();if(a==='allow')return native('permission');if(a==='intro-page')return intro.go(Number(b.dataset.page));
+ if(a==='zoom-in')return zoomDocument(state.zoom*1.1);if(a==='zoom-out')return zoomDocument(state.zoom/1.1);if(a==='zoom-reset')return zoomDocument(100);
+ if(a==='close')return sheetClose();if(a==='settings')return settingsSheet();if(a==='connect-folder')return native('connectFolder');if(a==='disconnect-folder')return native('disconnectFolder',{id});if(a==='allow')return native('permission');if(a==='intro-page')return intro.go(Number(b.dataset.page));
  if(a==='set-theme'){state.theme=b.dataset.value;persist();applyTheme();sheet.querySelectorAll('[data-action="set-theme"]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.value===state.theme)));return;}
  if(a==='cancel-scan')return native('cancelScan');if(a==='clear'){state.term='';$('#search').value='';$('[data-action="clear"]').hidden=true;persist();renderDocs();return;}
  if(a==='view'){state.view=state.view==='grid'?'list':'grid';persist();b.innerHTML=icon(state.view==='grid'?'list':'grid-2x2');b.setAttribute('aria-label',state.view==='grid'?'목록 보기':'격자 보기');renderDocs();return;}
@@ -220,95 +259,118 @@ async function action(a,b){
  if(a==='folder-direction'){state.folder.desc=!state.folder.desc;b.innerHTML=icon(state.folder.desc?'arrow-down':'arrow-up');folderRows();return;}
  if(a==='folder-new')return folderNew();if(a==='folder-new-cancel'){state.folder.creating=false;folderRender();return;}if(a==='folder-create')return folderCreate();if(a==='folder-confirm')return folderConfirm();
  if(a.startsWith('tb-'))return toolbar(a,b);
- if(a==='pw-open'){const v=$('#doc-password')?.value||'';if(!v){$('#doc-password')?.focus();return;}sheetClose();return openDoc(b.dataset.id,v);}
- if(a==='edit')return startEdit();if(a==='cancel-edit')return cancelConfirm();if(a==='cancel-yes'){sheetClose();return cancelEdit();}if(a==='save')return saveConfirm();if(a==='save-yes')return saveYes();if(a==='save-as'){await flushEdit();return pickFolder('save',state.current.id);}
+ if(a==='pw-open'){const v=$('#doc-password')?.value||'';if(!v){$('#doc-password')?.focus();return;}$('#doc-password').value='';sheetClose();return b.dataset.key?openDraft(b.dataset.key,v):openDoc(b.dataset.id,v);}
+ if(a==='draft-open')return openDraft(b.dataset.key);if(a==='draft-discard')return draftDiscardConfirm(b.dataset.key);if(a==='draft-discard-yes')return draftDiscard(b.dataset.key);if(a==='draft-list')return offerDrafts(true);
+ if(a==='pdf-pw-go'){const v=$('#doc-password')?.value||'';if(!v){$('#doc-password')?.focus();return;}$('#doc-password').value='';return pdfWithPassword(v);}
+ if(a==='edit')return startEdit();if(a==='cancel-edit')return cancelConfirm();if(a==='cancel-yes'){sheetClose();return cancelEdit();}if(a==='save')return saveConfirm();if(a==='save-yes')return saveYes();if(a==='save-as'){await flushEdit();await commitHighlight();return pickFolder('save',state.current.id);}
  if(a==='back')return back();if(a==='exit-discard'){sheetClose();await cancelEdit();return leaveReader();}if(a==='exit-save'){sheetClose();await saveConfirm();return;}
- if(a==='help')return hwDialog('사용 방법',`<section class="hw-help-item"><h3>문서 새로고침</h3><p>문서함을 누르고 아래로 당기면<br>기기의 문서를 다시 찾아요.</p></section><section class="hw-help-item"><h3>즐겨찾기</h3><p>문서의 별을 누르면<br>목록 위에 먼저 표시돼요.</p></section><section class="hw-help-item"><h3>보기 방식</h3><p>문서 목록 위의 보기 버튼을 누르면<br>격자와 목록을 바꿀 수 있어요.</p></section><section class="hw-help-item"><h3>문서 작업</h3><p>문서를 길게 누르면 이름 변경, 파일 이동,<br>PDF 저장, 파일 정보를 이용할 수 있어요.</p></section><section class="hw-help-item"><h3>읽기와 편집</h3><p>본문을 가볍게 누르면 메뉴가 숨겨지고 다시 나타나요. 읽기 화면에서는 두 손가락으로 확대할 수 있어요.</p><p>오른쪽 위 연필을 누른 뒤 편집할 문장을 눌러 주세요. 저장은 확인 후 원본에 저장하고, 다른 이름으로 저장은 이름과 폴더를 정해 새 파일을 만들어요.</p></section>`,{back:true});
+ if(a==='help')return hwDialog('사용 방법',`<section class="hw-help-item"><h3>문서 새로고침</h3><p>문서함을 누르고 아래로 당기면<br>기기의 문서를 다시 찾아요.</p></section><section class="hw-help-item"><h3>즐겨찾기</h3><p>문서의 별을 누르면<br>목록 위에 먼저 표시돼요.</p></section><section class="hw-help-item"><h3>보기 방식</h3><p>문서 목록 위의 보기 버튼을 누르면<br>격자와 목록을 바꿀 수 있어요.</p></section><section class="hw-help-item"><h3>문서 작업</h3><p>문서를 길게 누르면 이름 변경, 파일 이동,<br>PDF 저장, 파일 정보를 이용할 수 있어요.</p></section><section class="hw-help-item"><h3>읽기와 편집</h3><p>본문을 가볍게 누르면 메뉴가 숨겨지고 다시 나타나요. 읽기 화면에서는 두 손가락으로 확대할 수 있어요.</p><p>오른쪽 위 연필을 누른 뒤 편집할 문장을 눌러 주세요. 저장은 확인 후 원본에 저장하고, 다른 이름으로 저장은 이름과 폴더를 정해 새 파일을 만들어요.</p></section><section class="hw-help-item"><h3>여러 문단 선택과 복구</h3><p>마우스로 끌거나 Shift+클릭, Ctrl+A를 두 번 눌러 여러 문단을 선택하면 서식·삭제·복사를 한 번에 할 수 있어요.</p><p>저장하지 못한 편집은 입력을 잠시 쉴 때(보통 약 4초, 용량이 큰 문서는 더 길어 최대 30초), 쉬지 않고 계속 입력해도 최대 30초 안에, 앱이 뒤로 갈 때는 바로 기기 안에 임시 보관돼요. 앱이 갑자기 종료되면 다시 열 때 복구할 수 있지만, 마지막으로 보관된 뒤에 입력한 내용은 없을 수 있어요. 중요한 내용은 직접 저장해 주세요.</p></section>`,{back:true});
+ if(a.startsWith('memo-'))return memoAction(a,b);
  if(a==='about'){const license=await fetch('engine/LICENSE').then(r=>r.text()),lucide=await fetch('LUCIDE-LICENSE.txt').then(r=>r.text()),ofl=await fetch('fonts/NotoSansKR-OFL.txt').then(r=>r.text());return hwDialog('앱 정보',`<div class="hw-about-brand"><img src="branding/logo.png" alt="" width="40" height="40"><span>hwpxxx</span></div><p class="hw-about-copy">기기 안에서 문서를 처리하는<br>오프라인 한글 문서 앱 · 버전 ${esc(state.version||'')}</p><p class="hw-about-copy">문서 엔진 · rhwp 0.8.7<br>광고·추적 기능 없이 사용할 수 있어요.</p><details><summary>오픈소스 안내</summary><h3>rhwp 0.8.7 · 문서 처리 엔진</h3><p>${esc(license).replace(/\n/g,'<br>')}</p><h3>Lucide · 아이콘</h3><p>${esc(lucide).replace(/\n/g,'<br>')}</p><h3>Noto Sans KR · 글꼴</h3><p>${esc(ofl).replace(/\n/g,'<br>')}</p></details>`,{back:true});}
 }
 root.addEventListener('input',e=>{if(e.target.id==='search'){state.term=e.target.value;$('[data-action="clear"]').hidden=!state.term;persist();renderDocs();}if(e.target.id==='folder-query'){state.folder.term=e.target.value;folderRows();}if(e.target.id==='filename')state.folder.name=e.target.value;});
 root.addEventListener('change',e=>{if(e.target.id==='sort'){state.sort=e.target.value;persist();renderDocs();}if(e.target.id==='folder-sort'){state.folder.sort=e.target.value;folderRows();}});
-root.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();if(overlay.hidden&&state.current&&!state.menus)showMenus(true);else back().catch(x=>errorDialog(x.message));}if(e.key==='Enter'&&e.target.id==='new-folder'){e.preventDefault();folderCreate();}if(e.key==='Enter'&&e.target.id==='rename'){e.preventDefault();renameConfirm(sheet.querySelector('[data-id]').dataset.id);}if((e.shiftKey&&e.key==='F10')||e.key==='ContextMenu'){const b=e.target.closest('[data-action="open"]');if(b){e.preventDefault();menu(b.dataset.id);}}
- if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&state.editing){e.preventDefault();historyStep(e.shiftKey?'redo':'undo');}
- if(e.key==='Tab'&&!overlay.hidden){const items=[...sheet.querySelectorAll('button,input,select,textarea')].filter(n=>!n.disabled&&n.getClientRects().length);if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===items.at(-1)){e.preventDefault();items[0].focus();}}
+root.addEventListener('keydown',e=>{if(e.defaultPrevented)return;if(e.key==='Escape'){e.preventDefault();if(overlay.hidden&&state.current&&!state.menus)showMenus(true);else back().catch(x=>errorDialog(x.message));}if(e.key==='Enter'&&e.target.id==='new-folder'){e.preventDefault();folderCreate();}if(e.key==='Enter'&&e.target.id==='rename'){e.preventDefault();renameConfirm(sheet.querySelector('[data-id]').dataset.id);}if((e.shiftKey&&e.key==='F10')||e.key==='ContextMenu'){const b=e.target.closest('[data-action="open"]');if(b){e.preventDefault();menu(b.dataset.id);}}
+
+ if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&e.target.id==='memo-text'){e.preventDefault();sheet.querySelector('[data-action="memo-save"]')?.click();}
+ if(e.key==='Tab'&&!overlay.hidden){const items=[...sheet.querySelectorAll('button,input,select,textarea')].filter(n=>!n.disabled&&n.getClientRects().length);if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items[items.length-1].focus();}else if(!e.shiftKey&&document.activeElement===items[items.length-1]){e.preventDefault();items[0].focus();}}
 });
 overlay.addEventListener('click',e=>{if(e.target===overlay&&Date.now()>blockOpen)sheetClose();});
 let tapStart=null;
-root.addEventListener('pointerdown',e=>{if(!e.target.closest('.page')||e.target.closest('textarea'))return;tapStart={x:e.clientX,y:e.clientY,t:Date.now()};});
-root.addEventListener('pointerup',async e=>{const start=tapStart;tapStart=null;if(!start||state.busy||Date.now()-start.t>350||Math.hypot(e.clientX-start.x,e.clientY-start.y)>10||$('.reader-scroll')?.dataset.pinching||!overlay.hidden)return;const page=e.target.closest('.page');if(!page)return;if(state.editing){showMenus(true);const i=Number(page.dataset.page),r=page.getBoundingClientRect(),s=state.meta.sizes[i];try{await chooseText(i,(e.clientX-r.left)*s.width/r.width,(e.clientY-r.top)*s.height/r.height);}catch(x){errorDialog(x.message);}}else showMenus(!state.menus);});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){rememberPosition();persist();}});
-window.addEventListener('resize',()=>{updateRail(false);updateRail(true);updateInset(true);if(state.selection)relayoutEditor();});
+root.addEventListener('pointerdown',e=>{if(!e.target.closest('.page')||e.target.closest('.memo-mark,.memo-box'))return;if(e.target.closest('textarea')&&(e.target.id!=='text-editor'||inParagraph(docPoint(e.clientX,e.clientY))))return;tapStart={x:e.clientX,y:e.clientY,t:Date.now()};});
+root.addEventListener('pointerup',async e=>{const start=tapStart;tapStart=null;if(!start||state.busy||Date.now()-start.t>350||Math.hypot(e.clientX-start.x,e.clientY-start.y)>10||$('.reader-scroll')?.dataset.pinching||!overlay.hidden)return;const page=e.target.closest('.page');if(!page)return;if(state.editing){showMenus(true);const i=Number(page.dataset.page),r=page.getBoundingClientRect(),s=state.meta.sizes[i];try{await chooseText(i,(e.clientX-r.left)*s.width/r.width,(e.clientY-r.top)*s.height/r.height);}catch(x){errorDialog(x.message);}}else if(!desktopInput())showMenus(!state.menus);});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){rememberPosition();persist();if(state.editing&&state.dirty)scheduleDraft(true);}});
+window.addEventListener('resize',()=>{setPageWidth();if(state.editing&&tabletLayout())showMenus(true);updateRail(false);updateRail(true);updateInset(true);if(state.selection||state.rangeSel)relayoutEditor();renderMemoMarks();});
 // Resizes (e.g. the soft keyboard opening) only move the live editor; rebuilding it would drop focus, IME composition and unflushed text.
-function relayoutEditor(){const c=state.selection,t=$('#text-editor'),el=$(`[data-page="${c.start.pageIndex}"]`);if(t&&el&&t.parentElement===el)layoutEditor(t,c,el);else placeEditor(c);}
+function relayoutEditor(){if(state.rangeSel){const g=state.rangeSel,t=$('#range-editor'),el=$(`[data-page="${g.start.pageIndex}"]`);if(t&&el&&t.parentElement===el)layoutEditor(t,{start:g.start,end:g.start},el);return;}const c=state.selection;if(!c)return;const t=$('#text-editor'),el=$(`[data-page="${c.start.pageIndex}"]`);if(t&&el&&t.parentElement===el)layoutEditor(t,c,el);else placeEditor(c);}
 // ---- Bottom edit toolbar (0.1.2): undo / redo / bold / underline / text panel / paragraph panel ----
 const TEXT_COLORS=[['#000000','검정'],['#C0392B','빨강'],['#D35400','주황'],['#1E8449','초록'],['#3156C9','파랑'],['#7D3C98','보라']];
 const SHADES=[['#FFF2B3','노랑'],['#D5F5E3','연두'],['#D6EAF8','하늘'],['#FADBD8','분홍']];
 const SIZES=[10,12,14,16,20];const SPACINGS=[100,130,160,200];
 const ALIGNS=[['left','text-align-start','왼쪽 정렬'],['center','text-align-center','가운데 정렬'],['right','text-align-end','오른쪽 정렬'],['justify','text-align-justify','양쪽 정렬']];
-const tool=(a,ic,label)=>`<button type="button" class="tool" data-action="tb-${a}" aria-label="${label}">${icon(ic)}<span>${label}</span></button>`;
-function editBottom(){return `<div class="edit-bottom read-controls"><div class="edit-panel" id="edit-panel" ${state.panel?'':'hidden'}></div><nav class="edit-tools" aria-label="편집 도구">${tool('undo','undo-2','실행 취소')}${tool('redo','redo-2','다시 실행')}${tool('bold','bold','굵게')}${tool('underline','underline','밑줄')}${tool('char','type','글자')}${tool('para','pilcrow','문단')}</nav></div>`;}
+const toolShortcut={undo:'Ctrl+Z',redo:'Ctrl+Y',bold:'Ctrl+B',italic:'Ctrl+I',underline:'Ctrl+U',painter:'Alt+C'};
+const tool=(a,ic,label)=>`<button type="button" class="tool" data-action="tb-${a}" aria-label="${label}" title="${label}${toolShortcut[a]?' ('+toolShortcut[a]+')':''}">${icon(ic)}<span>${label}</span></button>`;
+function editBottom(){return `<div class="edit-bottom read-controls"><div class="edit-panel" id="edit-panel" ${state.panel?'':'hidden'}></div><div class="zoom-tools" aria-label="문서 배율">${btn('zoom-out',icon('minus'),'chip','aria-label="문서 축소 (Ctrl+-)"')}<output id="document-zoom">${Math.round(state.zoom)}%</output>${btn('zoom-in',icon('plus'),'chip','aria-label="문서 확대 (Ctrl++)"')}${btn('zoom-reset','맞춤','chip','title="문서 배율 초기화 (Ctrl+0)"')}</div><nav class="edit-tools" aria-label="편집 도구">${tool('undo','undo-2','실행 취소')}${tool('redo','redo-2','다시 실행')}${tool('bold','bold','굵게')}${tool('italic','italic','기울임')}${tool('underline','underline','밑줄')}${tool('highlight','highlighter','형광펜')}${tool('painter','paintbrush','모양 복사')}${tool('memo','message-square','메모')}${tool('table','table','표')}${tool('char','type','글자')}${tool('para','pilcrow','문단')}</nav></div>`;}
 // The format target survives focus loss: paragraph identity from the worker plus UTF-16 positions in the editor text.
 function saveRange(){const t=$('#text-editor');if(!t||!state.selection)return;state.range={ident:state.selection.ident,start:t.selectionStart,end:t.selectionEnd};scheduleToolState();}
 function liveRange(){const t=$('#text-editor'),id=state.selection?.ident;if(!id)return null;if(t&&document.activeElement===t)return {ident:id,start:t.selectionStart,end:t.selectionEnd};return state.range?.ident===id?state.range:null;}
-function hasRange(){const r=liveRange();return !!r&&r.end>r.start;}
+function singleRange(){const r=liveRange();return !!r&&r.end>r.start;}
+function hasRange(){return !!state.rangeSel||singleRange();}
 let toolTimer,toolGen=0;
 function scheduleToolState(){clearTimeout(toolTimer);toolTimer=setTimeout(refreshToolState,120);}
-async function refreshToolState(){const r=liveRange();if(!state.editing||!r||composing||editTimer||state.busy)return updateTools();const gen=++toolGen;
+async function refreshToolState(){
+ if(state.rangeSel&&state.editing&&!state.busy){const rg=state.rangeSel,gen=++toolGen;
+  try{const [c,p]=await Promise.all([state.engine.run('rangeCharState',{rident:rg.rident}),state.panel==='para'?state.engine.run('rangeParaState',{rident:rg.rident}):(state.fmt?.para??null)]);if(gen!==toolGen||state.rangeSel?.rident!==rg.rident)return;state.fmt={char:c,para:p};}catch{state.fmt={};}
+  updateTools();if(state.panel)renderPanel();return;}
+ const r=liveRange();if(!state.editing||!r||composing||editTimer||state.busy)return updateTools();const gen=++toolGen;
  // Ask only for what is shown: char state with a range or the text panel open, para state with the paragraph panel open.
  try{const [c,p]=await Promise.all([r.end>r.start||state.panel==='char'?state.engine.run('charState',r):null,state.panel==='para'?state.engine.run('paraState',{ident:r.ident}):(state.fmt?.para??null)]);if(gen!==toolGen||state.selection?.ident!==r.ident)return;state.fmt={char:c,para:p};}catch{state.fmt={};}
  updateTools();if(state.panel)renderPanel();}
 function updateTools(){const bar=$('.edit-tools');if(!bar)return;const m=state.meta||{},busy=state.busy,c=state.fmt?.char,rg=hasRange(),set=(a,on)=>{const b=bar.querySelector(`[data-action="tb-${a}"]`);if(b)b.disabled=on;};
- set('undo',busy||!(m.canUndo||editTimer));set('redo',busy||!m.canRedo);set('bold',busy||!state.selection);set('underline',busy||!state.selection);set('char',busy||!state.selection);set('para',busy||!state.selection);
- for(const k of ['bold','underline']){const b=bar.querySelector(`[data-action="tb-${k}"]`),v=rg&&c?c[k]:'off';b.setAttribute('aria-pressed',v==='on'?'true':v==='mixed'?'mixed':'false');}
+ const target=!!(state.selection||state.rangeSel);set('undo',busy||!(m.canUndo||editTimer));set('redo',busy||!m.canRedo);set('bold',busy||!target);set('underline',busy||!target);set('char',busy||!target);set('para',busy||!target);set('italic',busy||!target);for(const k of ['painter','table'])set(k,busy||!state.selection);set('highlight',busy);set('memo',busy||!state.meta?.memoSupported);
+ for(const k of ['highlight','painter'])bar.querySelector(`[data-action="tb-${k}"]`)?.setAttribute('aria-pressed',String(state[k]));
+ for(const k of ['bold','italic','underline']){const b=bar.querySelector(`[data-action="tb-${k}"]`),v=rg&&c?c[k]:'off';b.setAttribute('aria-pressed',v==='on'?'true':v==='mixed'?'mixed':'false');}
  for(const k of ['char','para']){const b=bar.querySelector(`[data-action="tb-${k}"]`);b.setAttribute('aria-expanded',String(state.panel===k));b.classList.toggle('open',state.panel===k);}}
 function clearMarks(){document.querySelectorAll('.sel-mark').forEach(n=>n.remove());}
 // After a format command the editor turns transparent so the re-rendered page shows the real formatting;
 // the engine's selection rectangles mark the range. Typing or touching the editor shows the plain editor again.
-function previewFormat(rects,rg){clearMarks();const t=$('#text-editor');if(!t)return;t.classList.add('fmt-preview');
+function previewFormat(rects,rg){const t=$('#text-editor');if(!t)return;t.classList.add('fmt-preview');drawMarks(rects);if(rg){try{t.setSelectionRange(rg.start,rg.end);}catch{}}}
+function drawMarks(rects){clearMarks();
  for(const q of rects||[]){const el=$(`[data-page="${q.pageIndex}"]`),s=state.meta.sizes[q.pageIndex];if(!el||!s)continue;const d=document.createElement('div');d.className='sel-mark';
   // Percent of the page box, so the mark follows rotation and pinch zoom without re-layout.
-  Object.assign(d.style,{left:q.x/s.width*100+'%',top:q.y/s.height*100+'%',width:q.width/s.width*100+'%',height:q.height/s.height*100+'%'});el.appendChild(d);}
- if(rg){try{t.setSelectionRange(rg.start,rg.end);}catch{}}}
+  Object.assign(d.style,{left:q.x/s.width*100+'%',top:q.y/s.height*100+'%',width:q.width/s.width*100+'%',height:q.height/s.height*100+'%'});el.appendChild(d);}}
 function endPreview(){const t=$('#text-editor');if(t?.classList.contains('fmt-preview')){t.classList.remove('fmt-preview');clearMarks();}}
-async function refreshPages(r){applyMeta(r);state.dirty=r.dirty;state.selection=r.selection;const pages=document.querySelectorAll('.page');
- if(r.count!==pages.length){rememberPosition();renderReader();placeEditor(r.selection,true,!keyboardOpen());return;}
+// A memo goes with its text when an edit deletes the whole anchored text (in body text only when the replacement is empty; in table cells
+// also when text is typed or pasted over it). Every command that can do that reports the count, and undo brings the memo back.
+const memoNotice=r=>r.memosRemoved?`바꾸거나 지운 글에 달린 메모 ${r.memosRemoved}개도 함께 지웠어요. 실행 취소로 되돌릴 수 있어요.`:'';
+async function refreshPages(r,typing=false){applyMeta(r);state.dirty=r.dirty;state.selection=r.selection;if(r.memosRemoved)announce(memoNotice(r));if(r.dirty||state.draftExists)scheduleDraft();const pages=document.querySelectorAll('.page');
+ if(r.count!==pages.length){rememberPosition();renderReader();placeEditor(r.selection,true,!keyboardOpen());await refreshMemos(r.memoCount);return;}
  // Re-render only pages inside the observer margin (nearest first); farther ones drop their image and load lazily again.
  const near=[];for(const p of pages){if(!p.dataset.loaded&&!p.dataset.loading)continue;if(nearView(p)){near.push(p);continue;}const i=Number(p.dataset.page);p.querySelector('img')?.remove();delete p.dataset.loaded;if(pageUrls.has(i)){URL.revokeObjectURL(pageUrls.get(i));pageUrls.delete(i);}}
  const cur=state.selection?.start.pageIndex??0;near.sort((a,b)=>Math.abs(a.dataset.page-cur)-Math.abs(b.dataset.page-cur));
- for(const p of near)await renderPage(Number(p.dataset.page),loadingGeneration,true);relayoutEditor();}
+ for(const p of near)await renderPage(Number(p.dataset.page),loadingGeneration,true);relayoutEditor();if(typing)scheduleMemos(r.memoCount);else await refreshMemos(r.memoCount);}
 async function guarded(fn){if(state.busy)return;try{await flushEdit();}catch(e){announce(e.message);return;}state.busy=true;updateEditorButtons();try{await fn();}catch(e){errorDialog(e.message);}finally{state.busy=false;updateEditorButtons();}}
-async function historyStep(op){const quiet=!keyboardOpen();await guarded(async()=>{const r=await state.engine.run(op);state.range=null;await refreshPages(r);placeEditor(r.selection,true,quiet);
+async function historyStep(op){const quiet=!keyboardOpen();await guarded(async()=>{const r=await state.engine.run(op);state.range=null;
+ if(r.rangeSel){await refreshPages({...r,selection:null});state.selection=null;state.rangeSel=r.rangeSel;placeRange(r.rangeSel);if(state.panel)renderPanel();return;}
+ state.rangeSel=null;await refreshPages(r);placeEditor(r.selection,true,quiet);
  // Formatting commands come back with the range they acted on: reselect it and show the page as rendered.
- if(r.range&&r.selection){const rg={ident:r.selection.ident,...r.range};state.range=rg;previewFormat(r.rects,rg);}if(state.panel)renderPanel();});scheduleToolState();}
+ if(r.range&&r.selection){const rg={ident:r.selection.ident,...r.range};state.range=rg;if(state.highlight)highlightStamp=highlightKey(rg);previewFormat(r.rects,rg);}if(state.panel)renderPanel();});scheduleToolState();}
 // Character commands need a real range: an empty caret never silently formats the whole paragraph.
-async function formatChar(make){const rg=liveRange();if(!rg||rg.end<=rg.start){announce('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');if(state.panel)renderPanel('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');return;}
+async function formatChar(make){if(state.rangeSel)return formatRange('rangeChar','rangeCharState',make);const rg=liveRange();if(!rg||rg.end<=rg.start){announce('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');if(state.panel)renderPanel('서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.');return;}
  await guarded(async()=>{const cur=await state.engine.run('charState',rg),r=await state.engine.run('char',{...rg,props:make(cur)});state.dirty=r.dirty;await refreshPages(r);state.range=rg;state.fmt={...state.fmt,char:r.charState};previewFormat(r.rects,rg);});updateTools();if(state.panel)renderPanel();}
-async function formatPara(props){const id=state.selection?.ident;if(!id)return;const keep=liveRange();await guarded(async()=>{const r=await state.engine.run('para',{ident:id,props,range:keep&&{start:keep.start,end:keep.end}});await refreshPages(r);state.fmt={...state.fmt,para:r.paraState};const rg=liveRange()||state.range;if(rg)previewFormat([],rg);});updateTools();if(state.panel)renderPanel();}
+async function formatPara(props){if(state.rangeSel)return formatRange('rangePara',null,()=>props);const id=state.selection?.ident;if(!id)return;const keep=liveRange();await guarded(async()=>{const r=await state.engine.run('para',{ident:id,props,range:keep&&{start:keep.start,end:keep.end}});await refreshPages(r);state.fmt={...state.fmt,para:r.paraState};const rg=liveRange()||state.range;if(rg)previewFormat([],rg);});updateTools();if(state.panel)renderPanel();}
+// Formatting every paragraph of a multi-paragraph selection is one command (one undo step); the selection stays.
+async function formatRange(op,stateOp,make){const rg=state.rangeSel;if(!rg)return;
+ await guarded(async()=>{const cur=stateOp?await state.engine.run(stateOp,{rident:rg.rident}):null,r=await state.engine.run(op,{rident:rg.rident,props:make(cur)});
+  await refreshPages({...r,selection:null});state.selection=null;state.rangeSel=r.rangeSel;state.fmt={...state.fmt,...(r.charState?{char:r.charState}:{}),...(r.paraState?{para:r.paraState}:{})};placeRange(r.rangeSel);});
+ updateTools();if(state.panel)renderPanel();}
 function nextSize(cur,dir){const pt=cur/100;return Math.round(Math.max(1,Math.min(96,dir>0?Math.floor(pt)+1:Math.ceil(pt)-1))*100);}
 function swatch(a,[hex,name],cur){const on=cur&&cur.toLowerCase()===hex.toLowerCase();return `<button type="button" class="swatch${on?' on':''}" data-action="tb-${a}" data-value="${hex}" aria-label="${name}" aria-pressed="${on}" style="--sw:${hex}">${on?icon('check'):''}</button>`;}
 function chip(a,v,label,on,dis=false){return `<button type="button" class="chip${on?' on':''}" data-action="tb-${a}" data-value="${v}" aria-pressed="${on}" ${dis?'disabled':''}>${label}</button>`;}
-function renderPanel(hint=''){const el=$('#edit-panel');if(!el)return;if(!state.panel){el.hidden=true;el.replaceChildren();updateInset(true);return;}el.hidden=false;
+function renderPanel(hint=''){const el=$('#edit-panel');if(!el)return;if(el.dataset.kind===state.panel&&el.contains(document.activeElement)&&document.activeElement.matches('input,select,textarea'))return;el.dataset.kind=state.panel||'';if(!state.panel){el.hidden=true;el.textContent='';updateInset(true);return;}el.hidden=false;
+ if(['memo','table','painter'].includes(state.panel)){renderFeaturePanel(el,hint);icons();updateInset(true);return;}
  if(state.panel==='char'){const c=state.fmt?.char,rg=hasRange(),size=rg&&c?c.fontSize:null,dis=rg?'':'disabled';
   el.innerHTML=`<h2 class="panel-title">글자</h2>${rg?'':`<p class="panel-hint">${esc(hint||'서식을 바꿀 글자를 먼저 길게 눌러 선택해 주세요.')}</p>`}
   <div class="panel-row" role="group" aria-label="글자 크기"><span class="panel-label">크기</span><button type="button" class="chip" data-action="tb-size-step" data-value="-1" aria-label="글자 작게" ${size?'':'disabled'}>${icon('minus')}</button><output class="size-value" aria-live="polite">${!rg?'—':size?`${size/100}pt`:'혼합'}</output><button type="button" class="chip" data-action="tb-size-step" data-value="1" aria-label="글자 크게" ${size?'':'disabled'}>${icon('plus')}</button></div>
   <div class="panel-row chips">${SIZES.map(s=>chip('size',s*100,`${s}`,size===s*100,!rg)).join('')}</div>
+  <div class="panel-row">${numberField('spacings','자간',c?.spacings?.[0],-50,50,'%')}${numberField('ratios','장평',c?.ratios?.[0],50,200,'%')}${btn('tb-char-metrics','적용','chip',dis)}</div>
   <div class="panel-row" role="group" aria-label="글자색"><span class="panel-label">글자색</span>${TEXT_COLORS.map(x=>swatch('color',x,rg&&c?.textColor)).join('').replace(/<button /g,`<button ${dis} `)}</div>
-  <div class="panel-row" role="group" aria-label="형광펜"><span class="panel-label">형광펜</span>${SHADES.map(x=>swatch('shade',x,rg&&c?.shadeColor)).join('').replace(/<button /g,`<button ${dis} `)}<button type="button" class="swatch none" data-action="tb-shade" data-value="#FFFFFF" aria-label="형광펜 없음" ${dis}>${icon('ban')}</button></div>`;}
+  <div class="panel-row" role="group" aria-label="형광펜"><span class="panel-label">형광펜</span>${SHADES.map(x=>swatch('shade',x,state.highlight?state.highlightColor:rg&&c?.shadeColor)).join('')}<button type="button" class="swatch none" data-action="tb-shade" data-value="#FFFFFF" aria-label="형광펜 없음">${icon('ban')}</button></div>`;}
  else{const p=state.fmt?.para,ok=p?.supported!==false,pct=ok&&p?.lineSpacingType==='Percent';
   el.innerHTML=`<h2 class="panel-title">문단</h2>${ok?'':'<p class="panel-hint">겹친 표 안의 문단은 아직 바꿀 수 없어요.</p>'}
   <div class="panel-row" role="group" aria-label="정렬"><span class="panel-label">정렬</span>${ALIGNS.map(([v,ic,label])=>`<button type="button" class="chip${p?.alignment===v?' on':''}" data-action="tb-align" data-value="${v}" aria-label="${label}" aria-pressed="${p?.alignment===v}" ${ok?'':'disabled'}>${icon(ic)}</button>`).join('')}</div>
   <div class="panel-row" role="group" aria-label="목록"><span class="panel-label">목록</span>${chip('list',p?.list==='bullet'?'none':'bullet',`${icon('list')}<span>글머리표</span>`,p?.list==='bullet',!ok)}</div>
-  <div class="panel-row" role="group" aria-label="줄 간격"><span class="panel-label">줄 간격</span>${SPACINGS.map(v=>chip('spacing',v,`${v}%`,pct&&p.lineSpacing===v,!pct)).join('')}</div>${ok&&!pct&&p?'<p class="panel-hint">이 문단의 줄 간격 방식은 아직 바꿀 수 없어요.</p>':''}`;}
+  <div class="panel-row" role="group" aria-label="줄 간격"><span class="panel-label">줄 간격</span>${SPACINGS.map(v=>chip('spacing',v,`${v}%`,pct&&p.lineSpacing===v,!pct)).join('')}</div><div class="panel-row">${numberField('spacingBefore','문단 위',p?.spacingBefore,0,1000,'pt')}${numberField('spacingAfter','문단 아래',p?.spacingAfter,0,1000,'pt')}${btn('tb-para-spacing','적용','chip',ok?'':'disabled')}</div>${ok&&!pct&&p?'<p class="panel-hint">이 문단의 줄 간격 방식은 아직 바꿀 수 없어요.</p>':''}`;}
  icons();updateInset(true);}
-async function toolbar(a,b){const v=b.dataset.value;
+async function toolbar(a,b){const v=b.dataset.value;if(await featureToolbar(a,b))return;
  if(a==='tb-undo'||a==='tb-redo')return historyStep(a.slice(3));
  if(a==='tb-char'||a==='tb-para'){const k=a.slice(3);state.panel=state.panel===k?null:k;
   updateTools();renderPanel();showMenus(true);fitPanel();return refreshToolState();}
- if(a==='tb-bold'||a==='tb-underline'){const k=a.slice(3);return formatChar(c=>({[k]:c[k]!=='on'}));}
+ if(a==='tb-bold'||a==='tb-italic'||a==='tb-underline'){const k=a.slice(3);return formatChar(c=>({[k]:c[k]!=='on'}));}
  if(a==='tb-size')return formatChar(()=>({fontSize:Number(v)}));
  if(a==='tb-size-step')return formatChar(c=>({fontSize:nextSize(c.fontSize,Number(v))}));
  if(a==='tb-color')return formatChar(()=>({textColor:v}));
- if(a==='tb-shade')return formatChar(()=>({shadeColor:v}));
+ if(a==='tb-shade'){state.highlightColor=v;persist();if(hasRange()){if(state.highlight)highlightStamp=highlightKey(rangeKey());await formatChar(()=>({shadeColor:v}));}else{state.highlight=true;announce('형광펜 모드: 글자를 선택하면 칠해요. Esc로 해제해요.');}updateTools();return;}
  if(a==='tb-align')return formatPara({alignment:v});
  if(a==='tb-list')return formatPara({list:v});
  if(a==='tb-spacing')return formatPara({lineSpacing:Number(v)});}
@@ -320,8 +382,331 @@ window.addEventListener('resize',fitPanel);
 // The WebView reopens the keyboard on any touch while the editor has focus; if the user closed it, toolbar taps keep it closed.
 const tallest={};function keyboardOpen(){tallest[innerWidth]=Math.max(tallest[innerWidth]||0,innerHeight);return innerHeight<tallest[innerWidth]-120;}
 window.addEventListener('resize',keyboardOpen);
-for(const ev of ['pointerdown','mousedown'])root.addEventListener(ev,e=>{if(!e.target.closest('.edit-bottom'))return;e.preventDefault();const t=$('#text-editor');if(ev==='pointerdown'&&t&&!keyboardOpen())t.inputMode='none';});
+for(const ev of ['pointerdown','mousedown'])root.addEventListener(ev,e=>{if(!e.target.closest('.edit-bottom')||e.target.closest('input,textarea,select,label'))return;e.preventDefault();const t=$('#text-editor');if(ev==='pointerdown'&&t&&!keyboardOpen()&&!desktopInput())t.inputMode='none';});
 root.addEventListener('pointerdown',e=>{if(e.target.id==='text-editor')e.target.inputMode='';},true);
 document.addEventListener('selectionchange',()=>{if(document.activeElement?.id==='text-editor')saveRange();});
-async function boot(){applyTheme();render();try{await status();render();if(state.permission)await refresh();}catch(e){state.known=true;state.notice=e.message;render();}}
+async function boot(){applyTheme();render();try{await status();render();offerDrafts();if(state.permission)await refresh();}catch(e){state.known=true;state.notice=e.message;render();}}
+let lastPointer='touch';
+root.addEventListener('pointerdown',e=>{lastPointer=e.pointerType||lastPointer;},true);
+const desktopInput=()=>lastPointer==='mouse'||matchMedia('(any-pointer:fine) and (any-hover:hover)').matches;
+function tabletLayout(){return matchMedia('(min-width:1000px) and (orientation:landscape)').matches;}
+function numberField(key,label,value,min,max,unit){return `<label class="metric-field">${label}<span><input type="number" id="fmt-${key}" aria-label="${label}" value="${value??''}" min="${min}" max="${max}" step="${unit==='pt'?.1:1}">${unit}</span></label>`;}
+// Text edits can move memo anchors, so a document that has memos is refreshed after every command (stale marks would be wrong).
+// A document without memos cannot gain one from typing, so nothing is asked of the engine; the engine reports the count with each reply.
+// Measuring the rectangles of every memo is slow (about 5 ms per memo), so the list is fetched in pages: the worker is never blocked for long and
+// the next edit goes in between. Typing commits only schedule a refresh for when typing pauses (the marks are a drawing, never saved data);
+// every other command, opening the memo panel and saving refresh at once. A newer refresh abandons an older one.
+let memoGen=0,memoTimer=null;const MEMO_PAGE=25,MEMO_TYPING_PAUSE=450;
+async function refreshMemos(count){
+ clearTimeout(memoTimer);memoTimer=null;
+ if(!state.current||!state.meta?.memoSupported){state.memos=[];return;}
+ if(count===0&&!state.memos.length)return;
+ const gen=++memoGen,engine=state.engine,out=[];
+ for(let from=0;;from+=MEMO_PAGE){const part=await engine.run('memos',{from,limit:MEMO_PAGE});if(gen!==memoGen||engine!==state.engine)return;out.push(...part.items);if(part.done)break;}
+ state.memos=out;renderMemoMarks();if(state.panel==='memo')renderPanel();
+}
+function scheduleMemos(count){if(count===0&&!state.memos.length)return;clearTimeout(memoTimer);memoTimer=setTimeout(()=>{memoTimer=null;refreshMemos(count).catch(()=>{});},MEMO_TYPING_PAUSE);}
+// With a page index only that page's marks are rebuilt (a lazily rendered page); without one, all of them.
+function renderMemoMarks(only=null){
+ document.querySelectorAll(only==null?'.memo-mark,.memo-box,.memo-guide':`[data-page="${only}"] .memo-mark,[data-page="${only}"] .memo-box,[data-page="${only}"] .memo-guide`).forEach(e=>e.remove());
+ if(!state.showMemos)return;
+ const lastBottom=new Map();
+ for(const m of state.memos){
+  for(const q of m.rects||[]){if(only!=null&&q.pageIndex!==only)continue;const el=$(`[data-page="${q.pageIndex}"]`),s=state.meta?.sizes[q.pageIndex];if(!el||!s)continue;
+   const mark=document.createElement('button');mark.type='button';mark.className='memo-mark';mark.disabled=state.busy;mark.dataset.action='memo-jump';mark.dataset.memoId=m.id;mark.setAttribute('aria-label',`메모 ${m.index}: ${m.text}`);
+   Object.assign(mark.style,{left:q.x/s.width*100+'%',top:q.y/s.height*100+'%',width:q.width/s.width*100+'%',height:q.height/s.height*100+'%'});el.append(mark);
+  }
+  const q=m.rects?.[0],el=q&&(only==null||q.pageIndex===only)&&$(`[data-page="${q.pageIndex}"]`),s=q&&state.meta?.sizes[q.pageIndex];if(!el||!s)continue;
+  const top=Math.max(q.y/s.height*el.clientHeight,lastBottom.get(q.pageIndex)||0),box=document.createElement('button');box.type='button';box.className='memo-box';box.disabled=state.busy;box.dataset.action='memo-jump';box.dataset.memoId=m.id;
+  box.innerHTML=`<strong>[메모 ${m.index}] ${esc(m.author)} ${esc(m.date?.slice(0,16).replace('T',' ')||'')}</strong><span>${esc(m.text)}</span>`;box.style.top=top+'px';box.addEventListener('dblclick',()=>memoDialog(m));el.append(box);lastBottom.set(q.pageIndex,top+box.offsetHeight+8);
+  if(state.memoGuides){const line=document.createElement('span');line.className='memo-guide';const scale=el.clientWidth/s.width,x=(q.x+q.width)*scale,y=(q.y+q.height/2)*scale,dx=el.clientWidth+12-x,dy=top+Math.min(box.offsetHeight,44)/2-y;Object.assign(line.style,{left:x+'px',top:y+'px',width:Math.hypot(dx,dy)+'px',transform:`rotate(${Math.atan2(dy,dx)}rad)`,transformOrigin:'0 0'});el.append(line);}
+ }
+}
+function renderFeaturePanel(el,hint){
+ if(state.panel==='memo'){
+  el.innerHTML=`<h2 class="panel-title">메모</h2><div class="panel-row">${btn('memo-new','메모 삽입','chip',singleRange()?'':'disabled')}${btn('memo-visible',state.showMemos?'메모 숨기기':'메모 보이기','chip')}${btn('memo-guides','안내선','chip',`aria-pressed="${state.memoGuides}"`)}</div>${state.memos.length?'':'<p class="panel-hint">이 문서에는 메모가 없어요. 글자를 선택해 새 메모를 달 수 있어요.</p>'}${state.memos.map(m=>`<article class="memo-card"><strong>메모 ${m.index} · ${esc(m.author)}</strong>${m.date?`<small>${esc(m.date.slice(0,16).replace('T',' '))}</small>`:''}${m.anchor?btn('memo-jump',esc(m.anchor),'memo-anchor',`data-memo-id="${m.id}" ${state.busy?'disabled':''}`):''}<p>${esc(m.text)}</p><div class="panel-row">${btn('memo-edit','수정','chip',`data-memo-id="${m.id}" ${m.editable&&state.editing?'':'disabled'}`)}${btn('memo-remove','삭제','chip',`data-memo-id="${m.id}" ${m.editable&&state.editing?'':'disabled'}`)}</div>${m.editable?'':`<small>${esc(m.readOnlyReason||'읽기 전용 메모예요.')}</small>`}</article>`).join('')}`;
+ }else if(state.panel==='painter'){
+  el.innerHTML=`<h2 class="panel-title">모양 복사</h2><p class="panel-hint">복사한 뒤 적용할 글자나 문단을 선택하고 모양 복사를 다시 눌러 주세요.</p><label class="field-label" for="copy-scope">본문 모양</label><select id="copy-scope" class="field"><option value="char">글자 모양</option><option value="para">문단 모양</option><option value="both">글자 모양과 문단 모양</option><option value="style">문단 스타일</option></select><fieldset class="copy-cell"><legend>셀 모양 (표 안에서)</legend><label><input type="checkbox" id="copy-cell-attr">셀 속성</label><label><input type="checkbox" id="copy-cell-border">셀 테두리와 배경</label><label><input type="checkbox" id="copy-cell-only">셀 모양만 적용</label></fieldset><div class="panel-row">${btn('tb-copy-format','복사','chip')}${btn('tb-clear-format','취소','chip')}</div>`;
+ }else{
+  const t=state.table;
+  el.innerHTML=`<h2 class="panel-title">표 칸 합치기</h2><p class="panel-hint">${esc(hint||'시작 칸과 끝 칸을 고르세요. 걸친 병합 칸은 전체를 포함해요.')}</p>${t?['first','last'].map((k,i)=>`<label class="field-label" for="table-${k}">${i?'끝':'시작'} 칸</label><select class="field" id="table-${k}">${[...new Map(t.cells.map(c=>[c.cellIdx,c])).values()].map(c=>`<option value="${c.cellIdx}" ${c.row===t.current.row&&c.col===t.current.col?'selected':''}>${c.row+1}행 ${c.col+1}열 (${c.rowSpan}×${c.colSpan})</option>`).join('')}</select>`).join('')+btn('tb-merge-cells','칸 합치기','chip')+`<label class="field-label" for="grid-paste">칸별 붙여넣기</label><p class="panel-hint">엑셀이나 표에서 복사한 내용(탭으로 열, 줄 바꿈으로 행을 나눈 글)을 붙여 넣으면 선택한 칸부터 한 칸씩 채워요. 칸 안의 기존 글은 바뀌고, 실행 취소로 되돌릴 수 있어요.</p><textarea class="field" id="grid-paste" rows="3" spellcheck="false" aria-label="칸별로 붙여넣을 내용"></textarea>`+btn('tb-grid-paste','선택한 칸부터 채우기','chip'):''}`;
+ }
+}
+async function featureToolbar(a,b){
+ if(a==='tb-highlight'){state.highlight=!state.highlight;state.panel='char';if(state.highlight&&hasRange()){highlightStamp=highlightKey(rangeKey());await formatChar(()=>({shadeColor:state.highlightColor}));}updateTools();renderPanel();showMenus(true);return true;}
+ if(a==='tb-memo'){state.panel=state.panel==='memo'?null:'memo';await refreshMemos();renderPanel();showMenus(true);return true;}
+ if(a==='tb-table'){state.table=null;await guarded(async()=>{state.table=await state.engine.run('tableState',{ident:state.selection.ident});state.panel='table';renderPanel();showMenus(true);});return true;}
+ if(a==='tb-grid-paste'){const text=$('#grid-paste')?.value||'';if(!text.trim())throw new Error('붙여넣을 내용을 입력해 주세요.');await guarded(async()=>{const r=await state.engine.run('tableGrid',{ident:state.selection.ident,text});$('#text-editor')?.remove();state.range=null;await refreshPages(r);state.table=await state.engine.run('tableState',{ident:state.selection.ident});announce(`${r.cells}칸에 붙여넣었어요.${r.memosRemoved?' '+memoNotice(r):''}`);renderPanel();});return true;}
+ if(a==='tb-merge-cells'){const first=Number($('#table-first').value),last=Number($('#table-last').value);await guarded(async()=>{const r=await state.engine.run('tableMerge',{ident:state.selection.ident,first,last});$('#text-editor')?.remove();state.range=null;state.panel=null;await refreshPages(r);renderPanel();});return true;}
+ if(a==='tb-painter'){
+  if(state.painter){const rg=liveRange();if(!rg)return true;await guarded(async()=>{const r=await state.engine.run('pasteFormat',rg);state.painter=false;await refreshPages(r);state.range=rg;if(state.highlight)highlightStamp=highlightKey(rg);previewFormat(r.rects,rg);});}
+  else{state.panel=state.panel==='painter'?null:'painter';renderPanel();showMenus(true);}return true;
+ }
+ if(a==='tb-copy-format'){const rg=liveRange();if(!rg)return true;const scope=$('#copy-scope').value,cellAttr=$('#copy-cell-attr').checked,cellBorder=$('#copy-cell-border').checked,cellOnly=$('#copy-cell-only').checked;await guarded(async()=>{await state.engine.run('copyFormat',{...rg,scope,cellAttr,cellBorder,cellOnly});state.painter=true;state.panel=null;renderPanel();announce('모양을 복사했어요. 적용할 곳을 선택해 모양 복사를 눌러 주세요.');});return true;}
+ if(a==='tb-clear-format'){state.painter=false;state.panel=null;renderPanel();updateTools();return true;}
+ if(a==='tb-char-metrics'){const props={};for(const [k,min,max] of [['spacings',-50,50],['ratios',50,200]]){const v=$('#fmt-'+k).value;if(v!=='')props[k]=Array(7).fill(Math.round(numeric(v,min,max)));}if(!Object.keys(props).length)throw new Error('자간이나 장평을 입력해 주세요.');await formatChar(()=>props);return true;}
+ if(a==='tb-para-spacing'){const spacingBefore=numeric($('#fmt-spacingBefore').value,0,1000),spacingAfter=numeric($('#fmt-spacingAfter').value,0,1000);await formatPara({spacingBefore,spacingAfter});return true;}
+ return false;
+}
+function memoDialog(m){
+ const rg=liveRange();if(!m&&(!rg||rg.start===rg.end))return;
+ state.memoDraft=m?{id:m.id}:{...rg};
+ sheetOpen(m?'메모 수정':'메모 삽입',`${m?'':`<label class="field-label" for="memo-author">작성자</label><input id="memo-author" class="field" maxlength="100" value="${esc(state.memoAuthor)}">`}<label class="field-label" for="memo-text">내용</label><textarea id="memo-text" class="field" rows="5" maxlength="10000">${esc(m?.text||'')}</textarea>`,btn('close','취소')+btn('memo-save','저장','primary'));
+ $('#memo-text').focus();
+}
+async function memoAction(a,b){
+ const m=state.memos.find(m=>String(m.id)===b.dataset.memoId);
+ if(a==='memo-visible'){state.showMemos=!state.showMemos;persist();renderMemoMarks();renderPanel();return;}
+ if(a==='memo-guides'){state.memoGuides=!state.memoGuides;persist();renderMemoMarks();renderPanel();return;}
+ if(a==='memo-new')return memoDialog();
+ if(a==='memo-edit')return memoDialog(m);
+ if(a==='memo-remove')return sheetOpen('메모를 삭제할까요?','<p>메모가 달린 본문 글자는 남아요. 삭제 후 실행 취소로 되돌릴 수 있어요.</p>',btn('close','취소')+btn('memo-delete','삭제','primary',`data-memo-id="${m.id}"`));
+ if(a==='memo-jump'){
+  // Like every other command that moves the selection: refuse while another command runs, and flush pending/composing text first
+  // (guarded does both). Placing the new editor first would replace the textarea that still holds the typed text.
+  if(state.busy||!m)return;
+  await guarded(async()=>{
+   if(!state.editing){await startEdit();}state.panel='memo';
+   const r=await state.engine.run('memoSelect',{id:m.id});state.rangeSel=null;state.selection=r.selection;placeEditor(r.selection,true,true);state.range={ident:r.selection.ident,...r.range};if(state.highlight)highlightStamp=highlightKey(state.range);previewFormat(r.rects,state.range);$(`[data-page="${r.selection.start.pageIndex}"]`)?.scrollIntoView({block:'center'});showMenus(true);renderPanel();
+  });return;
+ }
+ if(a==='memo-save'||a==='memo-delete'){
+  const draft=state.memoDraft,args=a==='memo-delete'?{id:m.id}:{...draft,text:$('#memo-text').value,author:$('#memo-author')?.value||state.memoAuthor};
+  if(a==='memo-save'&&!args.text.trim())return announce('메모 내용을 입력해 주세요.');
+  await guarded(async()=>{const r=await state.engine.run(a==='memo-delete'?'memoDelete':draft.id!=null?'memoUpdate':'memoAdd',args);if(a==='memo-save'){state.memoAuthor=args.author;persist();}state.busy=false;sheetClose();state.busy=true;await refreshPages(r);state.panel='memo';renderPanel();});
+ }
+}
+async function appSaveAs(){await flushEdit();await commitHighlight();return pickFolder('save',state.current.id);}
+async function moveParagraph(direction,atStart=false){await guarded(async()=>{const r=await state.engine.run('adjacent',{direction,atStart});state.rangeSel=null;state.selection=r;placeEditor(r,true,desktopInput());$('#text-editor')?.scrollIntoView({block:'nearest'});scheduleToolState();});}
+async function navigateDocument(edge){await guarded(async()=>{const r=await state.engine.run('navigate',{edge});state.rangeSel=null;state.selection=r;placeEditor(r,true,true);const el=$(`[data-page="${r.start.pageIndex}"]`);el?.scrollIntoView({block:edge==='start'?'start':'end'});scheduleToolState();});}
+root.addEventListener('keydown',e=>{
+ if(!state.current||!overlay.hidden||e.target.closest('.sheet,input,select')||e.target.id==='grid-paste'||e.altKey)return;
+ const ctrl=e.ctrlKey||e.metaKey;let action;
+ if(ctrl&&['Equal','NumpadAdd','Minus','NumpadSubtract','Digit0','Numpad0'].includes(e.code))action=()=>zoomDocument(['Digit0','Numpad0'].includes(e.code)?100:state.zoom*(['Minus','NumpadSubtract'].includes(e.code)?1/1.1:1.1));
+ if(state.editing&&!e.shiftKey&&e.target.id==='text-editor'){const t=e.target;if(ctrl&&['ArrowUp','ArrowDown'].includes(e.key))action=()=>{if(e.key==='ArrowUp'&&t.selectionStart>0){t.setSelectionRange(0,0);saveRange();return;}return moveParagraph(e.key==='ArrowUp'?-1:1,true);};else if(!ctrl&&!e.isComposing&&e.keyCode!==229&&!composing&&t.selectionStart===t.selectionEnd&&((e.key==='ArrowLeft'&&t.selectionStart===0)||(e.key==='ArrowRight'&&t.selectionStart===t.value.length)))action=()=>moveParagraph(e.key==='ArrowLeft'?-1:1);}
+ if(state.editing&&ctrl&&['Home','End'].includes(e.key)&&!e.shiftKey)action=()=>navigateDocument(e.key==='Home'?'start':'end');
+ if(['PageUp','PageDown'].includes(e.key)&&!e.shiftKey&&!ctrl)action=()=>$('.reader-scroll').scrollBy({top:$('.reader-scroll').clientHeight*(e.key==='PageDown'?.9:-.9)});
+ if(action){e.preventDefault();e.stopImmediatePropagation();Promise.resolve(action()).catch(e=>errorDialog(e.message));}
+},true);
+// KeyboardEvent.code keeps shortcuts working with a Korean IME / hardware keyboard.
+root.addEventListener('keydown',e=>{
+ if(!state.editing||state.busy||!overlay.hidden)return;
+ const code=e.code||'',ctrl=e.ctrlKey||e.metaKey;
+ let action=null;
+ if(e.key==='Enter'&&!e.isComposing&&e.target.matches('#fmt-spacings,#fmt-ratios,#fmt-spacingBefore,#fmt-spacingAfter'))action=()=>toolbar(e.target.id==='fmt-spacings'||e.target.id==='fmt-ratios'?'tb-char-metrics':'tb-para-spacing',{dataset:{}});
+ if(e.target.id==='grid-paste')return;
+ // Ctrl+Z/Y/B/I/U/A in a panel number field belong to the field, not the document. Only Save, Save As, Escape and the field's own Enter act.
+ if(e.target.matches?.('input,select,textarea')&&!['text-editor','range-editor'].includes(e.target.id)&&!(ctrl&&!e.altKey&&code==='KeyS')&&e.key!=='Escape'){if(action){e.preventDefault();e.stopImmediatePropagation();Promise.resolve(action()).catch(x=>errorDialog(x.message));}return;}
+ if(ctrl&&!e.altKey&&!e.shiftKey&&code==='KeyA'){const t=e.target;if(state.rangeSel||(t.id==='text-editor'&&(!t.value.length||(t.selectionStart===0&&t.selectionEnd===t.value.length))))action=()=>rangeAll();}
+ if(ctrl&&!e.altKey){if(code==='KeyS')action=()=>e.shiftKey?appSaveAs():saveConfirm();if(code==='KeyZ')action=()=>historyStep(e.shiftKey?'redo':'undo');if(code==='KeyY')action=()=>historyStep('redo');if(['KeyB','KeyI','KeyU'].includes(code)){const k={KeyB:'bold',KeyI:'italic',KeyU:'underline'}[code];action=()=>formatChar(c=>({[k]:c[k]!=='on'}));}}
+ if(e.altKey&&code==='KeyC')action=()=>toolbar('tb-painter',{dataset:{}});
+ if(e.key==='Escape'&&state.rangeSel)action=()=>rangeCollapse(false);
+ else if(e.key==='Escape'&&(state.highlight||state.painter)){action=()=>{state.highlight=false;state.painter=false;updateTools();announce('편집 도구 모드를 해제했어요.');};}
+ if(action){e.preventDefault();e.stopImmediatePropagation();Promise.resolve(action()).catch(e=>errorDialog(e.message));}
+},true);
+let highlightTimer,highlightStamp=null;
+const highlightKey=r=>JSON.stringify([state.current.id,r.ident,r.start,r.end,state.highlightColor]);
+const rangeKey=()=>state.rangeSel?{ident:state.rangeSel.rident,start:0,end:1}:liveRange();
+async function commitHighlight(){
+ clearTimeout(highlightTimer);highlightTimer=null;
+ if(!state.highlight||state.busy||!overlay.hidden||!state.editing)return;
+ if(state.rangeSel){const stamp=highlightKey({ident:state.rangeSel.rident,start:0,end:1});if(stamp===highlightStamp)return;highlightStamp=stamp;await formatChar(()=>({shadeColor:state.highlightColor}));return;}
+ saveRange();const r=liveRange();if(!r||r.end<=r.start){highlightStamp=null;return;}
+ const stamp=highlightKey(r);if(stamp===highlightStamp)return;
+ highlightStamp=stamp;await formatChar(()=>({shadeColor:state.highlightColor}));
+}
+function scheduleHighlight(){clearTimeout(highlightTimer);if(state.highlight)highlightTimer=setTimeout(()=>commitHighlight().catch(e=>errorDialog(e.message)),250);}
+root.addEventListener('pointerdown',e=>{if(e.target.id==='text-editor')highlightStamp=null;});
+root.addEventListener('pointerup',e=>{if(e.target.id==='text-editor')scheduleHighlight();});
+document.addEventListener('selectionchange',()=>{if(document.activeElement?.id==='text-editor')scheduleHighlight();});
+
+// ---- multi-paragraph selection (mouse drag, Shift+click, Ctrl+A) ----
+// The worker owns the selection (anchor + focus inside one body section or one table cell). The page shows engine
+// rectangles for it, and a transparent textarea holds the joined text so Ctrl+C/Ctrl+X use the standard clipboard path.
+// Typing, Backspace/Delete, Enter and paste replace the whole range in one undo step; arrow keys collapse it.
+function docPoint(cx,cy){
+ let best=null,gap=Infinity;
+ for(const el of document.querySelectorAll('.page')){const r=el.getBoundingClientRect(),d=cy<r.top?r.top-cy:cy>r.bottom?cy-r.bottom:0;if(d<gap){gap=d;best=el;}if(!d)break;}
+ const size=best&&state.meta?.sizes[Number(best.dataset.page)];if(!size)return null;
+ const r=best.getBoundingClientRect(),clamp=(v,hi)=>Math.max(0,Math.min(hi,v));
+ return {page:Number(best.dataset.page),x:clamp((cx-r.left)*size.width/r.width,size.width),y:clamp((cy-r.top)*size.height/r.height,size.height)};
+}
+// The editor textarea has a minimum height and can cover the next line, so "inside the edited paragraph" is judged by the engine's line rectangles.
+function inParagraph(pt){const c=state.selection;return !!(c&&pt&&pt.page===c.start.pageIndex&&pt.y>=c.start.y-2&&pt.y<=c.end.y+c.end.height+2);}
+function placeRange(g){
+ if(!g||!state.editing)return;composing=false;$('.edit-layer')?.remove();drawMarks(g.rects);
+ const el=$(`[data-page="${g.start.pageIndex}"]`);if(!el)return;
+ const t=document.createElement('textarea');t.className='edit-layer range-layer fmt-preview';t.id='range-editor';t.setAttribute('aria-label',`선택한 ${g.paragraphs}개 문단`);t.spellcheck=false;t.value=g.text;
+ layoutEditor(t,{start:g.start,end:g.start},el);el.appendChild(t);if(!desktopInput())t.inputMode='none';
+ bindRangeEditor(t,g);t.focus({preventScroll:true});t.select();showMenus(true);scheduleToolState();
+}
+function applyRangeSelection(r){
+ if(r.collapsed){state.rangeSel=null;state.selection=r.selection;placeEditor(r.selection,true,desktopInput());scheduleToolState();return;}
+ state.selection=null;state.rangeSel=r.range;state.range=null;placeRange(r.range);scheduleHighlight();
+}
+function bindRangeEditor(t,g){
+ t.addEventListener('keydown',e=>{
+  if(e.isComposing||e.keyCode===229||e.key==='Process'||e.ctrlKey||e.metaKey||e.altKey)return;
+  const k=e.key;
+  if(k==='Backspace'||k==='Delete'){e.preventDefault();rangeEdit('rangeDelete');}
+  else if(k==='Enter'){e.preventDefault();rangeEdit('rangeReplace',{text:'\n'});}
+  else if(['ArrowLeft','ArrowUp','Home'].includes(k)){e.preventDefault();rangeCollapse(true);}
+  else if(['ArrowRight','ArrowDown','End'].includes(k)){e.preventDefault();rangeCollapse(false);}
+ });
+ t.addEventListener('beforeinput',e=>{
+  if(e.isComposing||composing)return;
+  const type=e.inputType||'';
+  if(type==='insertText'&&e.data){e.preventDefault();rangeEdit('rangeReplace',{text:e.data});}
+  else if(type==='insertParagraph'||type==='insertLineBreak'){e.preventDefault();rangeEdit('rangeReplace',{text:'\n'});}
+  else if(type.startsWith('delete')){e.preventDefault();if(type!=='deleteByCut')rangeEdit('rangeDelete');}
+  else if(type.startsWith('insertFrom')){e.preventDefault();}
+ });
+ // Korean (and other) IME input replaces the selected text inside the textarea; the engine range is replaced when the composition is committed.
+ t.addEventListener('compositionstart',()=>{composing=true;t.classList.remove('fmt-preview');});
+ t.addEventListener('compositionend',()=>{composing=false;const v=t.value;if(v&&v!==g.text)setTimeout(()=>rangeEdit('rangeReplace',{text:v}),0);else t.classList.add('fmt-preview');});
+ t.addEventListener('paste',e=>{e.preventDefault();const text=e.clipboardData?.getData('text/plain')||'';if(!text)return;
+  if(state.clip&&clipKey(text)===state.clip.key)rangeEdit('rangeReplace',{internal:true},()=>rangeEdit('rangeReplace',{text}));else rangeEdit('rangeReplace',{text});});
+ for(const ev of ['copy','cut'])t.addEventListener(ev,()=>{const rg=state.rangeSel;if(!rg)return;
+  state.engine.run('rangeCopy',{rident:rg.rident}).then(r=>{state.clip={key:clipKey(r.text)};}).catch(()=>{state.clip=null;});
+  if(ev==='cut')rangeEdit('rangeDelete');});
+}
+// Characters typed while the first replacement is still running are kept and inserted at the caret of the new editor,
+// so fast typing over a selection never drops a key.
+let rangeTyping=null;
+async function rangeEdit(op,extra={},fallback=null){
+ if(rangeTyping!==null){if(op==='rangeReplace'&&typeof extra.text==='string'&&!extra.internal&&!/[\r\n]/.test(extra.text))rangeTyping+=extra.text;return;}
+ const rg=state.rangeSel;if(!rg||state.busy)return;state.busy=true;rangeTyping='';updateEditorButtons();
+ try{
+  await flushEdit();const r=await state.engine.run(op,{rident:rg.rident,...extra});if(r.stale)return;
+  // The range editor keeps the focus until the single-paragraph editor takes over in the same tick (no window for lost keys).
+  state.rangeSel=null;state.fmt={};await refreshPages({...r,selection:null});state.selection=r.selection;placeEditor(r.selection,true,desktopInput());showMenus(false);
+  const t=$('#text-editor');if(rangeTyping&&t){t.setRangeText(rangeTyping,t.selectionStart,t.selectionEnd,'end');queueEdit();}
+ }catch(e){const retry=fallback;rangeTyping=null;if(retry){state.busy=false;updateEditorButtons();return retry();}errorDialog(e.message);}
+ finally{rangeTyping=null;state.busy=false;updateEditorButtons();}
+}
+async function rangeCollapse(toStart){
+ if(!state.rangeSel||state.busy)return;
+ try{const r=await state.engine.run('rangeCollapse',{toStart});state.rangeSel=null;state.selection=r.selection;placeEditor(r.selection,true,desktopInput());scheduleToolState();}catch(e){errorDialog(e.message);}
+}
+async function rangeAll(){if(state.busy)return;await guarded(async()=>{applyRangeSelection(await state.engine.run('rangeAll',{}));});}
+async function extendRange(to){
+ const t=$('#text-editor'),anchor=t?{ident:t.dataset.ident,offset:t.selectionDirection==='backward'?t.selectionEnd:t.selectionStart}:{};
+ await guarded(async()=>{applyRangeSelection(await state.engine.run('rangeSelect',{to,...anchor}));});
+}
+let drag=null,dragBusy=false,dragLatest=null,dragNote='';
+root.addEventListener('pointerdown',e=>{
+ if(!state.editing||e.button!==0||e.pointerType==='touch'||state.busy||!overlay.hidden||!e.target.closest('.page')||e.target.closest('button'))return;
+ const point=docPoint(e.clientX,e.clientY);if(!point)return;const inEditor=e.target.id==='text-editor'&&inParagraph(point);
+ if(e.shiftKey&&!inEditor&&(state.selection||state.rangeSel)){e.preventDefault();extendRange(point).catch(x=>errorDialog(x.message));return;}
+ drag={id:e.pointerId,x:e.clientX,y:e.clientY,point,inEditor,active:false,lastValid:null};
+},true);
+document.addEventListener('pointermove',e=>{
+ if(!drag||e.pointerId!==drag.id)return;
+ // The button was released outside the window (no pointerup reached us): settle the selection exactly like a release.
+ if(!(e.buttons&1)){const d=drag;drag=null;if(d.active){dragLatest=null;finishDrag(d).catch(x=>errorDialog(x.message));}return;}
+ if(!drag.active){
+  if(Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<8)return;
+  // A drag that stays inside the paragraph being edited is the browser's own text selection. The paragraph is judged by the
+  // engine's own line rectangles, not by the textarea box (which has a minimum height and can cover the next line).
+  if(drag.inEditor&&inParagraph(docPoint(e.clientX,e.clientY)))return;
+  drag.active=true;const t=$('#text-editor');if(t)t.style.visibility='hidden';
+  const d=drag;d.starting=flushEdit().catch(err=>{if(drag===d)drag=null;if(t)t.style.visibility='';announce(err.message);});
+ }
+ const to=docPoint(e.clientX,e.clientY);if(to){dragLatest=to;pumpDrag();}
+});
+async function pumpDrag(){
+ if(dragBusy||!drag)return;dragBusy=true;const d=drag;
+ try{
+  await d.starting;
+  while(dragLatest&&drag===d){
+   const to=dragLatest;dragLatest=null;
+   try{const r=await state.engine.run('rangeSelect',{from:d.point,to,preview:true});if(drag!==d)break;d.lastValid=to;dragNote='';if(r.collapsed)clearMarks();else drawMarks(r.range.rects);}
+   catch(err){if(dragNote!==err.message){dragNote=err.message;announce(err.message);}}
+  }
+ }finally{dragBusy=false;}
+}
+document.addEventListener('pointerup',e=>{
+ if(!drag||e.pointerId!==drag.id)return;const d=drag;drag=null;if(!d.active)return;dragLatest=null;finishDrag(d).catch(x=>errorDialog(x.message));
+});
+document.addEventListener('pointercancel',()=>{const d=drag;drag=null;if(d?.active){dragLatest=null;finishDrag(d).catch(x=>errorDialog(x.message));}});
+async function finishDrag(d){
+ state.busy=true;updateEditorButtons();
+ try{
+  await d.starting;while(dragBusy)await new Promise(r=>setTimeout(r,16));
+  const t=$('#text-editor');
+  // Selecting across a table boundary is refused by the worker; the last valid end point is kept instead.
+  if(!d.lastValid){if(t){t.style.visibility='';t.focus({preventScroll:true});}return;}
+  applyRangeSelection(await state.engine.run('rangeSelect',{from:d.point,to:d.lastValid}));
+
+ }catch(err){
+  // The worker may already hold a preview selection; settle both sides on a single caret instead of leaving them out of step.
+  try{const r=await state.engine.run('rangeCollapse',{toStart:false});state.rangeSel=null;state.selection=r.selection;placeEditor(r.selection,true,desktopInput());}catch{}
+  throw err;
+ }finally{state.busy=false;updateEditorButtons();}
+}
+
+// ---- crash recovery drafts ----
+// While an edit is unsaved, its last exported state is kept as a private copy inside the app (never beside the user's file).
+// A draft is written ~4 s after the last edit (a pause), when the app goes to the background, and - so that continuous editing is covered too -
+// at the latest DRAFT_MAX_WAIT_MS after the first edit that no draft contains yet. It always holds the last successful snapshot: what was typed
+// after that snapshot (up to ~30 s of continuous input, plus whatever is still being composed or committed) is not in it, and a forced stop
+// can still come before any snapshot exists. It never replaces the user's document and it is deleted when the edit is saved or discarded.
+const DRAFT_MAX_WAIT_MS=30000,DRAFT_RETRY_MS=500;
+let draftTimer=null,draftSince=0;
+// Pause length: large documents take longer to export, so they are drafted less often (10 MB ≈ every 30 s).
+const draftPause=()=>Math.min(30000,Math.max(4000,(state.current.size||0)/350));
+// now: write at once. retry: the previous attempt had to step aside (IME composing, edit being committed, busy); try again soon, the
+// deadline of the unsaved edit keeps counting. Otherwise: wait for a pause, but never past the maximum wait.
+function scheduleDraft(now=false,retry=false){clearTimeout(draftTimer);draftTimer=null;if(!state.editing||!state.current||!state.draftId)return;
+ const t=Date.now();if(!draftSince)draftSince=t;
+ const wait=now?0:retry?DRAFT_RETRY_MS:Math.max(0,Math.min(draftPause(),draftSince+DRAFT_MAX_WAIT_MS-t));
+ draftTimer=setTimeout(()=>{draftTimer=null;writeDraft().catch(()=>{});},wait);}
+async function writeDraft(){
+ if(!state.editing||!state.current||!state.engine||state.engine.dead)return;
+ // No snapshot is written while a save runs (it would race the export and the upload), but the draft is not forgotten either: the deadline
+ // (draftSince) keeps counting and a short retry looks again, so a save that fails (external change, read-only, no space, timeout) leaves the
+ // unsaved edit to be drafted right after it, without a new edit. A save that succeeds drops the timer in dropDraft.
+ if(state.saving){if(draftSince)scheduleDraft(false,true);return;}
+ // A snapshot is still being written: look again right after it, the edits since then are not in it.
+ if(state.draftBusy){if(draftSince)scheduleDraft(false,true);return;}
+ if(!state.dirty){draftSince=0;if(state.draftExists&&!state.recovered)await dropDraft();return;}
+ if(composing||editTimer||state.busy){scheduleDraft(false,true);return;}
+ // The snapshot taken now contains every edit made so far; later edits start a new maximum-wait period.
+ draftSince=0;state.draftBusy=true;let token;
+ try{
+  const d=state.current,r=await state.engine.run('draft',{format:d.format});if(r.rev===state.draftRev)return;
+  const bytes=new Uint8Array(r.bytes);
+  token=await native('beginDraft',{id:state.draftId,docId:d.id,name:d.name,path:d.path||'',folder:d.folder||'',format:d.format,encrypted:!!state.meta?.encrypted,external:!!d.external,lossy:!!r.lossy,length:bytes.length});
+  await uploadChunks(token,bytes);await native('finishDraft',{token});token=null;
+  state.draftRev=r.rev;state.draftExists=true;state.draftFailed=false;
+ }catch(e){
+  if(token)await native('abortDraft',{token}).catch(()=>{});
+  if(!state.draftFailed){state.draftFailed=true;announce('자동 복구 저장을 하지 못했어요. 중요한 내용은 직접 저장해 주세요.');}
+ }finally{state.draftBusy=false;}
+}
+async function dropDraft(){clearTimeout(draftTimer);draftTimer=null;draftSince=0;while(state.draftBusy)await new Promise(r=>setTimeout(r,30));const id=state.draftId;state.draftExists=false;state.draftRev=-1;if(id)await native('discardDraft',{id}).catch(()=>{});}
+const fmtTime=n=>new Date(n).toLocaleString('ko-KR',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'});
+function draftRows(list){return list.map(d=>`<div class="draft-row"><strong>${esc(d.name)}</strong><small>${esc(shortPath(d.folder||''))} · ${esc(fmtTime(d.savedAt))} · ${fmtSize(d.size)}${d.encrypted?' · 암호 문서':''}${d.lossy?' · 일부 개체가 빠졌을 수 있어요':''}</small><div class="panel-row">${btn('draft-open','복구해서 열기','chip',`data-key="${esc(d.key)}"`)}${btn('draft-discard','삭제','chip',`data-key="${esc(d.key)}"`)}</div></div>`).join('');}
+function draftDialog(list){sheetOpen('저장하지 못한 편집 내용이 있어요',`<p>앱이 종료되기 전의 편집 내용을 이 기기 안에 임시로 보관해 두었어요. 원본 문서는 바뀌지 않았어요. 복구하면 새 파일로 저장해야 해요. 마지막 몇 초의 입력은 없을 수 있어요.</p>${draftRows(list)}`,btn('close','나중에','primary'));}
+async function offerDrafts(force=false){
+ if(state.current||!overlay.hidden||state.busy)return;
+ let list;try{list=await native('listDrafts');}catch{return;}
+ state.drafts=list;const fresh=list.filter(d=>force||!state.draftOffered.has(d.key));if(!fresh.length)return;
+ for(const d of fresh)state.draftOffered.add(d.key);draftDialog(list);
+}
+async function bytesForDraft(key){const r=await native('readDraft',{key});try{const res=await fetch(r.url,{cache:'no-store'});if(!res.ok)throw new Error('복구 자료를 읽지 못했어요.');return {...r,bytes:await res.arrayBuffer()};}finally{await native('release',{token:r.token});}}
+async function openDraft(key,password){
+ if(state.busy)return;state.busy=true;const d=state.drafts.find(x=>x.key===key);sheetOpen('복구한 문서 열기',`<p>${esc(d?.name||'')}</p><p class="busy-status">복구 자료를 읽고 있어요…</p>`);
+ try{
+  const r=await bytesForDraft(key);if(state.engine)state.engine.stop('새 문서를 열었습니다.');state.engine=new Engine();
+  const meta=await state.engine.run('open',password==null?{bytes:r.bytes}:{bytes:r.bytes,password});
+  state.current=r.meta;state.sha=r.sha;state.meta=meta;state.sessionSaved=false;state.lastBackup=null;state.memos=[];state.highlight=false;state.painter=false;state.editing=false;state.dirty=false;state.selection=null;state.rangeSel=null;state.clip=null;
+  state.recovered=true;state.draftId=r.meta.id;state.draftExists=true;state.draftRev=-1;state.busy=false;sheetClose();renderReader();await refreshMemos();await startEdit();
+  announce('복구한 내용이에요. 다른 이름으로 저장해 주세요. 원본 문서는 바뀌지 않았어요.');
+ }catch(e){state.busy=false;if(state.engine&&!state.current){state.engine.stop('복구를 마치지 못했어요.');state.engine=null;}if(e.message==='PASSWORD_REQUIRED'||e.message==='PASSWORD_WRONG')return askPassword(null,e.message==='PASSWORD_WRONG',key);errorDialog(e.message);}
+}
+function draftDiscardConfirm(key){const d=state.drafts.find(x=>x.key===key);sheetOpen('복구 자료를 삭제할까요?',`<p class="context-file">${esc(d?.name||'')}</p><p>삭제하면 저장하지 못한 편집 내용을 되돌릴 수 없어요. 원본 문서는 그대로예요.</p>`,btn('close','아니오')+btn('draft-discard-yes','삭제','primary danger',`data-key="${esc(key)}"`));}
+async function draftDiscard(key){await native('discardDraft',{key});state.drafts=state.drafts.filter(d=>d.key!==key);sheetClose();if(state.drafts.length)draftDialog(state.drafts);announce('복구 자료를 삭제했어요.');}
+
 boot();
+

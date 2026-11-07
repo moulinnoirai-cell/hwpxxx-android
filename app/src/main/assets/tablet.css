@@ -1,0 +1,58 @@
+/* Touch targets stay usable with Tab S7 landscape, DeX and split screen. */
+#hwp-app .edit-tools{display:flex;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;gap:2px}
+#hwp-app .edit-tools .tool{flex:0 0 56px;min-height:52px}
+#hwp-app .edit-tools .tool[aria-pressed=true]{background:var(--soft);color:var(--brand)}
+#hwp-app .metric-field{display:flex;flex-direction:column;gap:4px;font-size:12px;min-width:0;flex:1}
+#hwp-app .metric-field span{display:flex;align-items:center;gap:4px}
+#hwp-app .metric-field input{width:72px;max-width:100%;min-height:44px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px;font:inherit}
+#hwp-app .panel-row{flex-wrap:wrap}
+#hwp-app .pages{margin-left:auto;margin-right:auto;margin-inline:auto}
+#hwp-app .page{overflow:visible}
+#hwp-app .page>img{width:100%;display:block}
+#hwp-app .memo-mark{position:absolute;min-height:0!important;min-width:0!important;padding:0!important;border:0;border-inline:2px solid #269557;background:#40c87830;border-radius:1px;z-index:1;pointer-events:none}
+#hwp-app .memo-box{display:none;position:absolute;left:calc(100% + 12px);width:190px;min-height:44px;padding:9px;text-align:left;border:1px solid #73aa72;border-radius:5px;background:#f1fae9;color:#173324;font-size:12px;overflow-wrap:anywhere;z-index:1}
+#hwp-app .memo-box strong,#hwp-app .memo-box span{display:block;white-space:pre-wrap}
+#hwp-app .memo-box span{max-height:100px;overflow:auto;margin-top:5px}
+#hwp-app .memo-guide{display:none;position:absolute;border-top:1px dashed #61935b;pointer-events:none}
+#hwp-app .memo-card{border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px;overflow-wrap:anywhere}
+#hwp-app .memo-card strong,#hwp-app .memo-card small{display:block}
+#hwp-app .memo-card p{white-space:pre-wrap;font-size:13px;line-height:1.6}
+#hwp-app .memo-anchor{min-height:44px;text-align:left;color:var(--brand);background:var(--soft);padding:8px;border-radius:6px;width:100%;margin-top:6px}
+#hwp-app #memo-text{resize:vertical;max-height:35vh}
+#hwp-app .edit-panel select{width:100%;min-height:44px}
+@media(min-width:1000px) and (orientation:landscape){
+ #hwp-app .reader.is-editing{--sidebar:300px;--editor-top:72px}
+ #hwp-app .reader.is-editing .edit-top{height:var(--editor-top);padding:8px 20px;grid-template-columns:minmax(100px,140px) minmax(100px,140px) minmax(180px,240px);justify-content:end}
+ #hwp-app .reader.is-editing .edit-top button{min-height:44px}
+ #hwp-app .reader.is-editing .reader-scroll{right:var(--sidebar);padding-left:24px;padding-right:24px;padding-inline:24px}
+ #hwp-app .reader.is-editing .edit-bottom{top:var(--editor-top);bottom:0;left:auto;right:0;width:var(--sidebar);display:flex;flex-direction:column;border-top:0;border-left:1px solid var(--line)}
+ #hwp-app .reader.is-editing .edit-tools{order:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));flex-shrink:0;overflow:visible;padding:8px}
+ #hwp-app .reader.is-editing .edit-tools .tool{min-height:52px;flex-direction:column;padding:5px 0}
+ #hwp-app .reader.is-editing .edit-panel{order:1;max-height:none;min-height:0;overflow:auto;flex:1;padding:14px;border-top:1px solid var(--line)}
+ #hwp-app .reader.is-editing .panel-title{display:block}
+ #hwp-app .reader.is-editing .reader-rail{right:calc(var(--sidebar) + 4px)}
+ #hwp-app .hw-header,#hwp-app .hw-tools{padding-inline:32px}
+ #hwp-app .hw-docs:not([data-view=list]){grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+ #hwp-app .overlay{align-items:center;justify-content:center;padding:24px}
+ #hwp-app .sheet{max-height:calc(100% - 32px);border-radius:22px}
+}
+/* The memo panel remains available at every size; margin cards need extra room. */
+@media(min-width:1600px) and (orientation:landscape){
+ #hwp-app .reader.is-editing .reader-scroll{padding-right:228px}
+ #hwp-app .memo-box,#hwp-app .memo-guide{display:block}
+}
+@media(max-height:380px){
+ #hwp-app .reader.is-editing .edit-top{display:grid;min-height:44px;padding-block:2px}
+ #hwp-app .reader.is-editing{--editor-top:52px}
+ #hwp-app .reader.is-editing .edit-tools{grid-template-columns:repeat(6,minmax(0,1fr))}
+ #hwp-app .reader.is-editing .edit-tools .tool{min-height:44px;font-size:10px}
+ #hwp-app .reader.is-editing .edit-tools .tool svg{width:18px;height:18px}
+}
+#hwp-app .copy-cell{border:1px solid var(--line);border-radius:10px;margin:12px 0;padding:8px;font-size:12px}
+#hwp-app .copy-cell label{display:flex;align-items:center;gap:8px;min-height:44px}
+#hwp-app .copy-cell input{width:20px;height:20px;accent-color:var(--brand)}
+
+#hwp-app .zoom-tools{display:flex;align-items:center;justify-content:center;gap:8px;padding:4px;border-bottom:1px solid var(--line);order:0}
+#hwp-app .zoom-tools .chip{min-height:36px;min-width:36px}
+#hwp-app #document-zoom{min-width:48px;text-align:center;font-variant-numeric:tabular-nums}
+@media(pointer:fine){#hwp-app .reader.is-editing .edit-layer{touch-action:auto}#hwp-app .tool{cursor:pointer}}

@@ -1,26 +1,34 @@
 {
-  "version": "0.8.7",
-  "dist": {
-    "shasum": "3bf8afb0683223e26ac704314a0a9b471c4840cd",
-    "tarball": "https://registry.npmjs.org/@rhwp/core/-/core-0.8.7.tgz",
-    "fileCount": 7,
-    "integrity": "sha512-qgNpY9aclCvy9D7cPnpuplu42kUFZCCPhdjAS5HBso4Z4XeHG3uchYdUleQBoas/zEuwfJ7H4/ulepqdL/LXDA==",
-    "signatures": [
-      {
-        "sig": "MEQCIB9ZzKGjIEYwEd4aE2FznGvYBtXTEeiFISsFlnWc0MjiAiAPLsx3ivw83yMu4LM5nh5w7HYKLjr8myfjzk7HAj3U7Q==",
-        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+  "version": "0.8.7-hwpxxx1",
+  "sourceCommit": "1a76570e833917d15817415a53c09ad61ab3203f",
+  "patch": "patches/rhwp-engine/0001-rhwp-pr8269-memo-api-backport-to-v0.8.7.patch",
+  "patchSha256": "5fefe4f252c45c54551ff3f6a673291545298e8c5839796d2122d21c82de300b",
+  "note": "The tracked 0.8.7 runtime is a baseline only. Build the patched runtime before APK packaging; verifyMemoEngine rejects the baseline. Generated hashes are stored in engine/build-info.json inside the APK build artifact.",
+  "buildConfig": "config/android-engine.json",
+  "upstreamBaseline": {
+    "version": "0.8.7",
+    "dist": {
+      "shasum": "3bf8afb0683223e26ac704314a0a9b471c4840cd",
+      "tarball": "https://registry.npmjs.org/@rhwp/core/-/core-0.8.7.tgz",
+      "fileCount": 7,
+      "integrity": "sha512-qgNpY9aclCvy9D7cPnpuplu42kUFZCCPhdjAS5HBso4Z4XeHG3uchYdUleQBoas/zEuwfJ7H4/ulepqdL/LXDA==",
+      "signatures": [
+        {
+          "sig": "MEQCIB9ZzKGjIEYwEd4aE2FznGvYBtXTEeiFISsFlnWc0MjiAiAPLsx3ivw83yMu4LM5nh5w7HYKLjr8myfjzk7HAj3U7Q==",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        },
+        {
+          "sig": "MEQCIDfhiT163OclfeZCCRaklpICsjV3wbu32EnNxElP8FZpAiBHZeBEIaHtI5ESrvXVcZHJUfGa03DHQ1Vp/iKcpkhJBQ==",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        }
+      ],
+      "attestations": {
+        "url": "https://registry.npmjs.org/-/npm/v1/attestations/@rhwp%2fcore@0.8.7",
+        "provenance": {
+          "predicateType": "https://slsa.dev/provenance/v1"
+        }
       },
-      {
-        "sig": "MEQCIDfhiT163OclfeZCCRaklpICsjV3wbu32EnNxElP8FZpAiBHZeBEIaHtI5ESrvXVcZHJUfGa03DHQ1Vp/iKcpkhJBQ==",
-        "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
-      }
-    ],
-    "attestations": {
-      "url": "https://registry.npmjs.org/-/npm/v1/attestations/@rhwp%2fcore@0.8.7",
-      "provenance": {
-        "predicateType": "https://slsa.dev/provenance/v1"
-      }
-    },
-    "unpackedSize": 12534924
+      "unpackedSize": 12534924
+    }
   }
 }

@@ -1,0 +1,39 @@
+// Shared conversions use the same units and bounds as hwpxxx desktop 1.6.1.
+export const CHAR_KEYS=['bold','italic','underline','fontSize','textColor','shadeColor','spacings','ratios'];
+export const COPY_CHAR_KEYS=[...CHAR_KEYS,'strikethrough','emboss','engrave','fontId','fontIds','underlineType','underlineColor','outlineType','shadowType','shadowColor','shadowOffsetX','shadowOffsetY','strikeColor','subscript','superscript','relativeSizes','charOffsets','emphasisDot','underlineShape','strikeShape','kerning'];
+export const CELL_ATTR_KEYS=['paddingLeft','paddingRight','paddingTop','paddingBottom','applyInnerMargin','verticalAlign','textDirection','isHeader','cellProtect','fieldName','editableInForm'];
+export const PARA_KEYS=['alignment','lineSpacing','lineSpacingType','spacingBefore','spacingAfter','headType','numberingId','paraLevel','marginLeft','marginRight','indent','widowOrphan','keepWithNext','keepLines','pageBreakBefore','fontLineHeight','singleLine','autoSpaceKrEn','autoSpaceKrNum','verticalAlign','englishBreakUnit','koreanBreakUnit','borderConnect','borderIgnoreMargin'];
+export const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+// One zoom range for the buttons, Ctrl+wheel, Ctrl+-/+/0, the stored position and the touch pinch.
+export const ZOOM_MIN=50,ZOOM_MAX=400;
+export const clampZoom=v=>clamp(Number.isFinite(v)?v:100,ZOOM_MIN,ZOOM_MAX);
+// Android's WebView text zoom (system font size) scales px font sizes. A probe element sized 100px reports the factor;
+// values within 2px of 100 are measurement noise. The page overlay is divided by it so the editor text stays aligned with the rendered page.
+export const probeScale=h=>Number.isFinite(h)&&h>0&&Math.abs(h-100)>2?clamp(h/100,.5,4):1;
+export function numeric(value,min,max){
+ const n=Number(value);if(value===''||!Number.isFinite(n))throw new Error('숫자를 입력해 주세요.');return clamp(n,min,max);
+}
+export const spacingToRaw=pt=>Math.round(numeric(pt,0,1000)*200);
+export const spacingToPt=px=>Math.round(px*75/200*10)/10;
+export function paragraphForWrite(p){
+ const out={};for(const k of PARA_KEYS)if(p[k]!=null)out[k]=p[k];
+ for(const k of ['spacingBefore','spacingAfter'])if(out[k]!=null)out[k]=Math.round(out[k]*75/20)*20;
+ for(const k of ['marginLeft','marginRight','indent'])if(out[k]!=null)out[k]=Math.round(out[k]*150);
+ return out;
+}
+export function memoTarget(m){
+ if(m.paraIndex==null||m.startCharIdx==null||m.endCharIdx==null)return null;
+ if((m.path||[]).some(s=>s.type!=='cell'))return null;
+ const c={sec:m.sectionIndex,para:m.paraIndex,offset:m.startCharIdx};
+ if(m.path?.length){c.path=JSON.stringify(m.path.map(s=>({controlIndex:s.controlIndex,cellIndex:s.cellIndex,cellParaIndex:s.paraIndex})));c.p=m.path[m.path.length-1].paraIndex;}
+ return c;
+}
+// Grow to a fixed point: expanding for one merged cell may intersect another.
+export function expandCellRange(cells,a,b){
+ const r={top:Math.min(a.row,b.row),left:Math.min(a.col,b.col),bottom:Math.max(a.row+a.rowSpan-1,b.row+b.rowSpan-1),right:Math.max(a.col+a.colSpan-1,b.col+b.colSpan-1)};
+ let changed=true;while(changed){changed=false;for(const c of cells){const bottom=c.row+c.rowSpan-1,right=c.col+c.colSpan-1;
+  if(c.row>r.bottom||bottom<r.top||c.col>r.right||right<r.left)continue;
+  const n={top:Math.min(r.top,c.row),left:Math.min(r.left,c.col),bottom:Math.max(r.bottom,bottom),right:Math.max(r.right,right)};
+  if(Object.keys(r).some(k=>r[k]!==n[k])){Object.assign(r,n);changed=true;}
+ }}return r;
+}

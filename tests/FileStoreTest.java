@@ -43,6 +43,16 @@ public class FileStoreTest {
             // A stored entry hidden from the streaming reader (central directory mismatch) is refused.
             byte[] tampered=hwpx.clone();int cd=-1;for(int i=tampered.length-22;i>=0;i--)if(tampered[i]==0x50&&tampered[i+1]==0x4b&&tampered[i+2]==1&&tampered[i+3]==2){cd=i;break;}
             if(cd>=0){tampered[cd+28]=(byte)(tampered[cd+28]+1);byte[] t=tampered;rejected(()->FileStore.validate(t,"hwpx"));}
+            // A read-only original is not silently replaced, and only our own abandoned temp files are removed.
+            Path readOnly=root.resolve("읽기전용.hwp");store.write(readOnly.toString(),hwp,null,false);readOnly.toFile().setWritable(false);
+            if(!readOnly.toFile().canWrite()){rejected(()->store.write(readOnly.toString(),hwp,FileStore.sha(hwp),true));yes(Arrays.equals(hwp,Files.readAllBytes(readOnly)));}
+            else System.out.println("SKIP read-only check: this account can write read-only files");
+            readOnly.toFile().setWritable(true);
+            Path stale=root.resolve(".hwp-offline-12345.tmp"),fresh=root.resolve(".hwp-offline-67890.tmp"),foreign=root.resolve(".hwp-offline-notes.tmp");
+            for(Path t:new Path[]{stale,fresh,foreign})Files.write(t,new byte[]{1});
+            stale.toFile().setLastModified(System.currentTimeMillis()-FileStore.STALE_TEMP_MS-60000);foreign.toFile().setLastModified(System.currentTimeMillis()-FileStore.STALE_TEMP_MS-60000);
+            store.write(root.resolve("새 문서.hwp").toString(),hwp,null,false);
+            yes(!Files.exists(stale)&&Files.exists(fresh)&&Files.exists(foreign));Files.delete(fresh);Files.delete(foreign);
             for(Path f:(Iterable<Path>)Files.walk(root)::iterator)yes(!f.getFileName().toString().startsWith(".hwp-offline-"));
             System.out.println("FileStore: "+checks+" checks passed");
         }finally{try(java.util.stream.Stream<Path> paths=Files.walk(root)){paths.sorted(Comparator.reverseOrder()).forEach(p->{try{Files.deleteIfExists(p);}catch(IOException ignored){}});}}
