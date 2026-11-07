@@ -8,7 +8,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#f5f6fa;overscroll-beh
 #hwp-app .nav{flex:none;padding-bottom:8px}#hwp-app .settings-body{height:auto;flex:1;min-height:0}
 #hwp-app .thumb img{width:100%;height:100%;object-fit:cover;object-position:top center;background:white;box-shadow:0 2px 8px #15294d18}
 #hwp-app .reader{height:100%;width:100%;flex:1;min-height:0}
-#hwp-app .reader-scroll{padding:76px 18px 16px;touch-action:pan-x pan-y;scrollbar-width:none;overflow:auto;position:absolute;inset:0}
+#hwp-app .reader-scroll{padding:76px 18px 16px;touch-action:pan-x pan-y;scrollbar-width:none;overflow:auto;position:absolute;top:0;right:0;bottom:0;left:0;inset:0}
 #hwp-app .reader-scroll::-webkit-scrollbar{display:none}
 #hwp-app .pages{position:relative;width:100%;transform-origin:0 0}
 #hwp-app .page{background:white;position:relative;width:100%;margin:0 0 14px;overflow:hidden;box-shadow:0 2px 8px #17254118;contain:layout style;touch-action:pan-x pan-y}

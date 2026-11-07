@@ -36,8 +36,14 @@ async function chooseProject(){
   const drawer=uiMatch(nodes,/content-desc="(?:Show roots|Open navigation drawer)"/);if(drawer){tapNode(drawer);await pause(400);}
   await uiTap(/text="Termux"/);
  }
- await uiTap(/text="hwpxxx-project"/);await uiTap(/text="(?:USE THIS FOLDER|Use this folder)"/i);await uiTap(/text="(?:ALLOW|Allow)"/i);
- await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await page.locator('#overlay').waitFor({state:'hidden'});await page.locator('#search').fill('termux-');await until(async()=>await a('open').count()===2);
+ await uiTap(/text="hwpxxx-project"/);
+ // Wait for directory navigation, rather than selecting the previous home tree
+ // while DocumentsUI is still loading the clicked folder.
+ let entered=false;try{entered=await until(()=>!!uiMatch(uiNodes(),/text="nested"/),7000);}catch{}
+ if(!entered){sh('input','keyevent','66');await until(()=>!!uiMatch(uiNodes(),/text="nested"/));}
+ console.log('TERMUX_DIRECTORY_CONFIRMED','hwpxxx-project/nested is visible');
+ await uiTap(/text="(?:USE THIS FOLDER|Use this folder)"/i);await uiTap(/text="(?:ALLOW|Allow)"/i);
+ await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await ensureConnection();await page.locator('#overlay').waitFor({state:'hidden'});const selected=await native('status');assert.equal(selected.data.connectedFolders[0]?.name,'Termux · hwpxxx-project','System picker connected the wrong tree');console.log('TERMUX_GRANTED_TREE',selected.data.connectedFolders[0].name);await page.locator('#search').fill('termux-');await until(async()=>await a('open').count()===2);
 }
 async function open(name){await page.locator('#search').fill(name);await page.getByRole('button',{name:name+' 열기',exact:true}).click();await page.locator('.page img').first().waitFor();}
 async function edit(){await click('edit');const p=page.locator('.page').first(),b=await p.boundingBox();await p.click({position:{x:b.width*120/794,y:b.width*135/794}});await page.locator('#text-editor').waitFor();}
