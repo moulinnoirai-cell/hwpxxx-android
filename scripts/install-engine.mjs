@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {verifyEngine} from './verify-engine.mjs';
 const source=process.argv[2];if(!source)throw new Error('Pass the built engine directory');
 const dest='app/src/main/assets/engine';
 const lock=JSON.parse(fs.readFileSync('config/android-engine.json'));
@@ -11,3 +12,5 @@ const hashes={};for(const name of ['rhwp.js','rhwp_bg.wasm','rhwp.d.ts']){
 }
 fs.writeFileSync(path.join(dest,'build-info.json'),JSON.stringify({...lock,hashes},null,2)+'\n');
 console.log('Installed rHWP memo engine',hashes);
+// Refuse to leave an engine behind that the Gradle gate would reject.
+const {errors}=verifyEngine({root:process.cwd()});if(errors.length)throw new Error('Installed engine failed verification:\n - '+errors.join('\n - '));

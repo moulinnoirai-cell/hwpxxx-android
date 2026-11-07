@@ -126,3 +126,9 @@ html:has(#hwp-app[data-theme=dark]),html:has(#hwp-app[data-theme=dark]) body{bac
 @media(min-width:650px){#hwp-app .hw-docs:not([data-view=list]){grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}}
 @media(prefers-reduced-motion:reduce){#hwp-app .hw-permission-needed{animation:none}}
 
+
+/* Multi-paragraph selection: the textarea only carries focus and the joined text; the marks are drawn by the engine rectangles. */
+#hwp-app .edit-layer.range-layer{pointer-events:none}
+#hwp-app .draft-row{display:grid;gap:4px;padding:10px 0;border-top:1px solid #8883}
+#hwp-app .draft-row small{opacity:.75;overflow-wrap:anywhere}
+#hwp-app #grid-paste{width:100%;box-sizing:border-box;font-family:inherit}

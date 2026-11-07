@@ -83,18 +83,30 @@ jobs:
           path: .build/engine
           key: ${{ steps.memo-engine.outputs.cache-primary-key }}
       - run: node tests/build-qa-fixtures.mjs
+      - name: Engine integrity gate (pinned build, build-info.json hashes, CI pins)
+        run: |
+          node scripts/verify-engine.mjs
+          node --test tests/engine-integrity.test.mjs
       - name: Document worker regression tests
         run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
+      - name: Emulator test harness (ANR guard parsers and decisions, no device needed)
+        run: |
+          node --test tests/android-anr.test.mjs tests/android-termux-fixtures.test.mjs
+          for f in tests/android-emulator.cjs tests/android-termux.cjs tests/android-suites.cjs tests/android-system.cjs tests/android-anr-parse.cjs tests/legacy-webview-driver.cjs; do node --check "$f"; done
       - name: File store regression tests
         run: |
           mkdir -p build/fs-test
-          javac -encoding UTF-8 -d build/fs-test app/src/main/java/kr/offline/hwp/FileStore.java tests/FileStoreTest.java
+          javac -encoding UTF-8 -d build/fs-test app/src/main/java/kr/offline/hwp/FileStore.java app/src/main/java/kr/offline/hwp/TimedCall.java app/src/main/java/kr/offline/hwp/TermuxWalker.java app/src/main/java/kr/offline/hwp/DraftStore.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java
           java -cp build/fs-test kr.offline.hwp.FileStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
+          java -cp build/fs-test kr.offline.hwp.TermuxWalkerTest
+          java -cp build/fs-test kr.offline.hwp.DraftStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
       - name: Browser regression tests
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps chromium
           python tests/tablet-ui.py
+          python tests/dex-ui.py
+          python tests/review-ui.py
       - name: Build installable debug and unsigned release APKs
         run: bash gradlew assembleDebug assembleRelease lintRelease --no-daemon
       - uses: actions/upload-artifact@v4
@@ -109,6 +121,8 @@ jobs:
             app/build/outputs/apk/**/*.apk
             app/build/reports/lint-results-release.html
             .qa/tablet-*.png
+            .qa/dex-*.png
+            .qa/review-*.png
             app/src/main/assets/engine/build-info.json
           include-hidden-files: true
           if-no-files-found: warn

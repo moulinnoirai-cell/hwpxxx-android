@@ -32,7 +32,9 @@ with sync_playwright() as pw:
                 if op=='status':data={'permission':True,'version':'0.3.0','volumes':[{'path':'/storage','name':'내장 저장공간'}]}
                 elif op=='scan':events=[['scanBatch',[meta]]];data={'cancelled':False,'limited':False,'skipped':0}
                 elif op=='read':data={'url':'/document/test','token':'test','sha':hashlib.sha256(body).hexdigest(),'meta':meta}
-                elif op not in ['release','cancelScan','exit']:raise AssertionError('Unexpected native call '+op)
+                elif op=='listDrafts':data=[]
+                elif op=='beginDraft':data='draft-token'
+                elif op not in ['release','cancelScan','exit','saveChunk','finishDraft','abortDraft','discardDraft']:raise AssertionError('Unexpected native call '+op)
                 req.fulfill(json={'reply':{'ok':True,'data':data},'events':events});return
             if path=='/document/test':req.fulfill(body=body,content_type='application/octet-stream');return
             f=ASSETS/path.lstrip('/')

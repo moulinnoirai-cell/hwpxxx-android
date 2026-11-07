@@ -15,3 +15,6 @@ build/
 .build/
 .qa/
 app/src/main/assets/engine/build-info.json
+
+# rsync/wasm-opt temporary copies next to the engine (a 10 MB stray was tracked from the first import; dot-files are never packaged)
+app/src/main/assets/engine/.rhwp_bg.wasm.*

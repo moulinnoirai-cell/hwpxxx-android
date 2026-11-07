@@ -4,6 +4,12 @@ export const COPY_CHAR_KEYS=[...CHAR_KEYS,'strikethrough','emboss','engrave','fo
 export const CELL_ATTR_KEYS=['paddingLeft','paddingRight','paddingTop','paddingBottom','applyInnerMargin','verticalAlign','textDirection','isHeader','cellProtect','fieldName','editableInForm'];
 export const PARA_KEYS=['alignment','lineSpacing','lineSpacingType','spacingBefore','spacingAfter','headType','numberingId','paraLevel','marginLeft','marginRight','indent','widowOrphan','keepWithNext','keepLines','pageBreakBefore','fontLineHeight','singleLine','autoSpaceKrEn','autoSpaceKrNum','verticalAlign','englishBreakUnit','koreanBreakUnit','borderConnect','borderIgnoreMargin'];
 export const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+// One zoom range for the buttons, Ctrl+wheel, Ctrl+-/+/0, the stored position and the touch pinch.
+export const ZOOM_MIN=50,ZOOM_MAX=400;
+export const clampZoom=v=>clamp(Number.isFinite(v)?v:100,ZOOM_MIN,ZOOM_MAX);
+// Android's WebView text zoom (system font size) scales px font sizes. A probe element sized 100px reports the factor;
+// values within 2px of 100 are measurement noise. The page overlay is divided by it so the editor text stays aligned with the rendered page.
+export const probeScale=h=>Number.isFinite(h)&&h>0&&Math.abs(h-100)>2?clamp(h/100,.5,4):1;
 export function numeric(value,min,max){
  const n=Number(value);if(value===''||!Number.isFinite(n))throw new Error('숫자를 입력해 주세요.');return clamp(n,min,max);
 }

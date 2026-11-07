@@ -27,15 +27,12 @@ android {
 }
 
 
-// Old 0.8.7 lacks the memo reader/writer. Never ship the new UI with that engine.
-tasks.register('verifyMemoEngine') {
-    doLast {
-        def glue = file('src/main/assets/engine/rhwp.js').getText('UTF-8')
-        ['getMemoList', 'insertMemo', 'insertMemoByPath', 'setMemoText', 'removeMemo'].each { method ->
-            if (!glue.contains(method + '(')) throw new GradleException('Build the memo engine first: bash scripts/build-engine.sh <rhwp-checkout>')
-        }
-        def wasm = file('src/main/assets/engine/rhwp_bg.wasm')
-        if (!wasm.exists()) throw new GradleException('Missing rhwp_bg.wasm')
-    }
+// The packaged engine must be the pinned memo engine built by scripts/build-engine.sh: build-info.json is required, repeats every pin of
+// config/android-engine.json, and its SHA-256 values must match rhwp.js, rhwp_bg.wasm and rhwp.d.ts on disk (so a new glue next to a stale
+// binary is refused). scripts/verify-engine.mjs holds the logic (tested by tests/engine-integrity.test.mjs); there is no skip switch.
+tasks.register('verifyMemoEngine', Exec) {
+    description = 'Fails the build unless the packaged rhwp engine matches config/android-engine.json and build-info.json'
+    workingDir rootProject.projectDir
+    commandLine 'node', 'scripts/verify-engine.mjs'
 }
 tasks.named('preBuild').configure { dependsOn 'verifyMemoEngine' }

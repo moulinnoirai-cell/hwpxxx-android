@@ -2,7 +2,7 @@
 const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const {waitForWindow,disableNetwork}=require('./android-system.cjs');
+const {waitForWindow,disableNetwork,start:startAnrGuard,check:anrCheck,finish:anrFinish,guardedKey}=require('./android-system.cjs');
 const pkg='kr.offline.hwp.preview',dir='/sdcard/Download/hwpxxx-qa',qa='.qa/android-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).trim();
@@ -10,7 +10,9 @@ const sh=(...args)=>adb('shell',...args);
 const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run',backInputDismissals=0;let page,browser;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
-async function record(name,fn){const started=Date.now();try{await fn();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);screenshot(`${qa}/${String(checks.length).padStart(2,'0')}.png`);}
+let anrGuard=null,textZoomProbe=null;
+// After every scenario (also the ones driven only over CDP, which keep passing while an ANR dialog covers the screen) the focused window and the system log are checked.
+async function record(name,fn){const started=Date.now();try{await fn();anrCheck();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);screenshot(`${qa}/${String(checks.length).padStart(2,'0')}.png`);}
 function screenshot(file){fs.writeFileSync(file,execFileSync('adb',['exec-out','screencap','-p'],{timeout:45000}));}
 async function disconnect(){const old=browser;browser=null;if(old)await Promise.race([old.close().catch(()=>{}),pause(5000)]);}
 async function connect(){
@@ -21,11 +23,18 @@ async function connect(){
  }catch(e){error=e;await disconnect();await pause(500);}
  throw error||new Error('Unable to connect to installed WebView');
 }
-async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();await pause(1500);if(page.isClosed()){console.log('CDP_STARTUP_TARGET_CHANGED');await disconnect();await connect();}}
+let recoveryOffersDismissed=0;
+async function dismissRecovery(){
+ // Drafts of edits that were still unsaved when a scenario killed the app are offered again at every start. The offer must appear
+ // (listDrafts is the app's own record); a scenario that is not about recovery dismisses it with the real button.
+ const drafts=await nativeCall('listDrafts').catch(()=>[]);if(!drafts.length)return;
+ await page.locator('#sheet-title').filter({hasText:'저장하지 못한 편집 내용'}).waitFor({timeout:20000});recoveryOffersDismissed++;await click('close');await closed();
+}
+async function start(recovery='dismiss'){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();await pause(1500);if(page.isClosed()){console.log('CDP_STARTUP_TARGET_CHANGED');await disconnect();await connect();}if(recovery==='dismiss')await dismissRecovery();}
 function foreground(){return sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' ');}
 async function settingsVisible(){await until(()=>foreground().includes('com.android.settings'));await waitForWindow('com.android.settings');await pause(700);}
 async function appVisible(){await until(()=>foreground().includes(pkg+'/kr.offline.hwp.MainActivity'));await waitForWindow(pkg);}
-async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;sh('input','keyevent','4');await pause(1000);}await appVisible();await ensureConnection();}
+async function returnFromSettings(){for(let i=0;i<3;i++){if(foreground().includes(pkg+'/kr.offline.hwp.MainActivity'))break;guardedKey(()=>sh('input','keyevent','4'));await pause(1000);}await appVisible();await ensureConnection();}
 async function ensureConnection(){if(!page.isClosed())return;assert(appAlive(),'Android app terminated unexpectedly');console.log('CDP_REATTACH_WITHOUT_APP_RELAUNCH');await disconnect();await connect();}
 function appAlive(){try{return !!sh('pidof',pkg);}catch{return false;}}
 async function regrantAndRestart(){sh('am','force-stop',pkg);sh('appops','set','--uid',pkg,'MANAGE_EXTERNAL_STORAGE','allow');await start();await a('open').first().waitFor();}
@@ -44,7 +53,7 @@ async function click(name){
   await settingsVisible();console.log('CDP_DETACHED_DURING_NATIVE_SETTINGS');
  }
 }
-async function backPrompt(){sh('input','keyevent','4');await pause(700);if(!await a('exit-discard').isVisible()){assert(foreground().includes(pkg),'Back left the editor without a confirmation');backInputDismissals++;console.log('BACK_DISMISSED_INPUT_UI_FIRST');sh('input','keyevent','4');}await a('exit-discard').waitFor();}
+async function backPrompt(){guardedKey(()=>sh('input','keyevent','4'));await pause(700);if(!await a('exit-discard').isVisible()){assert(foreground().includes(pkg),'Back left the editor without a confirmation');backInputDismissals++;console.log('BACK_DISMISSED_INPUT_UI_FIRST');guardedKey(()=>sh('input','keyevent','4'));}await a('exit-discard').waitFor();}
 async function closed(){await page.locator('#overlay').waitFor({state:'hidden'});}
 async function library(){
  if(await a('cancel-edit').isVisible()){
@@ -73,7 +82,7 @@ async function hash(name){return sh('sha256sum',`${dir}/${name}`).split(/\s/)[0]
 async function rotate(n){sh('settings','put','system','accelerometer_rotation','0');sh('settings','put','system','user_rotation',String(n));await pause(1000);}
 (async()=>{
  try{
-  assert.equal(adb('get-state'),'device');
+  assert.equal(adb('get-state'),'device');startAnrGuard();
   sh('settings','put','system','screen_off_timeout','2147483647');sh('svc','power','stayon','true');sh('input','keyevent','224');sh('wm','dismiss-keyguard');console.log('ANDROID_DISPLAY',sh('dumpsys','power').split('\n').filter(l=>/mWakefulness=|mIsPowered=|mStayOn=/.test(l)).join(' '));
   sh('wm','size','1920x1080');sh('wm','density','160');
   sh('settings','put','secure','show_ime_with_hard_keyboard','0');await rotate(0);
@@ -82,7 +91,7 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   adb('install','-r','app/build/outputs/apk/debug/app-debug.apk');sh('pm','clear',pkg);disableNetwork();
   // sys.boot_completed can precede the emulated shared-storage FUSE mount.
   await until(()=>{try{sh('mkdir','-p',dir);sh('touch',dir+'/.ready');sh('rm',dir+'/.ready');return true;}catch{return false;}},60000);console.log('ANDROID_SHARED_STORAGE_READY');
-  for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
+  for(const [src,dest] of [['문서.hwpx','qa-edit.hwpx'],['문서.hwp','qa-edit.hwp'],['table.hwpx','qa-table.hwpx'],['문서.hwpx','duplicate.hwpx'],['문서.hwpx','qa-range.hwpx'],['문서.hwpx','qa-memo.hwpx']])adb('push',`tests/fixtures/${src}`,`${dir}/${dest}`);
   for(const f of fs.readdirSync('.qa/fixtures'))adb('push',`.qa/fixtures/${f}`,`${dir}/${f}`);
   sh('touch',`${dir}/qa-empty.hwpx`);sh('dd','if=/dev/zero',`of=${dir}/qa-oversize.hwp`,'bs=1048576','count=33');
   fs.writeFileSync(`${qa}/corrupt.hwpx`,'not a ZIP or HWP document');adb('push',`${qa}/corrupt.hwpx`,`${dir}/qa-corrupt.hwpx`);
@@ -130,6 +139,29 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
    await click('tb-memo');await click('memo-new');await page.locator('#memo-text').fill('DeX 메모 <script>😀');await page.locator('#memo-text').press('Control+Enter');await closed();assert.equal(await page.locator('.memo-card').count(),1);await save();await library();
    await open('qa-edit.hwpx');await edit();await click('tb-memo');assert((await page.locator('.memo-card').innerText()).includes('DeX 메모 <script>😀'));
    await click('memo-remove');await click('close');assert.equal(await page.locator('.memo-card').count(),1);await click('memo-remove');await click('memo-delete');await closed();assert.equal(await page.locator('.memo-card').count(),0);await save();await library();
+  });
+  await record('memo jump keeps pending and composing edits; panel fields keep their own shortcuts; the saved file holds the edit',async()=>{
+   // Review P1 (F1): the jump used to replace the editor before the pending text was committed. Real WebView, real worker, real file.
+   const name='qa-memo.hwpx',original=await hash(name);await open(name);await edit();const t=page.locator('#text-editor');
+   const p0=await t.inputValue();await t.press('Home');await t.press('Shift+ArrowRight');await t.press('Shift+ArrowRight');
+   await click('tb-memo');await click('memo-new');await page.locator('#memo-text').fill('점프 메모');await page.locator('#memo-text').press('Control+Enter');await closed();await page.locator('.memo-anchor').waitFor();
+   const toTop=async()=>{await page.locator('.reader-scroll').evaluate(e=>{e.scrollTop=0;});await pause(200);};
+   const clickPara=async(x,y)=>{await toTop();const box=await page.locator('.page').first().boundingBox(),k=box.width/793.7;await page.mouse.click(box.x+x*k,box.y+y*k);await t.waitFor();await pause(400);};
+   await clickPara(200,160);const p1=await t.inputValue();assert.notEqual(p1,p0);
+   // (a) text typed in the same task as the jump is still waiting for its commit timer
+   await page.evaluate(()=>{const e=document.querySelector('#text-editor');e.value=e.value+' PENDING';e.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.memo-anchor').click();});
+   await until(async()=>(await t.inputValue())===p0);await clickPara(200,160);assert.equal(await t.inputValue(),p1+' PENDING','the pending text survived the memo jump');
+   // (b) a syllable that is still composing: the jump is refused, nothing is lost, and it works once the composition has ended
+   await t.evaluate(e=>{e.focus();e.setSelectionRange(e.value.length,e.value.length);e.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));e.value=e.value+'ㅎ';e.dispatchEvent(new Event('input',{bubbles:true}));});
+   await page.locator('.memo-anchor').click();await pause(500);assert.equal(await t.inputValue(),p1+' PENDINGㅎ');assert(/한글 입력을 마친 뒤/.test(await page.locator('#announce').innerText()));
+   await t.evaluate(e=>e.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));await page.locator('.memo-anchor').click();await until(async()=>(await t.inputValue())===p0);
+   await clickPara(200,160);assert.equal(await t.inputValue(),p1+' PENDINGㅎ');
+   // (c) Ctrl+Z / Ctrl+B in a paragraph-panel number field act on the field, never on the document
+   await click('tb-para');const field=page.locator('#fmt-spacingBefore');await field.waitFor();await field.click();await field.fill('3');await page.keyboard.press('Control+z');await pause(600);
+   assert.equal(await t.inputValue(),p1+' PENDINGㅎ','Ctrl+Z in the field did not undo the document');await page.keyboard.press('Control+b');await pause(400);assert.notEqual(await a('tb-bold').getAttribute('aria-pressed'),'true');
+   // (d) the saved FILE (not the screen) holds the edit and the memo
+   assert.equal(await hash(name),original);await clickPara(200,160);await save();assert.notEqual(await hash(name),original);await library();
+   await open(name);await edit();await clickPara(200,160);assert.equal(await t.inputValue(),p1+' PENDINGㅎ','reopened from disk');await click('tb-memo');assert.equal(await page.locator('.memo-card').count(),1);await library();
   });
   await record('Ctrl+Shift+S, duplicate-name refusal and native save-as',async()=>{
    await open('qa-edit.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' COPY');const old=await hash('qa-edit.hwpx');await page.keyboard.press('Control+Shift+s');
@@ -206,11 +238,82 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   await record('font scale and small DeX-like window retain controls',async()=>{
    sh('settings','put','system','font_scale','1.5');await open('qa-table.hwpx');await edit();assert(await a('save-as').isVisible());sh('wm','size','700x500');await pause(1000);assert(await a('save-as').isVisible());assert(await page.locator('#text-editor').isVisible());await click('save-as');await page.locator('#filename').waitFor();await click('close');assert(await page.locator('#text-editor').isVisible());sh('wm','size','1920x1080');sh('settings','put','system','font_scale','1.0');await pause(700);await library();
   });
-  await record('saved documents persist after process death; unsaved bytes never touch disk',async()=>{
+  await record('large system font: the editor text keeps the size and alignment it has at normal font size (WebView text zoom)',async()=>{
+   // Hypothesis H4 of the review: WebView text zoom scales the px font of the overlay textarea so it no longer matches the rendered page.
+   // The page measures a 100px probe and divides the overlay by that factor; the visual size of the overlay text must not depend on the font scale.
+   const visual=()=>page.locator('#text-editor').evaluate(t=>{const probe=css=>{const p=document.createElement('div');p.style.cssText='position:absolute;visibility:hidden;left:-9999px;display:inline-block;margin:0;padding:0;border:0;white-space:nowrap;'+css;p.textContent='M';document.body.appendChild(p);const h=p.getBoundingClientRect().height;p.remove();return h;};
+    return {fontPx:parseFloat(t.style.fontSize),lineCss:t.style.lineHeight,font:probe(`font:${t.style.fontSize}/1 sans-serif`),line:probe(`font:10px/${t.style.lineHeight} sans-serif`),probe100:probe('font:100px/1 sans-serif'),probeLine100:probe('font:100px/100px sans-serif')};});
+   const measure=async scale=>{sh('settings','put','system','font_scale',scale);await pause(1200);await ensureConnection();await open('qa-table.hwpx');await edit();const m=await visual();await library();return m;};
+   const normal=await measure('1.0'),large=await measure('1.5');textZoomProbe={normal,large};console.log('TEXT_ZOOM_PROBE',JSON.stringify(textZoomProbe));
+   assert(Math.abs(normal.probe100-100)<=2&&Math.abs(normal.probeLine100-100)<=2,'normal font scale: no text zoom');
+   assert(Math.abs(large.font-normal.font)/normal.font<=.06,`the overlay font is ${large.font}px at 1.5x but ${normal.font}px at 1.0x`);
+   assert(Math.abs(large.line-normal.line)/normal.line<=.06,`the overlay line height is ${large.line} at 1.5x but ${normal.line} at 1.0x`);
+   sh('settings','put','system','font_scale','1.0');await pause(700);
+  });
+  await record('mouse drag over two paragraphs: Delete, undo, typing over the range and no disk write before Save',async()=>{
+   const name='qa-range.hwpx',original=await hash(name);await open(name);await click('edit');
+   const box=await page.locator('.page').first().boundingBox(),k=box.width/793.7,pt=(x,y)=>[box.x+x*k,box.y+y*k];
+   await page.mouse.click(...pt(120,135));await page.locator('#text-editor').waitFor();
+   await page.mouse.move(...pt(120,135));await page.mouse.down();await page.mouse.move(...pt(160,150),{steps:4});await page.mouse.move(...pt(200,160),{steps:6});await page.mouse.up();
+   await page.locator('#range-editor').waitFor();const joined=await page.locator('#range-editor').inputValue();assert(joined.includes('\n'));assert((await page.locator('.sel-mark').count())>=2);
+   await page.keyboard.press('Delete');await page.locator('#text-editor').waitFor();await until(()=>a('save').isEnabled());assert(!(await page.locator('#text-editor').inputValue()).includes('한글 문서 실'));
+   await page.keyboard.press('Control+z');await page.locator('#range-editor').waitFor();assert.equal(await page.locator('#range-editor').inputValue(),joined);
+   await page.keyboard.press('Control+b');await until(async()=>(await a('tb-bold').getAttribute('aria-pressed'))==='true');
+   await page.keyboard.insertText('범위 교체');await until(async()=>(await page.locator('#text-editor').inputValue()).startsWith('범위 교체'));
+   assert.equal(await hash(name),original);await library();assert.equal(await hash(name),original);
+  });
+  await record('table cells are filled from spreadsheet text and undo restores them',async()=>{
+   await open('qa-table.hwpx');await click('edit');const box=await page.locator('.page').first().boundingBox(),k=box.width/793.7,cell=async(x,y)=>{await page.mouse.click(box.x+x*k,box.y+y*k);await page.locator('#text-editor').waitFor();await pause(300);return page.locator('#text-editor').inputValue();};
+   await cell(130,140);await click('tb-table');await page.locator('#grid-paste').fill('가\t나\n다\t라');await click('tb-grid-paste');await pause(800);assert(await page.locator('#overlay').isHidden());
+   assert.equal(await cell(130,140),'가');assert.equal(await cell(420,158),'라');await click('tb-undo');await pause(600);assert.equal(await cell(130,140),'표 셀 시험');await library();
+  });
+  await record('encrypted document exports a PDF from the library only after the password is entered',async()=>{
+   await page.locator('#search').fill('qa-locked.hwpx');await a('open').first().click({button:'right'});await click('pdf');await page.locator('#filename').fill('qa-locked-out');await click('folder-confirm');
+   await page.locator('#doc-password').waitFor();assert(/암호가 걸리지 않아요/.test(await page.locator('#sheet').innerText()));
+   await page.locator('#doc-password').fill('wrong');await click('pdf-pw-go');await page.getByText('암호가 맞지 않아요. 다시 입력해 주세요.').waitFor();assert(!sh('ls',dir).includes('qa-locked-out.pdf'));
+   await page.locator('#doc-password').fill('qa-only-2026');await click('pdf-pw-go');await closed();assert(sh('head','-c','5',`${dir}/qa-locked-out.pdf`).startsWith('%PDF-'));await page.locator('#search').fill('');
+  });
+  await record('saved documents persist after process death; the unsaved edit is recovered from the private draft, never from the original',async()=>{
    await open('duplicate.hwpx');await edit();await changed((await page.locator('#text-editor').inputValue())+' SAVED');await save();const disk=await hash('duplicate.hwpx');
-   await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk);await start();await page.locator('#search').fill('qa-edit.hwpx');assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
+   await changed((await page.locator('#text-editor').inputValue())+' UNSAVED');
+   // The draft is written a few seconds after the edit; wait for the app's own record of it before the process is killed.
+   await until(async()=>(await nativeCall('listDrafts')).some(d=>d.name==='duplicate.hwpx'),30000);
+   sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk,'the document on disk is exactly the last saved state');
+   await start('keep');
+   await page.locator('#sheet-title').filter({hasText:'저장하지 못한 편집 내용'}).waitFor({timeout:20000});await page.locator('.draft-row').filter({hasText:'duplicate.hwpx'}).locator('[data-action="draft-open"]').click();
+   await page.locator('.reader.is-editing').waitFor();{const p=page.locator('.page').first(),b=await p.boundingBox();await p.click({position:{x:b.width*120/794,y:b.width*135/794}});}await page.locator('#text-editor').waitFor();
+   const recovered=await page.locator('#text-editor').inputValue();assert(recovered.includes('SAVED')&&recovered.includes('UNSAVED'),recovered);assert.equal(await hash('duplicate.hwpx'),disk);
+   await click('save-as');await page.locator('#filename').fill('qa-recovered');await click('folder-confirm');await closed();assert(sh('ls',dir).includes('qa-recovered.hwpx'));assert.equal(await hash('duplicate.hwpx'),disk,'recovery never overwrites the original');
+   assert.equal((await nativeCall('listDrafts')).filter(d=>d.name==='duplicate.hwpx').length,0,'the draft is removed once its copy is saved');
+   await library();await page.locator('#search').fill('qa-edit.hwpx');assert.equal(await page.getByRole('button',{name:'qa-edit.hwpx 즐겨찾기 해제',exact:true}).getAttribute('aria-pressed'),'true');assert.equal(await page.locator('#hwp-app').getAttribute('data-theme'),'dark');
+   await open('duplicate.hwpx');await edit();assert((await page.locator('#text-editor').inputValue()).includes('SAVED'));assert(!(await page.locator('#text-editor').inputValue()).includes('UNSAVED'));await library();
+  });
+  await record('continuous typing without a 4 s pause leaves a recoverable draft within the maximum wait; the original stays byte-identical',async()=>{
+   // One keystroke per second for as long as it takes: the pause-only debounce (4 s) can never fire here, only the 30 s maximum wait can.
+   await open('duplicate.hwpx');await edit();const disk=await hash('duplicate.hwpx');const base=await page.locator('#text-editor').inputValue();
+   const has=async()=>(await nativeCall('listDrafts')).some(d=>d.name==='duplicate.hwpx');assert.equal(await has(),false,'no draft before the edit');
+   const began=Date.now();let typed=0,draftAt=null,snapshotTyped=0,longestGap=0,last=began,earlyChecked=false;
+   while(Date.now()-began<80000){
+    await page.keyboard.insertText('가');typed++;const now=Date.now();longestGap=Math.max(longestGap,now-last);last=now;
+    if(!earlyChecked&&now-began>15000){earlyChecked=true;assert.equal(await has(),false,'still no draft after 15 s of continuous typing: the maximum wait, not a pause, writes it');}
+    if(draftAt===null&&await has()){draftAt=Date.now()-began;snapshotTyped=typed;}
+    if(draftAt!==null&&typed>=snapshotTyped+3)break;
+    await pause(800);
+   }
+   assert(longestGap<3500,'typing never paused for 4 s: '+longestGap);assert.notEqual(draftAt,null,'a draft was written during continuous typing');assert(draftAt>=28000&&draftAt<=70000,'draft after '+draftAt+' ms (maximum wait 30 s)');
+   console.log('DRAFT_CONTINUOUS',JSON.stringify({typed,snapshotTyped,draftAtMs:draftAt,longestGapMs:longestGap}));
+   sh('am','force-stop',pkg);assert.equal(await hash('duplicate.hwpx'),disk,'the document on disk is exactly the last saved state');
+   await start('keep');
+   await page.locator('#sheet-title').filter({hasText:'저장하지 못한 편집 내용'}).waitFor({timeout:20000});await page.locator('.draft-row').filter({hasText:'duplicate.hwpx'}).locator('[data-action="draft-open"]').click();
+   await page.locator('.reader.is-editing').waitFor();{const p=page.locator('.page').first(),b=await p.boundingBox();await p.click({position:{x:b.width*120/794,y:b.width*135/794}});}await page.locator('#text-editor').waitFor();
+   const recovered=await page.locator('#text-editor').inputValue(),got=recovered.split('가').length-base.split('가').length;
+   // The draft is the last successful snapshot: what was typed up to it, not the tail typed after it.
+   assert(got>=snapshotTyped-2&&got<=typed,`recovered ${got} of ${typed} typed characters (snapshot taken after about ${snapshotTyped})`);assert.equal(await hash('duplicate.hwpx'),disk);
+   await click('save-as');await page.locator('#filename').fill('qa-continuous');await click('folder-confirm');await closed();assert.equal(await hash('duplicate.hwpx'),disk,'recovery never overwrites the original');
+   assert.equal((await nativeCall('listDrafts')).filter(d=>d.name==='duplicate.hwpx').length,0);await library();
   });
   const crash=adb('logcat','-d','-b','crash');fs.writeFileSync(`${qa}/crash.txt`,crash);assert(!crash.includes(pkg),crash);assert.deepEqual(errors,[]);
  }catch(e){checks.push({name:e.scenario||'infrastructure failure',passed:false,error:e.stack});console.error(e);if(page)console.error('APP_DIAGNOSTIC',await page.evaluate(()=>({url:location.href,text:document.body.innerText.slice(0,5000),announce:document.querySelector('#announce')?.textContent,ua:navigator.userAgent,layout:['#content','.reader','.reader-scroll','#pages','.page','.page img'].map(s=>{const e=document.querySelector(s);if(!e)return {selector:s,missing:true};const r=e.getBoundingClientRect(),c=getComputedStyle(e);return {selector:s,x:r.x,y:r.y,width:r.width,height:r.height,display:c.display,visibility:c.visibility,inline:e.getAttribute('style')};})})).catch(()=>({closed:true})));console.error('CRASH_DIAGNOSTIC',adb('logcat','-d','-b','crash'));console.error('WEBVIEW_DIAGNOSTIC',adb('logcat','-d','-t','500').split('\n').filter(l=>/FATAL|signal [0-9]|RenderProcessGone|renderer process|Killing.*offline|chromium.* E /i.test(l)).slice(-25).join('\n'));console.error('ANDROID_FOREGROUND',sh('dumpsys','activity','activities').split('\n').filter(l=>/ResumedActivity/.test(l)).join(' '));(()=>{try{screenshot(`${qa}/failure.png`);}catch{}})();if(page)fs.writeFileSync(`${qa}/page.html`,await page.content().catch(()=>''));process.exitCode=1;}
- finally{console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,permissionGrant,permissionRevocation,backInputDismissals,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,checks,permissionGrant,permissionRevocation,backInputDismissals,pageErrors:errors,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));await disconnect();process.exit(process.exitCode||0);}
+ finally{try{anrGuard=anrFinish([pkg]);}catch(e){anrGuard={error:e.message};checks.push({name:'ANR guard: no app/unknown ANR or crash dialog during the suite',passed:false,error:e.message});process.exitCode=1;console.error(e.message);}
+  console.log('QA_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,anrGuard:anrGuard.error?anrGuard.error:{systemRecoveries:anrGuard.systemRecoveries,systemAnrInLogs:anrGuard.systemAnrInLogs,failures:anrGuard.failures},recoveryOffersDismissed,permissionGrant,permissionRevocation,backInputDismissals,passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,pageErrors:errors}));fs.writeFileSync(`${qa}/results.json`,JSON.stringify({api:process.env.ANDROID_API,anrGuard,recoveryOffersDismissed,checks,permissionGrant,permissionRevocation,backInputDismissals,pageErrors:errors,textZoomProbe,webview:sh('dumpsys','webviewupdate'),memory:sh('dumpsys','meminfo',pkg),limitations:['AOSP emulator: not Samsung DeX firmware or Bluetooth pairing','Force-stopping discards unsaved in-memory edits; saved original remains intact']},null,2));fs.writeFileSync(`${qa}/logcat.txt`,adb('logcat','-d','-t','1500'));await disconnect();process.exit(process.exitCode||0);}
 })();
