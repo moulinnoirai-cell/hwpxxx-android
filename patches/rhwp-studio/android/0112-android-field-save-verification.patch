@@ -1,0 +1,405 @@
+diff --git a/rhwp-studio/src/hwpxxx/android-save-verify.ts b/rhwp-studio/src/hwpxxx/android-save-verify.ts
+index eed061e..de66aed 100644
+--- a/rhwp-studio/src/hwpxxx/android-save-verify.ts
++++ b/rhwp-studio/src/hwpxxx/android-save-verify.ts
+@@ -46,6 +46,7 @@ export interface VerifiableDocument {
+   getParaPropertiesInHf(section: number, isHeader: boolean, applyTo: number, hfPara: number): string;
+   getCharPropertiesInHeaderFooter(section: number, isHeader: boolean, applyTo: number, hfPara: number, offset: number): string;
+   getMemoList?: () => string;
++  exportHwpxWithReport?: () => { takeBytes(): Uint8Array; free(): void };
+ }
+ 
+ /** 실제로 비교한 양과, 비교하지 못한 곳. 호출한 쪽·시험이 "무엇을 확인했는가"를 정직하게 말할 때 쓴다. */
+@@ -58,6 +59,8 @@ export interface VerifyCoverage {
+   cellCharSamples: number;
+   textBoxLists: number;
+   headerFooterParagraphs: number;
++  /** 머리말·꼬리말 문단에서 서로 대응시킨 자동 필드(쪽 번호·총 쪽수·파일 이름) 표식 수. */
++  headerFooterFields: number;
+   memos: number;
+   uncovered: string[];
+ }
+@@ -366,6 +369,237 @@ class TableWalker {
+ }
+ 
+ // ── 머리말·꼬리말 ───────────────────────────────────────────────────────────────────────────
++// ── 머리말·꼬리말 자동 필드(쪽 번호·총 쪽수·파일 이름) ───────────────────────────────────────
++// 편집 중인 문서의 머리말 문단은 필드를 글자 하나짜리 표식으로 들고 있다(코어: insertFieldInHf — U+0015 현재 쪽 번호, U+0016 총 쪽수,
++// U+0017 파일 이름). 내보낸 파일을 다시 열면 같은 필드가 다른 표현이 된다: 쪽 번호·총 쪽수는 자리표 글자 하나(공백)이고,
++// 파일 이름은 저장 때의 파일 이름 글자로 풀려 있다. 아래 대응은 글자 서식 위치를 찾기 위한 것이다.
++// 같은 필드인지와 앞뒤 글 내용·순서는 별도의 HWPX 의미 토큰으로 엄격하게 확인한다.
++const FIELD_PAGE = '\u0015', FIELD_TOTAL = '\u0016', FIELD_NAME = '\u0017';
++const isFieldMarker = (ch: string): boolean => ch === FIELD_PAGE || ch === FIELD_TOTAL || ch === FIELD_NAME;
++const MAX_FIELD_NAME_MARKERS = 8; // 파일 이름 자리는 길이를 모르므로 되짚어 대응시킨다. 이보다 많으면 확인하지 않고 거절한다.
++
++/**
++ * 편집 중 문단(글자 배열 `live`)의 각 글자가 다시 연 문단(`reopened`)의 몇 번째 글자에 해당하는지 돌려준다(-1: 해당 글자 없음 = 빈 파일 이름).
++ * 필드가 아닌 글자는 같은 글자여야 하고, 쪽 번호·총 쪽수 표식은 공백 자리표(또는 같은 표식) 하나에, 파일 이름 표식은 아무 글자 구간(0자 이상)에
++ * 대응한다. 대응할 수 없으면 null.
++ */
++function alignFieldText(live: string[], reopened: string[]): number[] | null {
++  if (live.length > MAX_HF_CHARS || reopened.length > MAX_HF_CHARS
++    || live.filter((ch) => ch === FIELD_NAME).length > MAX_FIELD_NAME_MARKERS) return null;
++  const map = new Array<number>(live.length).fill(-1);
++  const failed = new Set<number>();
++  let work = 0;
++  const walk = (i: number, j: number): boolean => {
++    if (++work > 100000) return false;
++    if (i === live.length) return j === reopened.length;
++    const key = i * (reopened.length + 1) + j;
++    if (failed.has(key)) return false;
++    const ch = live[i];
++    let ok = false;
++    if (ch === FIELD_NAME) {
++      for (let k = 0; j + k <= reopened.length && !ok; k += 1) {
++        map[i] = k > 0 ? j : -1;
++        ok = walk(i + 1, j + k);
++      }
++    } else if (ch === FIELD_PAGE || ch === FIELD_TOTAL) {
++      if (j < reopened.length && (reopened[j] === ' ' || reopened[j] === ch)) { map[i] = j; ok = walk(i + 1, j + 1); }
++    } else if (j < reopened.length && reopened[j] === ch) {
++      map[i] = j; ok = walk(i + 1, j + 1);
++    }
++    if (!ok) failed.add(key);
++    return ok;
++  };
++  return walk(0, 0) ? map : null;
++}
++
++/** The core's public HF text API loses field kinds on reopen. Compare ordered semantic
++ * tokens from two independent HWPX serializations instead. No SVG/glyph equivalence.
++ * Only core-produced ZIP/XML is accepted, with explicit byte/node/work limits. */
++const MAX_SEMANTIC_XML = 8 * 1024 * 1024;
++function fieldEvidenceError(): never { throw lost('머리말·꼬리말 필드 검증 정보'); }
++
++/** RFC1951 decoder for the core's ZIP method 8. Output is allocated only after the ZIP bound check. */
++function inflateFieldXml(input: Uint8Array, size: number): Uint8Array {
++  const out = new Uint8Array(size); let bit = 0, pos = 0;
++  const read = (n: number): number => {
++    if (bit + n > input.length * 8) return fieldEvidenceError();
++    let v = 0; for (let i = 0; i < n; i += 1, bit += 1) v |= ((input[bit >>> 3] >>> (bit & 7)) & 1) << i;
++    return v;
++  };
++  const tree = (lengths: number[]): Map<number, number>[] => {
++    const counts = new Array<number>(16).fill(0), next = new Array<number>(16).fill(0);
++    for (const len of lengths) { if (len < 0 || len > 15) return fieldEvidenceError(); counts[len] += 1; }
++    let code = 0; for (let n = 1; n <= 15; n += 1) { code = (code + (n === 1 ? 0 : counts[n - 1])) << 1; next[n] = code; if (code + counts[n] > 2 ** n) return fieldEvidenceError(); }
++    const maps = Array.from({ length: 16 }, () => new Map<number, number>());
++    lengths.forEach((len, symbol) => { if (!len) return; let c = next[len]++, reversed = 0; for (let i = 0; i < len; i += 1) { reversed = (reversed << 1) | (c & 1); c >>>= 1; } maps[len].set(reversed, symbol); });
++    return maps;
++  };
++  const decode = (maps: Map<number, number>[]): number => {
++    let code = 0; for (let n = 1; n <= 15; n += 1) { code |= read(1) << (n - 1); const v = maps[n].get(code); if (v !== undefined) return v; }
++    return fieldEvidenceError();
++  };
++  const lengthBase = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
++  const lengthExtra = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
++  const distBase = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
++  const distExtra = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
++  let final = 0, blocks = 0;
++  do {
++    if (++blocks > 65536) return fieldEvidenceError();
++    final = read(1); const kind = read(2);
++    if (kind === 0) {
++      bit = (bit + 7) & ~7; const len = read(16), inverse = read(16);
++      if ((len ^ inverse) !== 65535 || pos + len > size) return fieldEvidenceError();
++      for (let i = 0; i < len; i += 1) out[pos++] = read(8);
++      continue;
++    }
++    if (kind === 3) return fieldEvidenceError();
++    let lit: Map<number, number>[], dist: Map<number, number>[];
++    if (kind === 1) {
++      lit = tree(Array.from({ length: 288 }, (_, i) => i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8)); dist = tree(new Array<number>(32).fill(5));
++    } else {
++      const nl = read(5) + 257, nd = read(5) + 1, nc = read(4) + 4;
++      if (nl > 286 || nd > 30) return fieldEvidenceError();
++      // RFC1951 code-length alphabet order.
++      const codeOrder = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
++      const cl = new Array<number>(19).fill(0); for (let i = 0; i < nc; i += 1) cl[codeOrder[i]] = read(3);
++      const codes = tree(cl), lengths: number[] = [];
++      while (lengths.length < nl + nd) {
++        const c = decode(codes);
++        if (c <= 15) lengths.push(c);
++        else {
++          if (c === 16 && lengths.length === 0) return fieldEvidenceError();
++          const repeat = c === 16 ? read(2) + 3 : c === 17 ? read(3) + 3 : c === 18 ? read(7) + 11 : fieldEvidenceError();
++          const value = c === 16 ? lengths[lengths.length - 1] : 0;
++          if (lengths.length + repeat > nl + nd) return fieldEvidenceError();
++          for (let i = 0; i < repeat; i += 1) lengths.push(value);
++        }
++      }
++      if (!lengths[256]) return fieldEvidenceError(); lit = tree(lengths.slice(0, nl)); dist = tree(lengths.slice(nl));
++    }
++    while (true) {
++      const symbol = decode(lit);
++      if (symbol === 256) break;
++      if (symbol < 256) { if (pos >= size) return fieldEvidenceError(); out[pos++] = symbol; continue; }
++      const index = symbol - 257; if (index < 0 || index >= lengthBase.length) return fieldEvidenceError();
++      const length = lengthBase[index] + read(lengthExtra[index]), distanceCode = decode(dist);
++      if (distanceCode >= distBase.length) return fieldEvidenceError();
++      const distance = distBase[distanceCode] + read(distExtra[distanceCode]);
++      if (distance > pos || pos + length > size) return fieldEvidenceError();
++      for (let i = 0; i < length; i += 1) { out[pos] = out[pos - distance]; pos += 1; }
++    }
++  } while (!final);
++  if (pos !== size || Math.ceil(bit / 8) !== input.length) return fieldEvidenceError();
++  return out;
++}
++
++function semanticSections(d: VerifiableDocument): Map<number, string> {
++  if (typeof d.exportHwpxWithReport !== 'function') return fieldEvidenceError();
++  const ex = d.exportHwpxWithReport(); let bytes: Uint8Array;
++  try { bytes = ex.takeBytes(); } finally { ex.free(); }
++  if (bytes.length > ANDROID_MAX_SAVE_BYTES || bytes.length < 22) return fieldEvidenceError();
++  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
++  const u16 = (p: number) => { if (p < 0 || p + 2 > bytes.length) return fieldEvidenceError(); return view.getUint16(p, true); };
++  const u32 = (p: number) => { if (p < 0 || p + 4 > bytes.length) return fieldEvidenceError(); return view.getUint32(p, true); };
++  let end = bytes.length - 22;
++  while (end >= Math.max(0, bytes.length - 65557) && u32(end) !== 0x06054b50) end -= 1;
++  if (end < 0 || u32(end) !== 0x06054b50 || u16(end + 4) || u16(end + 6) || u16(end + 8) !== u16(end + 10) || end + 22 + u16(end + 20) !== bytes.length) return fieldEvidenceError();
++  const count = u16(end + 10), centralEnd = u32(end + 16) + u32(end + 12);
++  if (count > 10000 || centralEnd !== end) return fieldEvidenceError();
++  let cursor = u32(end + 16), total = 0;
++  const result = new Map<number, string>(), utf8 = new TextDecoder('utf-8', { fatal: true });
++  for (let i = 0; i < count; i += 1) {
++    if (u32(cursor) !== 0x02014b50) return fieldEvidenceError();
++    const flags = u16(cursor + 8), method = u16(cursor + 10), compressed = u32(cursor + 20), size = u32(cursor + 24);
++    const nameSize = u16(cursor + 28), local = u32(cursor + 42), name = utf8.decode(bytes.subarray(cursor + 46, cursor + 46 + nameSize));
++    cursor += 46 + nameSize + u16(cursor + 30) + u16(cursor + 32);
++    if (cursor > centralEnd) return fieldEvidenceError();
++    const match = /^Contents\/section(\d+)\.xml$/.exec(name); if (!match) continue;
++    const section = Number(match[1]); total += size;
++    if (section >= MAX_PAGES || result.has(section) || total > MAX_SEMANTIC_XML || flags & 1 || (method !== 0 && method !== 8) || u32(local) !== 0x04034b50 || u16(local + 8) !== method) return fieldEvidenceError();
++    const start = local + 30 + u16(local + 26) + u16(local + 28);
++    if (start + compressed > u32(end + 16) || utf8.decode(bytes.subarray(local + 30, local + 30 + u16(local + 26))) !== name) return fieldEvidenceError();
++    const data = bytes.subarray(start, start + compressed), xml = method === 0 ? data : inflateFieldXml(data, size);
++    if (xml.length !== size) return fieldEvidenceError();
++    result.set(section, utf8.decode(xml));
++  }
++  if (cursor !== centralEnd || result.size !== d.getSectionCount()) return fieldEvidenceError();
++  return result;
++}
++
++/** Preserve paragraph, field, and literal order, scoped by section/header-or-footer/applyTo.
++ * Formatting IDs are deliberately excluded; existing paragraph/character checks still compare actual properties. */
++function fieldDescriptors(xml: string): Map<string, string> {
++  if (/<!/.test(xml)) return fieldEvidenceError();
++  const decode = (s: string): string => {
++    if (/&(?!#x[0-9a-fA-F]+;|#\d+;|amp;|lt;|gt;|quot;|apos;)/.test(s)) return fieldEvidenceError();
++    return s.replace(/&(#x[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (_, e: string) => {
++    if (e[0] === '#') { const n = e[1] === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1)); if (!Number.isInteger(n) || n < 0 || n > 0x10ffff) return fieldEvidenceError(); return String.fromCodePoint(n); }
++    return ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" } as Record<string, string>)[e];
++    });
++  };
++  const result = new Map<string, string>(), stack: string[] = []; let key: string | null = null, tokens: unknown[] = [], offset = 0, nodes = 0;
++  let fieldDepth = -1, param = '', paramText = '', command = '', fieldType = '';
++  const addText = (text: string) => {
++    if (!text) return; const last = tokens[tokens.length - 1];
++    if (Array.isArray(last) && last[0] === 'text') last[1] += text; else tokens.push(['text', text]);
++  };
++  const pattern = /<\?[^?]*\?>|<[^>]*>|[^<]+/g;
++  for (const m of xml.matchAll(pattern)) {
++    if (m.index !== offset || ++nodes > 250000) return fieldEvidenceError(); offset += m[0].length; const raw = m[0];
++    if (raw.startsWith('<?')) continue;
++    if (!raw.startsWith('<')) {
++      if (key !== null && stack[stack.length - 1] === 'hp:t') addText(decode(raw));
++      if (fieldDepth >= 0 && param) paramText += decode(raw);
++      continue;
++    }
++    const closing = raw.startsWith('</'), empty = raw.endsWith('/>');
++    const nameMatch = /^<\/?([\w:.-]+)/.exec(raw); if (!nameMatch) return fieldEvidenceError(); const name = nameMatch[1];
++    if (closing) {
++      if (stack.pop() !== name) return fieldEvidenceError();
++      if (key !== null && name === 'hp:p') tokens.push(['/p']);
++      if (fieldDepth >= 0 && name === 'hp:stringParam') {
++        if (param === 'Command') command = paramText;
++        // The HWP adapter omits the default PATH Format=$F parameter; any nondefault format is not equivalent.
++        if (fieldType === 'PATH' && param === 'Format' && paramText !== '$F') return fieldEvidenceError();
++        param = ''; paramText = '';
++      }
++      if (fieldDepth === stack.length && name === 'hp:fieldBegin') { if (fieldType === 'PATH' && command !== '$F') return fieldEvidenceError(); fieldDepth = -1; }
++      if (key !== null && (name === 'hp:header' || name === 'hp:footer')) { if (result.has(key)) return fieldEvidenceError(); result.set(key, JSON.stringify(tokens)); key = null; tokens = []; }
++      continue;
++    }
++    const attrs: Record<string, string> = {}; const attrPattern = /([\w:.-]+)\s*=\s*("[^"]*"|'[^']*')/g;
++    for (const a of raw.slice(nameMatch[0].length).matchAll(attrPattern)) { if (a[1] in attrs) return fieldEvidenceError(); attrs[a[1]] = decode(a[2].slice(1, -1)); }
++    if (name === 'hp:header' || name === 'hp:footer') {
++      if (key !== null || !['BOTH', 'EVEN', 'ODD'].includes(attrs.applyPageType)) return fieldEvidenceError();
++      key = `${name}:${attrs.applyPageType}`; tokens = [];
++    }
++    if (key !== null) {
++      if (name === 'hp:p') tokens.push(['p']);
++      if (name === 'hp:autoNum') tokens.push(['auto', attrs.numType, attrs.num]);
++      if (name === 'hp:autoNumFormat') tokens.push(['format', Object.entries(attrs).sort()]);
++      if (name === 'hp:fieldBegin') { tokens.push(['field', attrs.type, attrs.name, attrs.editable]); fieldDepth = stack.length; fieldType = attrs.type; command = ''; }
++      if (name === 'hp:fieldEnd') tokens.push(['/field']);
++      if (fieldDepth >= 0 && name === 'hp:stringParam') { param = attrs.name; paramText = ''; }
++      // Literal control characters are content too (tab, lineBreak, etc.).
++      if (stack[stack.length - 1] === 'hp:t') tokens.push([name, Object.entries(attrs).sort()]);
++    }
++    if (!empty) stack.push(name);
++    else if (name === 'hp:p' && key !== null) tokens.push(['/p']);
++  }
++  if (offset !== xml.length || stack.length || key !== null) return fieldEvidenceError();
++  return result;
++}
++
++function verifyFieldSemantics(ctx: Ctx): void {
++  const a = semanticSections(ctx.live), b = semanticSections(ctx.reopened);
++  for (let s = 0; s < ctx.live.getSectionCount(); s += 1) {
++    const x = a.get(s), y = b.get(s); if (x === undefined || y === undefined) return fieldEvidenceError();
++    const live = [...fieldDescriptors(x)].sort(([k], [l]) => k.localeCompare(l));
++    const reopened = [...fieldDescriptors(y)].sort(([k], [l]) => k.localeCompare(l));
++    if (JSON.stringify(live) !== JSON.stringify(reopened)) throw lost('머리말·꼬리말 필드 종류·순서·내용', `구역 ${s + 1}`);
++  }
++}
++
+ function verifyHeadersFooters(ctx: Ctx, sections: number): void {
+   const { live, reopened, cov } = ctx;
+   for (let s = 0; s < sections; s += 1) {
+@@ -386,22 +620,44 @@ function verifyHeadersFooters(ctx: Ctx, sections: number): void {
+           cov.headerFooterParagraphs += 1;
+           const infoA = parse(live.getHeaderFooterParaInfo(s, isHeader, applyTo, hp)) as { charCount?: number; text?: string };
+           const infoB = parse(reopened.getHeaderFooterParaInfo(s, isHeader, applyTo, hp)) as { charCount?: number; text?: string };
+-          if (!same(ctx, infoA, infoB)) throw lost('머리말·꼬리말 내용', `${where}, 문단 ${hp + 1}`);
++          const liveChars = Array.from(String(infoA.text ?? ''));
++          const hasField = liveChars.some(isFieldMarker);
++          let map: number[] | null = null;
++          if (hasField) {
++            // 필드 표현 차이는 대응시켜 비교한다. 글자 수(charCount)는 필드가 든 문단에서만 표현이 달라 대응 결과로 대신 확인한다.
++            const reopenedChars = Array.from(String(infoB.text ?? ''));
++            map = alignFieldText(liveChars, reopenedChars);
++            const { text: _liveText, charCount: _liveCount, ...liveRest } = infoA;
++            const { text: _reText, charCount: _reCount, ...reopenedRest } = infoB;
++            if (!map || Number(infoA.charCount) !== liveChars.length || Number(infoB.charCount) !== reopenedChars.length || !same(ctx, liveRest, reopenedRest)) throw lost('머리말·꼬리말 내용', `${where}, 문단 ${hp + 1}`);
++            for (const ch of liveChars) if (isFieldMarker(ch)) { cov.headerFooterFields += 1; }
++          } else if (!same(ctx, infoA, infoB)) throw lost('머리말·꼬리말 내용', `${where}, 문단 ${hp + 1}`);
+           if (!same(ctx, parse(live.getParaPropertiesInHf(s, isHeader, applyTo, hp)), parse(reopened.getParaPropertiesInHf(s, isHeader, applyTo, hp)))) {
+             throw lost('머리말·꼬리말 문단 서식', `${where}, 문단 ${hp + 1}`);
+           }
+-          const count = Number(infoA.charCount ?? 0);
++          const count = hasField ? liveChars.length : Number(infoA.charCount ?? 0);
+           const limit = Math.min(Math.max(count, 1), MAX_HF_CHARS);
+           if (count > MAX_HF_CHARS) cov.uncovered.push('아주 긴 머리말·꼬리말 문단은 앞 4096자만 글자 서식을 비교했어요.');
+           for (let o = 0; o < limit; o += 1) {
+-            if (!same(ctx, parse(live.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, o)), parse(reopened.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, o)))) {
+-              throw lost('머리말·꼬리말 글자 서식', `${where}, 문단 ${hp + 1}, 위치 ${o}`);
++            const target = map ? map[o] : o;
++            if (target === undefined || target < 0) continue; // 빈 파일 이름 필드: 대응하는 글자가 없다
++            // A filename expands to multiple characters; compare every expanded character, not just its first.
++            let end = target + 1;
++            if (map && liveChars[o] === FIELD_NAME) {
++              end = Array.from(String(infoB.text ?? '')).length;
++              for (let next = o + 1; next < map.length; next += 1) if (map[next] >= 0) { end = map[next]; break; }
++            }
++            for (let output = target; output < end; output += 1) {
++              if (!same(ctx, parse(live.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, o)), parse(reopened.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, output)))) {
++                throw lost('머리말·꼬리말 글자 서식', `${where}, 문단 ${hp + 1}, 위치 ${o}`);
++              }
+             }
+           }
+         }
+       }
+     }
+   }
++  if (cov.headerFooterParagraphs > 0) verifyFieldSemantics(ctx);
+ }
+ 
+ /**
+@@ -417,7 +673,7 @@ export function verifyReopenedDocument(
+ ): VerifyCoverage {
+   const cov: VerifyCoverage = {
+     bodyParagraphs: 0, bodyCharSamples: 0, tables: 0, nestedTables: 0, cellParagraphs: 0, cellCharSamples: 0,
+-    textBoxLists: 0, headerFooterParagraphs: 0, memos: 0, uncovered: [],
++    textBoxLists: 0, headerFooterParagraphs: 0, headerFooterFields: 0, memos: 0, uncovered: [],
+   };
+   const ctx: Ctx = { skipConversionDefaults: options.crossFormat === true, live, reopened, cov };
+   verifyAll(ctx, bytes);
+diff --git a/rhwp-studio/tests/hwpxxx-android-field-save.test.ts b/rhwp-studio/tests/hwpxxx-android-field-save.test.ts
+new file mode 100644
+index 0000000..dcf5f07
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-field-save.test.ts
+@@ -0,0 +1,82 @@
++// Real pinned WASM + real verifier. No SVG/text-only stand-in for field semantics.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { verifyReopenedDocument } from '../src/hwpxxx/android-save-verify.ts';
++const core = await import('../../pkg/rhwp.js');
++await core.default({ module_or_path: readFileSync(new URL('../../pkg/rhwp_bg.wasm', import.meta.url)) });
++type Part = string | number;
++function make(parts: Part[] | null, header = true, applyTo = 0): any {
++  const d = core.HwpDocument.createEmpty(); d.createBlankDocument(); d.insertText(0, 0, 0, 'same body'); d.setFileName('검증 & review.hwp');
++  if (parts !== null) {
++    d.createHeaderFooter(0, header, applyTo); let offset = 0;
++    for (const part of parts) {
++      if (typeof part === 'number') { d.insertFieldInHf(0, header, applyTo, 0, offset, part); offset += 1; }
++      else { d.insertTextInHeaderFooter(0, header, applyTo, 0, offset, part); offset += Array.from(part).length; }
++    }
++  }
++  return d;
++}
++function exported(d: any, format: 'hwp' | 'hwpx'): Uint8Array {
++  const ex = format === 'hwp' ? d.exportHwpWithReport() : d.exportHwpxWithReport();
++  try { assert.equal(JSON.parse(ex.contentLoss()).count, 0); return ex.takeBytes(); } finally { ex.free(); }
++}
++function verify(live: any, reopened: any, bytes: Uint8Array, format: string): void {
++  verifyReopenedDocument(live, reopened, bytes.length, { crossFormat: format !== 'hwp' });
++}
++for (const format of ['hwp', 'hwpx'] as const) {
++  for (const header of [true, false]) for (const applyTo of [0, 1, 2]) for (const kind of [1, 2, 3]) {
++    test(`valid ${format} ${header ? 'header' : 'footer'} scope ${applyTo}, field ${kind}`, () => {
++      const live = make(['앞 & <', kind, '> 뒤'], header, applyTo);
++      const before = live.getHeaderFooterParaInfo(0, header, applyTo, 0);
++      const bytes = exported(live, format), re = new core.HwpDocument(bytes);
++      try {
++        verify(live, re, bytes, format);
++        assert.equal(live.getHeaderFooterParaInfo(0, header, applyTo, 0), before, 'verification does not change live header text');
++        // A later generation has no live marker characters, but still checks actual serialized fields.
++        const again = exported(re, format), re2 = new core.HwpDocument(again);
++        try { verify(re, re2, again, format); } finally { re2.free(); }
++      } finally { live.free(); re.free(); }
++    });
++  }
++  const changes: Array<[string, Part[], Part[] | null]> = [
++    ['PAGE becomes TOTAL_PAGE with identical one-page glyph', [1], [2]],
++    ['TOTAL_PAGE becomes PAGE with identical one-page glyph', [2], [1]],
++    ['field order changes although one-page text stays 1-1', [1, '-', 2], [2, '-', 1]],
++    ['literal header text changes', ['A', 1, 'B'], ['A', 1, 'C']],
++    ['literal text reorders with the same glyph multiset', ['A', 1, 'B'], ['B', 1, 'A']],
++    ['field becomes literal space', [1], [' ']],
++    ['field becomes literal rendered number', [1], ['1']],
++    ['filename becomes its literal rendered text', [3], ['검증 & review.hwp']],
++    ['field disappears', ['A', 1, 'B'], ['AB']],
++    ['entire header disappears', [1], null],
++  ];
++  for (const [name, a, b] of changes) test(`refuse ${format}: ${name}`, () => {
++    const live = make(a), other = make(b), bytes = exported(other, format), re = new core.HwpDocument(bytes);
++    try { assert.throws(() => verify(live, re, bytes, format), /달라|검증 정보/); }
++    finally { live.free(); other.free(); re.free(); }
++  });
++  test(`refuse ${format}: existing reopened field kind changes`, () => {
++    const source = make([1]), changed = make([2]);
++    const a = exported(source, format), b = exported(changed, format), live = new core.HwpDocument(a), re = new core.HwpDocument(b);
++    try { assert.throws(() => verify(live, re, b, format), /필드 종류/); }
++    finally { source.free(); changed.free(); live.free(); re.free(); }
++  });
++  test(`refuse ${format}: field paragraph and character formatting still checked`, () => {
++    const live = make(['ABC', 1, 'DEF']), bytes = exported(live, format), re = new core.HwpDocument(bytes);
++    try {
++      re.applyCharFormatInHeaderFooter(0, true, 0, 0, 4, 0, 6, JSON.stringify({ bold: true }));
++      assert.throws(() => verify(live, re, bytes, format), /글자 서식/);
++    } finally { live.free(); re.free(); }
++  });
++}
++test('semantic evidence is mandatory and failure is closed; exported handle always freed', () => {
++  const live = make([1]), bytes = exported(live, 'hwp'), re = new core.HwpDocument(bytes); let freed = 0;
++  const missing = new Proxy(live, { get(t, k) { if (k === 'exportHwpxWithReport') return undefined; const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v; } });
++  const invalid = new Proxy(live, { get(t, k) { if (k === 'exportHwpxWithReport') return () => ({ takeBytes: () => new Uint8Array(22), free: () => { freed += 1; } }); const v = Reflect.get(t, k); return typeof v === 'function' ? v.bind(t) : v; } });
++  try {
++    assert.throws(() => verify(missing, re, bytes, 'hwp'), /검증 정보/);
++    assert.throws(() => verify(invalid, re, bytes, 'hwp'), /검증 정보/);
++    assert.equal(freed, 1);
++  } finally { live.free(); re.free(); }
++});

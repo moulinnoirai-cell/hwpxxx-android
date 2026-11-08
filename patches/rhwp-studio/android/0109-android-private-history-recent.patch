@@ -1,0 +1,640 @@
+diff --git a/rhwp-studio/src/history/idb-store.ts b/rhwp-studio/src/history/idb-store.ts
+index 9f2c815..2a83400 100644
+--- a/rhwp-studio/src/history/idb-store.ts
++++ b/rhwp-studio/src/history/idb-store.ts
+@@ -6,6 +6,15 @@
+ 
+ import type { CompareDocumentSnapshot } from '@/compare/types';
+ import type { DocHistoryEntryMeta } from './types';
++import {
++  MAX_HISTORY_META_BYTES,
++  MAX_HISTORY_SNAPSHOT_BYTES,
++  androidHistoryStore,
++  clearHistoryVolatile,
++  forgetHistoryVolatile,
++  markHistoryVolatile,
++  type HistoryVolatileReason,
++} from '../hwpxxx/android-state.ts';
+ 
+ const DB_NAME = 'rhwpStudioDocHistory';
+ const DB_VER = 1;
+@@ -28,7 +37,8 @@ export type HistoryPayload =
+   | { kind: 'legacy'; bytes: Uint8Array };
+ 
+ function idbAvailable(): boolean {
+-  return typeof indexedDB !== 'undefined';
++  // [hwpxxx-android] 셸이 있으면 전체 문서가 담긴 이력은 IndexedDB 에 쓰지 않는다(셸의 암호화 저장소 또는 세션 메모리만).
++  return androidHistoryStore() === undefined && typeof indexedDB !== 'undefined';
+ }
+ 
+ function openDb(): Promise<IDBDatabase | null> {
+@@ -62,6 +72,13 @@ async function listMetaMemory(): Promise<MetaRow[]> {
+ }
+ 
+ export async function listHistoryMeta(): Promise<MetaRow[]> {
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    // 세션 메모리(암호 문서·저장소 없음) + 셸 저장소. 저장소 오류는 숨기지 않고 던진다.
++    const stored = android ? (await android.list()) as MetaRow[] : [];
++    const seen = new Set(stored.map((m) => m.id));
++    return [...stored, ...(await listMetaMemory()).filter((m) => !seen.has(m.id))].sort((a, b) => b.createdAt - a.createdAt);
++  }
+   return withDb(
+     async (db) =>
+       new Promise((resolve, reject) => {
+@@ -86,6 +103,17 @@ export async function getHistoryPayload(id: string): Promise<HistoryPayload | nu
+     if (mem.legacyBytes) return { kind: 'legacy', bytes: mem.legacyBytes };
+     return null;
+   }
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (!android) return null;
++    const bytes = await android.get(id);
++    if (!bytes) return null;
++    try {
++      return { kind: 'ir', snapshot: JSON.parse(new TextDecoder().decode(bytes)) as CompareDocumentSnapshot };
++    } catch {
++      return null;
++    }
++  }
+   return withDb(
+     async (db) =>
+       new Promise<HistoryPayload | null>((resolve, reject) => {
+@@ -147,6 +175,8 @@ export async function saveHistoryIrSnapshot(
+   label: string,
+   sourceFileName: string,
+   snapshot: CompareDocumentSnapshot,
++  /** [hwpxxx-android] `encrypted`: 암호 문서 — 어떤 경우에도 디스크에 두지 않는다. */
++  options: { encrypted?: boolean } = {},
+ ): Promise<DocHistoryEntryMeta> {
+   const id = globalThis.crypto?.randomUUID?.() ?? `h_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+   const createdAt = Date.now();
+@@ -161,6 +191,27 @@ export async function saveHistoryIrSnapshot(
+     storageKind: 'ir',
+   };
+ 
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    const reason: HistoryVolatileReason | null = options.encrypted ? 'encrypted' : android ? null : 'no-store';
++    if (reason) {
++      while (memory.size >= MAX_SNAPSHOTS) {
++        const oldest = [...memory.entries()].sort((a, b) => a[1].meta.createdAt - b[1].meta.createdAt)[0];
++        if (oldest) { memory.delete(oldest[0]); forgetHistoryVolatile(oldest[0]); }
++      }
++      memory.set(id, { meta, irSnapshot: cloneSnapshot(snapshot) });
++      markHistoryVolatile(id, reason);
++      return meta;
++    }
++    const bytes = new TextEncoder().encode(json);
++    if (bytes.byteLength > MAX_HISTORY_SNAPSHOT_BYTES) throw new Error('이 문서의 이력이 너무 커서 저장하지 못했어요.');
++    if (new TextEncoder().encode(JSON.stringify(meta)).byteLength > MAX_HISTORY_META_BYTES) throw new Error('이력 이름이 너무 길어요.');
++    await android!.put(meta as never, bytes);          // 실패하면 그대로 던진다: IndexedDB·메모리로 돌리지 않는다.
++    const all = (await android!.list()).sort((a, b) => b.createdAt - a.createdAt);
++    for (const old of all.slice(MAX_SNAPSHOTS)) await android!.delete(old.id);
++    return meta;
++  }
++
+   const db = await openDb();
+   if (!db) {
+     while (memory.size >= MAX_SNAPSHOTS) {
+@@ -188,6 +239,12 @@ export async function saveHistoryIrSnapshot(
+ 
+ export async function deleteHistorySnapshot(id: string): Promise<void> {
+   memory.delete(id);
++  forgetHistoryVolatile(id);
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (android) await android.delete(id);
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+@@ -203,6 +260,12 @@ export async function deleteHistorySnapshot(id: string): Promise<void> {
+ 
+ export async function clearHistory(): Promise<void> {
+   memory.clear();
++  clearHistoryVolatile();
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (android) await android.clear();
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+diff --git a/rhwp-studio/src/hwpxxx/android-state.ts b/rhwp-studio/src/hwpxxx/android-state.ts
+new file mode 100644
+index 0000000..718747f
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/android-state.ts
+@@ -0,0 +1,77 @@
++// [hwpxxx-android] 문서 이력·최근 문서의 영속 저장을 Android 셸의 비공개(암호화) 저장소로 돌리는 얇은 어댑터.
++//
++// 셸(`window.AndroidStudioHost`, 별칭 `rhwpAndroidHost`)이 있으면 브라우저 저장소(IndexedDB 등)는 이 두 기능에 쓰지 않는다.
++//   - 이력 스냅샷은 전체 문서(IR JSON)이므로 평문으로 남기면 안 된다: 셸의 `history` 저장소(AES-GCM)에만 맡긴다.
++//     저장소가 없거나 암호 문서이면 이 세션의 메모리에만 두고 사용자에게 알린다(기기 키로만 보호된 사본이 문서 암호를 우회하지 않게).
++//   - 최근 문서는 네이티브 핸들을 구조화 복제할 수 없어 메타데이터만 남던 항목을, 셸의 `recent` 저장소(불투명 ID)로 대신한다.
++// 계약: /workspace/.cloud-setup/dex-parity-task/builder-persistence-contract.md (이 저장소의 docs 에도 같은 내용).
++
++import { getAndroidHost } from './android-host.ts';
++
++export const MAX_HISTORY_SNAPSHOT_BYTES = 32 * 1024 * 1024;
++export const MAX_HISTORY_META_BYTES = 4 * 1024;
++
++export interface HostHistoryMeta {
++  id: string;
++  label: string;
++  createdAt: number;
++  sourceFileName: string;
++  byteLength: number;
++  storageKind: 'ir';
++}
++
++export interface HostHistoryStore {
++  list(): Promise<HostHistoryMeta[]>;
++  put(meta: HostHistoryMeta, snapshot: Uint8Array): Promise<void>;
++  get(id: string): Promise<Uint8Array | null>;
++  delete(id: string): Promise<void>;
++  clear(): Promise<void>;
++}
++
++export interface HostRecentEntry {
++  id: string;
++  fileName: string;
++  sourceFormat: string;
++  openedAt: number;
++  /** 셸이 이 항목을 권한·존재 재확인 뒤 다시 열 수 있는가. false 면 파일을 다시 고르게 한다. */
++  reopenable: boolean;
++}
++
++export interface HostRecentStore {
++  list(): Promise<HostRecentEntry[]>;
++  add(entry: { fileName: string; sourceFormat: string }, handle: unknown): Promise<void>;
++  open(id: string): Promise<any>;
++  remove(id: string): Promise<void>;
++  clear(): Promise<void>;
++}
++
++interface StateHost { history?: HostHistoryStore; recent?: HostRecentStore }
++
++/** undefined: 셸 없음(데스크톱 동작) · null: 셸은 있는데 저장소가 없음 · 그 밖: 셸의 저장소. */
++export function androidHistoryStore(): HostHistoryStore | null | undefined {
++  const host = getAndroidHost() as unknown as StateHost | null;
++  if (!host) return undefined;
++  return host.history ?? null;
++}
++
++export function androidRecentStore(): HostRecentStore | null | undefined {
++  const host = getAndroidHost() as unknown as StateHost | null;
++  if (!host) return undefined;
++  return host.recent ?? null;
++}
++
++export type HistoryVolatileReason = 'encrypted' | 'no-store';
++
++const volatileReasons = new Map<string, HistoryVolatileReason>();
++
++export function markHistoryVolatile(id: string, reason: HistoryVolatileReason): void { volatileReasons.set(id, reason); }
++export function forgetHistoryVolatile(id: string): void { volatileReasons.delete(id); }
++export function clearHistoryVolatile(): void { volatileReasons.clear(); }
++/** 이 스냅샷이 메모리에만 있고 이유가 무엇인가(저장된 것이면 undefined). */
++export function historyVolatileReason(id: string): HistoryVolatileReason | undefined { return volatileReasons.get(id); }
++
++export function historyVolatileNotice(reason: HistoryVolatileReason): string {
++  return reason === 'encrypted'
++    ? '암호 문서의 이력은 기기에 저장하지 않고 이 앱을 닫을 때까지만 보관해요.'
++    : '이 기기에 비공개 저장소가 없어 이력을 이 앱을 닫을 때까지만 보관해요.';
++}
+diff --git a/rhwp-studio/src/recent/recent-open.ts b/rhwp-studio/src/recent/recent-open.ts
+index db34b47..300a91e 100644
+--- a/rhwp-studio/src/recent/recent-open.ts
++++ b/rhwp-studio/src/recent/recent-open.ts
+@@ -11,6 +11,7 @@
+ 
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
+ import type { RecentDoc } from './recent-store';
++import { androidRecentStore } from '../hwpxxx/android-state.ts';
+ 
+ export interface OpenRecentDeps {
+   ensurePermission: (handle: FileSystemFileHandleLike) => Promise<boolean>;
+@@ -27,14 +28,62 @@ export interface OpenRecentDeps {
+    * 미주입 시 안내 토스트만 띄운다.
+    */
+   requestReopen?: () => void;
++  /** [hwpxxx-android] 셸 항목을 불투명 ID 로 다시 연다(기본: 셸의 `recent.open`). */
++  hostOpen?: (id: string) => Promise<FileSystemFileHandleLike>;
+ }
+ 
+-export type OpenRecentResult = 'opened' | 'permission-denied' | 'removed' | 'needs-pick';
++export type OpenRecentResult = 'opened' | 'permission-denied' | 'removed' | 'needs-pick' | 'failed';
++
++/**
++ * [hwpxxx-android] 셸이 관리하는 항목의 재열기. 셸이 권한·존재·읽기를 재확인해 새 핸들을 준다.
++ * - NotFoundError   → 항목 제거 + 안내
++ * - NotAllowedError → 항목 유지 + 안내 + 파일 선택 창(권한이 사라졌어도 죽은 명령이 되지 않는다)
++ * - 그 밖의 오류    → 안내(항목 유지)
++ * 성공하면 일반 열기 경로(open-document-bytes, 저장하지 않은 변경 확인 포함)로 넘긴다.
++ */
++async function openHostRecent(entry: RecentDoc, deps: OpenRecentDeps): Promise<OpenRecentResult> {
++  const open = deps.hostOpen ?? ((id: string) => {
++    const store = androidRecentStore();
++    if (!store) throw new DOMException('셸의 최근 문서 저장소가 없습니다.', 'NotAllowedError');
++    return store.open(id);
++  });
++  const fail = async (err: unknown): Promise<OpenRecentResult> => {
++    const name = (err as { name?: string } | null)?.name;
++    if (name === 'NotFoundError') {
++      await deps.remove(entry.id);
++      deps.toast(`"${entry.fileName}" 파일을 찾을 수 없어 목록에서 제거했습니다.`, 3500);
++      return 'removed';
++    }
++    if (name === 'NotAllowedError') {
++      deps.toast(`"${entry.fileName}"에 접근할 수 없어요(권한이 바뀌었을 수 있어요). 파일을 다시 선택해 주세요.`, 4500);
++      deps.requestReopen?.();
++      return 'needs-pick';
++    }
++    const message = err instanceof Error ? err.message : String(err);
++    deps.toast(`"${entry.fileName}"을(를) 열지 못했어요: ${message}`, 4500);
++    return 'failed';
++  };
++  let handle: FileSystemFileHandleLike;
++  try {
++    handle = await open(entry.id);
++  } catch (err) {
++    return fail(err);
++  }
++  try {
++    const { bytes, name } = await deps.readFile(handle);
++    deps.emitOpen({ bytes, fileName: name, fileHandle: handle });
++    return 'opened';
++  } catch (err) {
++    return fail(err);
++  }
++}
+ 
+ export async function openRecentEntry(
+   entry: RecentDoc,
+   deps: OpenRecentDeps,
+ ): Promise<OpenRecentResult> {
++  if (entry.hostManaged) return openHostRecent(entry, deps);
++
+   // 메타-only 항목: 라이브 핸들이 없어 자동 재열기 불가 → 파일 다시 선택 유도.
+   if (!entry.handle) {
+     deps.toast(
+diff --git a/rhwp-studio/src/recent/recent-store.ts b/rhwp-studio/src/recent/recent-store.ts
+index d68402f..19f091a 100644
+--- a/rhwp-studio/src/recent/recent-store.ts
++++ b/rhwp-studio/src/recent/recent-store.ts
+@@ -16,6 +16,7 @@
+  */
+ 
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
++import { androidRecentStore } from '../hwpxxx/android-state.ts';
+ 
+ const DB_NAME = 'rhwpStudioRecent';
+ const DB_VER = 1;
+@@ -38,6 +39,11 @@ export interface RecentDoc {
+    * (`handle` 미존재), 이 경우 자동 재열기는 불가하고 목록/이력 표시에만 쓰인다.
+    */
+   handle?: FileSystemFileHandleLike;
++  /**
++   * [hwpxxx-android] 셸의 비공개 저장소가 관리하는 항목: 핸들 대신 불투명 ID 로 다시 연다(권한·존재를 셸이 재확인).
++   * 없으면(메타-only) 파일을 다시 고르게 한다.
++   */
++  hostManaged?: boolean;
+ }
+ 
+ /** addRecentDoc 입력 (id/openedAt는 내부 생성) */
+@@ -54,7 +60,8 @@ export interface RecentDocInput {
+ const memory = new Map<string, RecentDoc>();
+ 
+ function idbAvailable(): boolean {
+-  return typeof indexedDB !== 'undefined';
++  // [hwpxxx-android] 셸이 있으면 최근 문서는 IndexedDB 에 쓰지 않는다(셸 저장소, 없으면 세션 메모리 — 파일명만).
++  return androidRecentStore() === undefined && typeof indexedDB !== 'undefined';
+ }
+ 
+ function createRecentId(): string {
+@@ -144,6 +151,12 @@ function sortAndTrim(rows: RecentDoc[]): RecentDoc[] {
+  * 로 재시도한다 — 기록 자체는 남긴다.
+  */
+ export async function addRecentDoc(input: RecentDocInput): Promise<void> {
++  const android = androidRecentStore();
++  if (android) {
++    // 핸들은 셸 자신의 객체다: 셸이 사용자가 고른 원본만 불투명 토큰으로 바꿔 저장한다(경로·URI·함수는 저장하지 않는다).
++    await android.add({ fileName: input.fileName, sourceFormat: input.sourceFormat }, input.handle ?? null);
++    return;
++  }
+   const entry: RecentDoc = {
+     id: createRecentId(),
+     fileName: input.fileName,
+@@ -190,6 +203,17 @@ export async function addRecentDoc(input: RecentDocInput): Promise<void> {
+ 
+ /** 최근 문서 목록(최신순). */
+ export async function listRecentDocs(): Promise<RecentDoc[]> {
++  const android = androidRecentStore();
++  if (android) {
++    const rows = await android.list();
++    return sortAndTrim(rows.map((r): RecentDoc => ({
++      id: r.id,
++      fileName: r.fileName,
++      sourceFormat: r.sourceFormat,
++      openedAt: r.openedAt,
++      ...(r.reopenable ? { hostManaged: true } : {}),
++    })));
++  }
+   return withDb(
+     async (db) => sortAndTrim(await getAllRows(db)),
+     async () => sortAndTrim([...memory.values()]),
+@@ -199,6 +223,11 @@ export async function listRecentDocs(): Promise<RecentDoc[]> {
+ /** 특정 최근 문서를 제거한다. */
+ export async function removeRecentDoc(id: string): Promise<void> {
+   memory.delete(id);
++  const android = androidRecentStore();
++  if (android) {
++    await android.remove(id);
++    return;
++  }
+   await withDb(
+     async (db) => deleteRow(db, id),
+     async () => {},
+@@ -208,6 +237,11 @@ export async function removeRecentDoc(id: string): Promise<void> {
+ /** 최근 문서 목록 전체 삭제. */
+ export async function clearRecentDocs(): Promise<void> {
+   memory.clear();
++  const android = androidRecentStore();
++  if (android) {
++    await android.clear();
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+diff --git a/rhwp-studio/src/ui/history-dialog.ts b/rhwp-studio/src/ui/history-dialog.ts
+index 8db9d4f..7515b6a 100644
+--- a/rhwp-studio/src/ui/history-dialog.ts
++++ b/rhwp-studio/src/ui/history-dialog.ts
+@@ -30,6 +30,7 @@ import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '@/com
+ import type { CompareSessionStore } from '@/compare/session';
+ import type { CompareOptions, DiffItem, DiffKind } from '@/compare/types';
+ import { clearHistory, deleteHistorySnapshot, getHistoryPayload, listHistoryMeta, saveHistoryIrSnapshot } from '@/history/idb-store';
++import { historyVolatileNotice, historyVolatileReason } from '@/hwpxxx/android-state';
+ import type { DocHistoryEntryMeta } from '@/history/types';
+ 
+ import { t } from '../i18n/index.ts';
+@@ -190,10 +191,14 @@ export class HistoryDialog {
+     try {
+       const label = this.labelInput.value.trim() || new Date().toLocaleString('ko-KR');
+       const snap = buildSnapshotFromWasm(wasm, label, HISTORY_COMPARE_OPTS);
+-      await saveHistoryIrSnapshot(label, wasm.fileName, snap);
++      const saved = await saveHistoryIrSnapshot(label, wasm.fileName, snap, { encrypted: wasm.requiresPasswordForSave });
+       this.labelInput.value = '';
+       await this.refreshList();
+-      this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xf2c8ca');
++      // [hwpxxx-android] 디스크에 두지 않은 이력(암호 문서·비공개 저장소 없음)은 그 사실을 알린다.
++      const volatile = historyVolatileReason(saved.id);
++      this.resultMetaEl.textContent = volatile
++        ? `${t('dialog.history.resultMetaEl.text.xf2c8ca')} ${historyVolatileNotice(volatile)}`
++        : t('dialog.history.resultMetaEl.text.xf2c8ca');
+     } catch (err) {
+       const msg = err instanceof Error ? err.message : String(err);
+       this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xa25915', { p1: msg });
+diff --git a/rhwp-studio/tests/hwpxxx-android-state.test.ts b/rhwp-studio/tests/hwpxxx-android-state.test.ts
+new file mode 100644
+index 0000000..aa6ed8b
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-state.test.ts
+@@ -0,0 +1,232 @@
++// [hwpxxx-android] 문서 이력·최근 문서의 Android 영속화(셸의 비공개 저장소 어댑터) 시험.
++// 셸 저장소는 메모리 시험용 구현이며(실제 암호화·Keystore 는 PrivateStateStoreTest.java 가 확인), 여기서는 Studio 쪽 규칙만 고정한다:
++//   · 셸이 있으면 IndexedDB·localStorage 를 건드리지 않는다  · 저장소 오류는 숨기지 않는다  · 암호 문서·저장소 없음 → 세션 메모리만 + 알림
++//   · 최근 문서는 불투명 ID 로 다시 열고, 권한 취소는 죽은 명령이 아니라 다시 고르기로 이어진다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import {
++  clearHistory, deleteHistorySnapshot, getHistoryPayload, listHistoryMeta, saveHistoryIrSnapshot,
++} from '../src/history/idb-store.ts';
++import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '../src/recent/recent-store.ts';
++import { openRecentEntry } from '../src/recent/recent-open.ts';
++import { androidHistoryStore, androidRecentStore, historyVolatileNotice, historyVolatileReason } from '../src/hwpxxx/android-state.ts';
++
++const g = globalThis as Record<string, any>;
++const src = (rel: string) => readFileSync(fileURLToPath(new URL(`../src/${rel}`, import.meta.url)), 'utf8');
++
++// Any IndexedDB / localStorage use while the shell exists is a failure of the whole point of this patch.
++let touched: string[] = [];
++const guardGlobals = () => {
++  touched = [];
++  g.indexedDB = { open() { touched.push('indexedDB.open'); throw new Error('IndexedDB must not be used in Android mode'); }, databases() { touched.push('indexedDB.databases'); return Promise.resolve([]); } };
++  g.localStorage = new Proxy({}, { get(_t, k) { touched.push(`localStorage.${String(k)}`); throw new Error('localStorage must not be used'); } });
++};
++const unguardGlobals = () => { delete g.indexedDB; delete g.localStorage; delete g.AndroidStudioHost; delete g.rhwpAndroidHost; };
++
++function memoryHistory(opts: { failPut?: boolean; failList?: boolean } = {}) {
++  const rows = new Map<string, { meta: any; data: Uint8Array }>(); const calls: string[] = [];
++  return {
++    rows, calls,
++    async list() { calls.push('list'); if (opts.failList) throw new Error('native list failed'); return [...rows.values()].map((r) => r.meta); },
++    async put(meta: any, data: Uint8Array) { calls.push('put'); if (opts.failPut) throw new Error('native put failed'); rows.set(meta.id, { meta, data: new Uint8Array(data) }); },
++    async get(id: string) { calls.push('get'); return rows.get(id)?.data ?? null; },
++    async delete(id: string) { calls.push('delete'); rows.delete(id); },
++    async clear() { calls.push('clear'); rows.clear(); },
++  };
++}
++function memoryRecent() {
++  const rows = new Map<string, any>(); const calls: any[] = []; let next = 1;
++  const store: any = {
++    rows, calls, openError: null as any,
++    async list() { calls.push(['list']); return [...rows.values()]; },
++    async add(entry: any, handle: any) { calls.push(['add', entry, handle]); rows.set('h' + next, { id: 'h' + next++, ...entry, openedAt: Date.now() + next, reopenable: !!handle }); },
++    async open(id: string) { calls.push(['open', id]); if (store.openError) throw store.openError; return { kind: 'file', name: rows.get(id).fileName, opened: id }; },
++    async remove(id: string) { calls.push(['remove', id]); rows.delete(id); },
++    async clear() { calls.push(['clear']); rows.clear(); },
++  };
++  return store;
++}
++const snapshot = (n = 1) => ({ label: 'L' + n, paragraphs: [{ text: '본문 ' + n, stable_id: 'p' + n }] }) as any;
++const dom = (name: string, message = name) => Object.assign(new Error(message), { name });
++
++test('desktop mode (no shell) is untouched: no host store is consulted', async () => {
++  unguardGlobals();
++  assert.equal(androidHistoryStore(), undefined); assert.equal(androidRecentStore(), undefined);
++  await clearHistory();
++  const meta = await saveHistoryIrSnapshot('desktop', 'a.hwp', snapshot());
++  assert.equal(historyVolatileReason(meta.id), undefined);
++  assert.equal((await listHistoryMeta()).some((m) => m.id === meta.id), true);   // node has no indexedDB: upstream's memory fallback
++  await clearHistory();
++});
++
++test('Android: history snapshots go to the host store as UTF-8 JSON and never to IndexedDB/localStorage', async () => {
++  guardGlobals(); const host = memoryHistory(); g.AndroidStudioHost = { history: host, recent: memoryRecent() };
++  try {
++    const snap = snapshot(7);
++    const meta = await saveHistoryIrSnapshot('이름', '문서.hwp', snap);
++    assert.equal(host.calls.includes('put'), true);
++    const stored = host.rows.get(meta.id)!;
++    assert.deepEqual(JSON.parse(new TextDecoder().decode(stored.data)), snap, 'payload is the UTF-8 JSON of the upstream snapshot');
++    assert.equal(stored.meta.storageKind, 'ir'); assert.equal(stored.meta.byteLength, stored.data.byteLength); assert.equal(stored.meta.sourceFileName, '문서.hwp');
++    assert.deepEqual(Object.keys(stored.meta).sort(), ['byteLength', 'createdAt', 'id', 'label', 'sourceFileName', 'storageKind']);
++    assert.equal(historyVolatileReason(meta.id), undefined);
++    assert.deepEqual((await listHistoryMeta()).map((m) => m.id), [meta.id]);
++    assert.deepEqual(await getHistoryPayload(meta.id), { kind: 'ir', snapshot: snap });
++    assert.equal(await getHistoryPayload('nope'), null);
++    await deleteHistorySnapshot(meta.id); assert.equal(host.rows.size, 0);
++    await saveHistoryIrSnapshot('a', 'a.hwp', snapshot(1)); await clearHistory(); assert.equal(host.rows.size, 0);
++    assert.deepEqual(touched, [], 'no IndexedDB / localStorage access');
++  } finally { unguardGlobals(); }
++});
++
++test('Android: at most 24 snapshots are kept (oldest deleted through the host), size bounds refuse before any native call', async () => {
++  guardGlobals(); const host = memoryHistory(); g.AndroidStudioHost = { history: host };
++  try {
++    for (let i = 0; i < 26; i++) { await saveHistoryIrSnapshot('s' + i, 'a.hwp', snapshot(i)); await new Promise((r) => setTimeout(r, 2)); }
++    assert.equal(host.rows.size, 24);
++    const labels = [...host.rows.values()].map((r) => r.meta.label); assert.equal(labels.includes('s0'), false); assert.equal(labels.includes('s25'), true);
++    host.calls.length = 0;
++    const huge = { text: 'x'.repeat(33 * 1024 * 1024) } as any;
++    await assert.rejects(saveHistoryIrSnapshot('big', 'a.hwp', huge), /너무 커/);
++    await assert.rejects(saveHistoryIrSnapshot('l'.repeat(5000), 'a.hwp', snapshot()), /너무 길/);
++    assert.equal(host.calls.includes('put'), false, 'refused before the native call');
++    assert.deepEqual(touched, []);
++  } finally { unguardGlobals(); }
++});
++
++test('Android: a provider error is surfaced — no fallback to memory, IndexedDB or localStorage', async () => {
++  guardGlobals(); const host = memoryHistory({ failPut: true }); g.AndroidStudioHost = { history: host };
++  try {
++    await assert.rejects(saveHistoryIrSnapshot('x', 'a.hwp', snapshot()), /native put failed/);
++    g.AndroidStudioHost = { history: memoryHistory({ failList: true }) };
++    await assert.rejects(listHistoryMeta(), /native list failed/);
++    g.AndroidStudioHost = { history: memoryHistory() };
++    assert.deepEqual(await listHistoryMeta(), [], 'the failed save left nothing behind (not even in memory)');
++    assert.deepEqual(touched, []);
++  } finally { unguardGlobals(); }
++});
++
++test('Android: password-protected documents are never sent to the host store (device key must not weaken the document password)', async () => {
++  guardGlobals(); const host = memoryHistory(); g.AndroidStudioHost = { history: host };
++  try {
++    const meta = await saveHistoryIrSnapshot('보호', 'secret.hwp', snapshot(3), { encrypted: true });
++    assert.equal(host.calls.includes('put'), false); assert.equal(host.rows.size, 0);
++    assert.equal(historyVolatileReason(meta.id), 'encrypted');
++    assert.match(historyVolatileNotice('encrypted'), /암호 문서/);
++    assert.deepEqual((await listHistoryMeta()).map((m) => m.id), [meta.id], 'listed for this session');
++    assert.deepEqual((await getHistoryPayload(meta.id))?.kind, 'ir');
++    await deleteHistorySnapshot(meta.id); assert.deepEqual(await listHistoryMeta(), []);
++    assert.equal(historyVolatileReason(meta.id), undefined);
++    assert.deepEqual(touched, []);
++  } finally { unguardGlobals(); }
++});
++
++test('Android: shell without a history provider keeps snapshots in session memory only and says so', async () => {
++  guardGlobals(); g.AndroidStudioHost = {};
++  try {
++    assert.equal(androidHistoryStore(), null);
++    const meta = await saveHistoryIrSnapshot('x', 'a.hwp', snapshot(4));
++    assert.equal(historyVolatileReason(meta.id), 'no-store'); assert.match(historyVolatileNotice('no-store'), /비공개 저장소가 없어/);
++    assert.equal((await listHistoryMeta()).length, 1);
++    await clearHistory(); assert.deepEqual(await listHistoryMeta(), []);
++    assert.deepEqual(touched, []);
++  } finally { unguardGlobals(); }
++});
++
++test('Android: the alias rhwpAndroidHost is honoured too', async () => {
++  guardGlobals(); const host = memoryHistory(); g.rhwpAndroidHost = { history: host };
++  try { const m = await saveHistoryIrSnapshot('x', 'a.hwp', snapshot()); assert.equal(host.rows.has(m.id), true); } finally { unguardGlobals(); }
++});
++
++test('Android: recent documents are delegated with the host\'s own handle; only names/format/time and opaque ids come back', async () => {
++  guardGlobals(); const recent = memoryRecent(); g.AndroidStudioHost = { recent };
++  try {
++    const handle = { kind: 'file', name: '문서.hwp', secret: () => 1 };
++    await addRecentDoc({ fileName: '문서.hwp', sourceFormat: 'hwp', handle: handle as any });
++    await addRecentDoc({ fileName: '끌어온.hwp', sourceFormat: 'hwp', handle: null });
++    assert.equal(recent.calls[0][2], handle, 'the host receives its own handle object untouched');
++    assert.deepEqual(recent.calls[0][1], { fileName: '문서.hwp', sourceFormat: 'hwp' });
++    const list = await listRecentDocs();
++    assert.equal(list.length, 2);
++    const reopenable = list.find((d) => d.fileName === '문서.hwp')!, metaOnly = list.find((d) => d.fileName === '끌어온.hwp')!;
++    assert.equal(reopenable.hostManaged, true); assert.equal('handle' in reopenable, false);
++    assert.equal(metaOnly.hostManaged, undefined);
++    await removeRecentDoc(reopenable.id); assert.equal((await listRecentDocs()).length, 1);
++    await clearRecentDocs(); assert.equal((await listRecentDocs()).length, 0);
++    assert.deepEqual(touched, []);
++    recent.list = async () => { throw new Error('native recent failed'); };
++    await assert.rejects(listRecentDocs(), /native recent failed/);
++  } finally { unguardGlobals(); }
++});
++
++test('Android: without a recent provider the list is session memory only (no IndexedDB)', async () => {
++  guardGlobals(); g.AndroidStudioHost = {};
++  try {
++    await clearRecentDocs();
++    const handle = { kind: 'file', name: 'a.hwp' };
++    await addRecentDoc({ fileName: 'a.hwp', sourceFormat: 'hwp', handle: handle as any });
++    const list = await listRecentDocs();
++    assert.equal(list.length, 1); assert.equal(list[0].handle, handle, 'the live handle works within the session'); assert.equal(list[0].hostManaged, undefined);
++    await clearRecentDocs();
++    assert.deepEqual(touched, []);
++  } finally { unguardGlobals(); }
++});
++
++const deps = (over: Record<string, any> = {}) => {
++  const log: any = { toasts: [], opened: [], removed: [], reopen: 0, perm: 0 };
++  return {
++    log,
++    deps: {
++      ensurePermission: async () => { log.perm++; return true; },
++      readFile: async (h: any) => ({ bytes: new Uint8Array([1, 2, 3]), name: h.name }),
++      remove: async (id: string) => { log.removed.push(id); },
++      toast: (m: string) => { log.toasts.push(m); },
++      emitOpen: (p: any) => { log.opened.push(p); },
++      requestReopen: () => { log.reopen++; },
++      ...over,
++    } as any,
++  };
++};
++
++test('recent reopen (host entries): opened through the host handle; NotFound removes; NotAllowed keeps and asks to re-pick; other errors are announced', async () => {
++  const entry = { id: 'h1', fileName: '문서.hwp', sourceFormat: 'hwp', openedAt: 1, hostManaged: true };
++  let r = deps({ hostOpen: async (id: string) => ({ kind: 'file', name: '문서.hwp', via: id }) });
++  assert.equal(await openRecentEntry(entry, r.deps), 'opened');
++  assert.equal(r.log.opened.length, 1); assert.equal(r.log.opened[0].fileHandle.via, 'h1'); assert.equal(r.log.perm, 0, 'the host already re-checked permission: Studio does not guess');
++
++  r = deps({ hostOpen: async () => { throw dom('NotFoundError'); } });
++  assert.equal(await openRecentEntry(entry, r.deps), 'removed'); assert.deepEqual(r.log.removed, ['h1']); assert.equal(r.log.opened.length, 0);
++
++  r = deps({ hostOpen: async () => { throw dom('NotAllowedError'); } });
++  assert.equal(await openRecentEntry(entry, r.deps), 'needs-pick');
++  assert.deepEqual(r.log.removed, [], 'entry kept'); assert.equal(r.log.reopen, 1, 'the standard picker opens so the user can re-grant'); assert.match(r.log.toasts[0], /다시 선택/);
++
++  r = deps({ hostOpen: async () => { throw dom('SomethingElse', '디스크 오류'); } });
++  assert.equal(await openRecentEntry(entry, r.deps), 'failed'); assert.match(r.log.toasts[0], /디스크 오류/); assert.deepEqual(r.log.removed, []); assert.equal(r.log.reopen, 0);
++
++  r = deps({ hostOpen: async () => ({ kind: 'file', name: 'x.hwp' }), readFile: async () => { throw dom('NotFoundError'); } });
++  assert.equal(await openRecentEntry(entry, r.deps), 'removed', 'the file vanished between open and read');
++});
++
++test('recent reopen: host provider missing -> re-pick, metadata-only entries -> re-pick, desktop entries with a live handle still use permission + read', async () => {
++  guardGlobals(); g.AndroidStudioHost = {};
++  try {
++    const entry = { id: 'h1', fileName: 'a.hwp', sourceFormat: 'hwp', openedAt: 1, hostManaged: true };
++    const r = deps(); assert.equal(await openRecentEntry(entry, r.deps), 'needs-pick'); assert.equal(r.log.reopen, 1);
++  } finally { unguardGlobals(); }
++  const metaOnly = { id: 'm', fileName: 'drop.hwp', sourceFormat: 'hwp', openedAt: 1 };
++  let r = deps(); assert.equal(await openRecentEntry(metaOnly, r.deps), 'needs-pick'); assert.equal(r.log.reopen, 1);
++  const live = { id: 'l', fileName: 'live.hwp', sourceFormat: 'hwp', openedAt: 1, handle: { kind: 'file', name: 'live.hwp' } as any };
++  r = deps(); assert.equal(await openRecentEntry(live, r.deps), 'opened'); assert.equal(r.log.perm, 1);
++  r = deps({ ensurePermission: async () => false }); assert.equal(await openRecentEntry(live, r.deps), 'permission-denied');
++});
++
++test('source guards: the three modules never use localStorage, IndexedDB is gated behind the shell check, the dialog shows the volatile notice', () => {
++  for (const file of ['hwpxxx/android-state.ts', 'history/idb-store.ts', 'recent/recent-store.ts', 'recent/recent-open.ts']) assert.doesNotMatch(src(file), /localStorage/, file);
++  assert.match(src('history/idb-store.ts'), /androidHistoryStore\(\) === undefined && typeof indexedDB/);
++  assert.match(src('recent/recent-store.ts'), /androidRecentStore\(\) === undefined && typeof indexedDB/);
++  assert.match(src('ui/history-dialog.ts'), /historyVolatileNotice\(volatile\)/);
++  assert.match(src('ui/history-dialog.ts'), /encrypted: wasm\.requiresPasswordForSave/);
++});

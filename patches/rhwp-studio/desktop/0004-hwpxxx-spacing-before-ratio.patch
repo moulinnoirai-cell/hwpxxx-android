@@ -1,0 +1,58 @@
+From d2f6220153f877f9b2433f962d021bac738dd488 Mon Sep 17 00:00:00 2001
+From: moulinnoirai-cell <331239397+moulinnoirai-cell@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 11:02:25 +0900
+Subject: [PATCH] hwpxxx desktop: put character spacing before width ratio
+
+---
+ rhwp-studio/index.html | 20 ++++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/rhwp-studio/index.html b/rhwp-studio/index.html
+index 14092f03..0e019a03 100644
+--- a/rhwp-studio/index.html
++++ b/rhwp-studio/index.html
+@@ -660,31 +660,31 @@
+                 </div>
+                 <span class="sb-ribbon-label" data-i18n="ui.styleOverflowPanel.ribbonLabel">문단</span>
+               </div>
+-              <!-- [hwpxxx] 장평·자간 — 줄 간격과 같은 모양(입력 칸 + ▲▼) -->
++              <!-- [hwpxxx] 자간·장평 — 줄 간격과 같은 모양(입력 칸 + ▲▼) -->
+               <div class="sb-ribbon-group sb-charspacing-ribbon-group">
+                 <div class="sb-command-group sb-charspacing-group">
+                   <span class="sb-num-field">
+-                    <label class="sb-num-label" for="char-ratio-input">장평</label>
++                    <label class="sb-num-label" for="char-spacing-input">자간</label>
+                     <span class="sb-ls-group sb-num-group">
+-                      <input id="char-ratio-input" class="sb-ls-select sb-num-input" type="text" inputmode="numeric" value="100 %" title="장평 (50~200%)" aria-label="장평" />
++                      <input id="char-spacing-input" class="sb-ls-select sb-num-input" type="text" inputmode="numeric" value="0 %" title="자간 (-50~50%)" aria-label="자간" />
+                       <span class="sb-ls-arrows">
+-                        <button id="btn-ratio-up" class="sb-arrow" title="장평 늘리기">▲</button>
+-                        <button id="btn-ratio-down" class="sb-arrow" title="장평 줄이기">▼</button>
++                        <button id="btn-spacing-up" class="sb-arrow" title="자간 늘리기">▲</button>
++                        <button id="btn-spacing-down" class="sb-arrow" title="자간 줄이기">▼</button>
+                       </span>
+                     </span>
+                   </span>
+                   <span class="sb-num-field">
+-                    <label class="sb-num-label" for="char-spacing-input">자간</label>
++                    <label class="sb-num-label" for="char-ratio-input">장평</label>
+                     <span class="sb-ls-group sb-num-group">
+-                      <input id="char-spacing-input" class="sb-ls-select sb-num-input" type="text" inputmode="numeric" value="0 %" title="자간 (-50~50%)" aria-label="자간" />
++                      <input id="char-ratio-input" class="sb-ls-select sb-num-input" type="text" inputmode="numeric" value="100 %" title="장평 (50~200%)" aria-label="장평" />
+                       <span class="sb-ls-arrows">
+-                        <button id="btn-spacing-up" class="sb-arrow" title="자간 늘리기">▲</button>
+-                        <button id="btn-spacing-down" class="sb-arrow" title="자간 줄이기">▼</button>
++                        <button id="btn-ratio-up" class="sb-arrow" title="장평 늘리기">▲</button>
++                        <button id="btn-ratio-down" class="sb-arrow" title="장평 줄이기">▼</button>
+                       </span>
+                     </span>
+                   </span>
+                 </div>
+-                <span class="sb-ribbon-label">장평 · 자간</span>
++                <span class="sb-ribbon-label">자간 · 장평</span>
+               </div>
+             </div>
+           </div>
+-- 
+2.55.0.windows.5
+

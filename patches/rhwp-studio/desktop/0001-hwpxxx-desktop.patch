@@ -1,0 +1,1285 @@
+From 6eab345d5ba5732d3a5d701224804996ac72bedb Mon Sep 17 00:00:00 2001
+From: moulinnoirai-cell <331239397+moulinnoirai-cell@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 10:04:16 +0900
+Subject: [PATCH 1/3] hwpxxx desktop: Hangul-state shortcuts, chord links,
+ toolbar tooltips, save revision guard
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ assets/logo/favicon.ico                       | Bin 911 -> 31135 bytes
+ rhwp-studio/index.html                        |   4 +-
+ rhwp-studio/src/command/commands/file.ts      |  15 +-
+ rhwp-studio/src/command/commands/insert.ts    |   2 +-
+ rhwp-studio/src/command/commands/table.ts     |   4 +-
+ rhwp-studio/src/command/shortcut-map.ts       |  21 +++
+ rhwp-studio/src/core/document-dirty-state.ts  |  16 +-
+ .../src/engine/input-handler-keyboard.ts      |  45 +++--
+ rhwp-studio/src/engine/input-handler.ts       |   8 +
+ rhwp-studio/src/main.ts                       |   3 +
+ rhwp-studio/src/style.css                     |  35 ++++
+ rhwp-studio/src/ui/command-tooltip.ts         | 155 ++++++++++++++++++
+ .../tests/hwpxxx-desktop-shortcuts.test.ts    |  69 ++++++++
+ 13 files changed, 353 insertions(+), 24 deletions(-)
+ create mode 100644 rhwp-studio/src/ui/command-tooltip.ts
+ create mode 100644 rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
+
+diff --git a/assets/logo/favicon.ico b/assets/logo/favicon.ico
+index 6e917438847fb9e671c4925282e39b2f97835f01..d7435a2f94dd94b5f5b2d5eeeca4b2d63dfa0ac4 100644
+GIT binary patch
+literal 31135
+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
+OtmebPfBw&b*Z%>2mYpF0
+
+literal 911
+zcmZQzU<5(|0R|vYV5nqfU=RbcIs^RNdAX#xfJ|Ob50@Yy4N@V%0hDLZ(B%(iU|>8K
+z;1l8s<cb?biW^6Z7)5{16*`q5e<EI9%s5KSBu3mcR>UOsP^`kK1UZm+g8aca9WkI{
+zlV}C=h*R-ELAjF&a>v2y#Z6*FOk%toJx?ddo{R?y${mhV5Y`P7GmaKBi54}9mNt!C
+z8m4|CUiJh~Hcs|PoV=(}l&DDz&?2C$q)EigARVAM5FLw?JsK+~0+tm4IV?)tIBG+L
+z>hU<4qp`9gMv)?51A*EF45QbFs~nG&ITkB(Bvw{bH&Dbl3M32C6}cx`;aIHf;TSn#
+zgK(fY&=#P$uu*h^i#^Z^AUYBw3vz=|q<~@6u^6BUa!2FjPsYiK=?97G1&JAjiyKFX
+z>H2D_J2EgVVqjRut`{w87$$BME@m7lW)vX?lm#Ln1B$@nU@52?hytJp1c9^w*&y{`
+z1rb2gL=8iMB+xEVps^qYAkPB1VuqpO#xWA0SO7%?FsQ{$V}Jn*3_W0Y9*>s=h8rlX
+zVr76~2=v;CI2mA6zG`iJ0;IZ2g8YIR1dIil^%RshyzGy8a><{OcTH#Imj{NSKYmvx
+z-I~M7y5jfV)}obf9;t|3`?J3!b<z7@KJpK@RWE4#7tMd{Y-vf#-_JITDc|2Ln7Ndj
+zqxiv}dvzZc$*BeDi3eG6FtW;7F*7nUaj>(NlrE}F%1+K`C=%tYb;&EJS&=ufU5!~;
+zNM2r6L)*OEn1!AD^D378Kxduzba4!+n3J5q!04uyCKhJKW|8px!IMYN9zK2C{)v@k
+zcXdmPYnAKK1x$~GY9|F<GWsi=^7KGWWou`b*D0-4S(C4r9$=akHF;}k$=5Hu%Os>4
+zS$lld{7p=aw{MtZb(KpeA=fx}*V?&zn;(a$r*CNJUVZz^%Xf0~jF(kaI_G@+`1LbC
+zM+iR`U*m2a6CE2RBQ2>@-JQMN{vJL_9)6y!97~p_r=+DmfAZ|9xJVOgSC_Zf=~LQT
+zTB}!OA7I*A`jxlW_pI*P+_$nkCl+kxc41;@m}n&XZ-rhr&}$5yu6{1-oD!M<8$c}B
+
+diff --git a/rhwp-studio/index.html b/rhwp-studio/index.html
+index 16f230b5..f969c97a 100644
+--- a/rhwp-studio/index.html
++++ b/rhwp-studio/index.html
+@@ -12,13 +12,13 @@
+   <script src="/locale-init.js"></script>
+   <link rel="icon" href="/favicon.ico" />
+   <link rel="apple-touch-icon" href="/icons/icon-256.png" />
+-  <title>rhwp-studio</title>
++  <title>hwpxxx</title>
+   <link rel="stylesheet" href="/src/style.css" />
+ </head>
+ <body>
+   <div id="studio-root">
+     <header id="studio-header">
+-      <h1 class="visually-hidden" data-i18n="ui.studioHeader.srLabel">rhwp-studio 문서 편집기</h1>
++      <h1 class="visually-hidden" data-i18n="ui.studioHeader.srLabel">hwpxxx 문서 편집기</h1>
+     <!-- 메뉴바 -->
+     <nav id="menu-bar" aria-label="주 메뉴" data-i18n-aria-label="ui.menuBar.ariaLabel">
+       <!-- ── 파일 ── -->
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index d87673e7..1aec27f2 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -219,6 +219,7 @@ function completeHandleSave(
+   result: SaveDocumentResult,
+   reason: 'save' | 'save-as',
+   passwordProtected = false,
++  revision?: number,
+ ): void {
+   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
+   services.wasm.currentFileHandle = result.handle;
+@@ -230,7 +231,7 @@ function completeHandleSave(
+   }).catch(() => undefined);
+   services.refreshDocumentStatus();
+   services.wasm.requiresPasswordForSave = passwordProtected;
+-  services.documentState.markClean(reason);
++  services.documentState.markClean(reason, revision);
+ }
+ 
+ function exportHtmlBasedFile(services: CommandServices, format: HtmlExportFormat): void {
+@@ -315,6 +316,9 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+ 
+     flushDeferredPaginationBeforeExplicitOutput(services, 'save-as');
+     const saveName = options.fileName;
++    services.getInputHandler()?.commitComposition();
++    // [hwpxxx] 이 내용을 만든 시점의 문서 번호 — 저장 중 새 편집이 있으면 dirty 를 유지한다.
++    const revision = services.documentState.getRevision();
+     const payload = createSavePayload(services, format, password ?? undefined);
+     const originalHandle = sourceFormat === 'hml' ? services.wasm.currentFileHandle : null;
+     const result = await persistWithContentLoss(
+@@ -335,6 +339,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+         saveResult as SaveDocumentResult,
+         'save-as',
+         password !== null,
++        revision,
+       ),
+       showExportContentLoss,
+     );
+@@ -357,7 +362,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+         }).catch(() => undefined);
+         services.refreshDocumentStatus();
+         services.wasm.requiresPasswordForSave = password !== null;
+-        services.documentState.markClean('save-as');
++        services.documentState.markClean('save-as', revision);
+       },
+       showExportContentLoss,
+     );
+@@ -402,6 +407,9 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       password = await showHwpSavePasswordDialog(fileNameForFormat(services.wasm.fileName, passwordFormat));
+       if (password === null) return 'cancelled';
+     }
++    services.getInputHandler()?.commitComposition();
++    // [hwpxxx] 이 내용을 만든 시점의 문서 번호 — 저장 중 새 편집이 있으면 dirty 를 유지한다.
++    const revision = services.documentState.getRevision();
+     const payload = createSavePayload(services, target.format, password ?? undefined);
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+@@ -421,6 +429,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+         saveResult as SaveDocumentResult,
+         'save',
+         password !== null,
++        revision,
+       ),
+       showExportContentLoss,
+     );
+@@ -435,7 +444,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       () => downloadBlob(payload.blob, downloadName),
+       () => {
+         services.wasm.requiresPasswordForSave = password !== null;
+-        services.documentState.markClean('save');
++        services.documentState.markClean('save', revision);
+       },
+       showExportContentLoss,
+     );
+diff --git a/rhwp-studio/src/command/commands/insert.ts b/rhwp-studio/src/command/commands/insert.ts
+index 6a7e7de8..c4d3839c 100644
+--- a/rhwp-studio/src/command/commands/insert.ts
++++ b/rhwp-studio/src/command/commands/insert.ts
+@@ -211,7 +211,7 @@ export const insertCommands: CommandDef[] = [
+     id: 'insert:field',
+     opensDialog: true,
+     label: t('command.insert.field.label'),
+-    shortcutLabel: 'Ctrl+K+E',
++    shortcutLabel: 'Ctrl+K,E',
+     canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode,
+     execute(services) {
+       const ih = services.getInputHandler();
+diff --git a/rhwp-studio/src/command/commands/table.ts b/rhwp-studio/src/command/commands/table.ts
+index c6de9bdb..2790fd0a 100644
+--- a/rhwp-studio/src/command/commands/table.ts
++++ b/rhwp-studio/src/command/commands/table.ts
+@@ -968,14 +968,14 @@ export const tableCommands: CommandDef[] = [
+   {
+     id: 'table:cell-height-equal',
+     label: t('command.table.cellHeightEqual.label'),
+-    shortcutLabel: 'H',
++    // [hwpxxx] 아직 구현되지 않은 기능 — 단축키(H/W)를 안내하지 않는다.
+     canExecute: localTableGeometryCanPersist,
+     execute() {},
+   },
+   {
+     id: 'table:cell-width-equal',
+     label: t('command.table.cellWidthEqual.label'),
+-    shortcutLabel: 'W',
++    // [hwpxxx] 아직 구현되지 않은 기능 — 단축키(H/W)를 안내하지 않는다.
+     canExecute: localTableGeometryCanPersist,
+     execute() {},
+   },
+diff --git a/rhwp-studio/src/command/shortcut-map.ts b/rhwp-studio/src/command/shortcut-map.ts
+index 5fe46dd7..eb42186f 100644
+--- a/rhwp-studio/src/command/shortcut-map.ts
++++ b/rhwp-studio/src/command/shortcut-map.ts
+@@ -156,6 +156,27 @@ export function matchShortcut(
+     if ((def.alt ?? false) !== e.altKey) continue;
+     if (eventKey === def.key) return cmdId;
+     if (def.code && eventCode === def.code.toLowerCase()) return cmdId;
++    // [hwpxxx] 한글 입력 상태에서는 e.key 가 'ㄴ'·'Process' 등이 되어 Ctrl/Alt 조합 단축키가
++    // 엇갈린다. 문자가 영문·숫자가 아닐 때만 물리 키(e.code)로 맞춘다 — 영문 배열은 그대로다.
++    if ((def.ctrl || def.alt) && !/^[a-z0-9]$/.test(eventKey)) {
++      const physical = physicalCodeOf(def.key);
++      if (physical && eventCode === physical) return cmdId;
++    }
+   }
+   return null;
+ }
++
++/** 단축키 문자에 대응하는 물리 키 코드(소문자). 대응이 없으면 null. */
++export function physicalCodeOf(key: string): string | null {
++  if (/^[a-z]$/.test(key)) return 'key' + key;
++  if (/^[0-9]$/.test(key)) return 'digit' + key;
++  return ({ '=': 'equal', '-': 'minus', '[': 'bracketleft', ']': 'bracketright' } as Record<string, string>)[key] ?? null;
++}
++
++/** 연속 키 두 번째 글자 — 한글 입력 상태·조합 중에도 물리 키로 영문 글자를 구한다. */
++export function chordLetter(e: KeyboardEvent): string {
++  const key = e.key.toLowerCase();
++  if (/^[a-z]$/.test(key)) return key;
++  const physical = /^Key([A-Z])$/.exec(e.code ?? '');
++  return physical ? physical[1].toLowerCase() : key;
++}
+diff --git a/rhwp-studio/src/core/document-dirty-state.ts b/rhwp-studio/src/core/document-dirty-state.ts
+index c28ff9b9..1c4fad6a 100644
+--- a/rhwp-studio/src/core/document-dirty-state.ts
++++ b/rhwp-studio/src/core/document-dirty-state.ts
+@@ -13,6 +13,8 @@ export interface DirtyStateChange {
+  */
+ export class DocumentDirtyState {
+   private dirty = false;
++  // [hwpxxx] 변경마다 오르는 번호. 저장은 직렬화 시점의 번호를 기억했다가, 저장 중 새 변경이 없을 때만 clean 으로 만든다.
++  private revision = 0;
+   private beforeUnloadWindow: Window | null = null;
+   private readonly eventBus: EventBus;
+   private readonly beforeUnloadHandler = (event: BeforeUnloadEvent): string | void => {
+@@ -31,11 +33,23 @@ export class DocumentDirtyState {
+   }
+ 
+   markDirty(reason?: string): void {
++    this.revision++;
+     this.setDirty(true, reason);
+   }
+ 
+-  markClean(reason?: string): void {
++  /** 지금 문서 상태의 번호 — 저장할 내용을 만들기 직전에 읽는다. */
++  getRevision(): number {
++    return this.revision;
++  }
++
++  /**
++   * revision 을 주면 그 뒤로 변경이 없었을 때만 clean 으로 만든다(저장 중 편집은 dirty 유지).
++   * 변경이 있었으면 false 를 돌려준다.
++   */
++  markClean(reason?: string, revision?: number): boolean {
++    if (revision !== undefined && revision !== this.revision) return false;
+     this.setDirty(false, reason);
++    return true;
+   }
+ 
+   installBeforeUnload(windowLike: Window): () => void {
+diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
+index 7fd48f99..9a56c994 100755
+--- a/rhwp-studio/src/engine/input-handler-keyboard.ts
++++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
+@@ -3,7 +3,7 @@ import { isBodyControl } from './picture-hit-policy';
+ /* eslint-disable @typescript-eslint/no-explicit-any */
+ 
+ import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, cellParaIndexOf } from './command';
+-import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
++import { matchShortcut, defaultShortcuts, chordLetter } from '@/command/shortcut-map';
+ import {
+   resolveCellBlockCtrlShiftS,
+   resolveCellBlockLetterShortcut,
+@@ -508,6 +508,7 @@ const chordMapK: Record<string, string> = {
+   ㅠ: 'insert:bookmark', // 한글 IME 상태
+   n: 'format:para-num-shape',
+   ㅜ: 'format:para-num-shape', // 한글 IME 상태
++  e: 'insert:field', // [hwpxxx] 누름틀 넣기 — 안내(Ctrl+K,E)는 있었으나 연결이 없었다
+ };
+ 
+ /** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+M,? 형태)
+@@ -526,6 +527,8 @@ const chordMapM: Record<string, string> = {
+   ㄴ: 'page:hide', // 한글 IME
+   m: 'insert:equation',
+   ㅡ: 'insert:equation', // 한글 IME
++  k: 'field:edit',    // [hwpxxx] 누름틀 고치기 — 안내(Ctrl+M,K)는 있었으나 연결이 없었다
++  f: 'table:formula', // [hwpxxx] 계산식 — 안내(Ctrl+M,F)는 있었으나 연결이 없었다
+ };
+ 
+ /** 코드 단축키 → 커맨드 ID 매핑 (Alt+V,? 형태 — 보기 메뉴) */
+@@ -702,10 +705,9 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+   this._cellBlockLetterImeGuard?.reset();
+ 
+   // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ?) ───
+-  if (this._pendingChordK) {
++  if (this._pendingChordK && !(e.isComposing || e.keyCode === 229)) {
+     this._pendingChordK = false;
+-    const key = e.key.toLowerCase();
+-    const cmdId = chordMapK[key];
++    const cmdId = chordMapK[chordLetter(e)];
+     if (cmdId && this.dispatcher) {
+       e.preventDefault();
+       this.dispatcher.dispatch(cmdId);
+@@ -718,28 +720,25 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+   // 분기를 갖고 있어 예외도 M 에만 둔다 — K/V/G 는 IME 경로 자체가 없다.)
+   if (this._pendingChordM && !(e.isComposing || e.keyCode === 229)) {
+     this._pendingChordM = false;
+-    const key = e.key.toLowerCase();
+-    const cmdId = chordMapM[key];
++    const cmdId = chordMapM[chordLetter(e)];
+     if (cmdId && this.dispatcher) {
+       e.preventDefault();
+       this.dispatcher.dispatch(cmdId);
+       return;
+     }
+   }
+-  if (this._pendingChordV) {
++  if (this._pendingChordV && !(e.isComposing || e.keyCode === 229)) {
+     this._pendingChordV = false;
+-    const key = e.key.toLowerCase();
+-    const cmdId = chordMapV[key];
++    const cmdId = chordMapV[chordLetter(e)];
+     if (cmdId && this.dispatcher) {
+       e.preventDefault();
+       this.dispatcher.dispatch(cmdId);
+       return;
+     }
+   }
+-  if (this._pendingChordG) {
++  if (this._pendingChordG && !(e.isComposing || e.keyCode === 229)) {
+     this._pendingChordG = false;
+-    const key = e.key.toLowerCase();
+-    const cmdId = chordMapG[key];
++    const cmdId = chordMapG[chordLetter(e)];
+     if (cmdId && this.dispatcher) {
+       e.preventDefault();
+       this.dispatcher.dispatch(cmdId);
+@@ -808,6 +807,22 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       this._pendingChordM = true;
+       return;
+     }
++    // [hwpxxx] 조합 중 Ctrl+K / Ctrl+G 연속 키 시작과 K/V/G 두 번째 키도 물리 키로 처리한다.
++    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.code === 'KeyK' || e.code === 'KeyG')) {
++      e.preventDefault();
++      if (e.code === 'KeyK') this._pendingChordK = true; else this._pendingChordG = true;
++      return;
++    }
++    for (const [flag, map] of [['_pendingChordK', chordMapK], ['_pendingChordV', chordMapV], ['_pendingChordG', chordMapG]] as const) {
++      if (!this[flag]) continue;
++      this[flag] = false;
++      const cmdId = map[chordLetter(e)];
++      if (cmdId && this.dispatcher) {
++        e.preventDefault();
++        this.dispatcher.dispatch(cmdId);
++        return;
++      }
++    }
+     // chord 2번째 키 — _pendingChordM 활성화 시 e.code 영역 영역 chordMapM lookup
+     if (this._pendingChordM) {
+       this._pendingChordM = false;
+@@ -1606,19 +1621,19 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
+   }
+ 
+   // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M) ───
+-  if ((e.key === 'k' || e.key === 'K' || e.key === 'ㅏ') && !e.shiftKey && !e.altKey) {
++  if (chordLetter(e) === 'k' && !e.shiftKey && !e.altKey) {
+     e.preventDefault();
+     this._pendingChordK = true;
+     return;
+   }
+   // [PR #786 후속] Ctrl+N 영역 영역 Chrome reserved shortcut (새 창) 영역 영역 JS 차단 불가
+   // 영역 영역 Ctrl+M 영역 영역 chord 1번째 키 영역 영역 변경.
+-  if ((e.key === 'm' || e.key === 'M' || e.key === 'ㅡ') && !e.shiftKey && !e.altKey) {
++  if (chordLetter(e) === 'm' && !e.shiftKey && !e.altKey) {
+     e.preventDefault();
+     this._pendingChordM = true;
+     return;
+   }
+-  if ((e.key === 'g' || e.key === 'G' || e.key === 'ㅎ') && !e.shiftKey && !e.altKey) {
++  if (chordLetter(e) === 'g' && !e.shiftKey && !e.altKey) {
+     e.preventDefault();
+     this._pendingChordG = true;
+     return;
+diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
+index 043ee77e..646f4f2d 100644
+--- a/rhwp-studio/src/engine/input-handler.ts
++++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -3335,6 +3335,14 @@ export class InputHandler {
+   }
+ 
+   /** IME 조합 완료 — 조합 텍스트를 Command로 기록 */
++  /** [hwpxxx] 저장 전에 진행 중인 한글 조합을 확정한다 — 조합 중 글자가 빠지거나 두 번 저장되지 않게. */
++  commitComposition(): void {
++    if (!this.isComposing) return;
++    // 입력창이 포커스를 잃으면 브라우저가 compositionend 를 보내 조합을 확정한다.
++    this.textarea.blur();
++    this.textarea.focus({ preventScroll: true });
++  }
++
+   private onCompositionEnd(): void {
+     _text.onCompositionEnd.call(this);
+   }
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 91923c5c..e6527b6d 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -108,6 +108,7 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+ import { enrichFontDecisionTrace } from '@/core/font-decision-trace';
+ import { DocumentAgentController } from '@/document-agent/controller';
+ import { initI18n, t } from '@/i18n/index.ts';
++import { initCommandTooltips } from '@/ui/command-tooltip';
+ 
+ // 언어팩 초기화 — 정적 마크업의 라벨을 결정된 로케일로 갱신한다. 카탈로그에 없는 키는
+ // 원문(ko)으로 물러나므로 번역이 없는 상태에서도 화면은 도입 전과 같다.
+@@ -350,6 +351,8 @@ registry.registerAll(insertCommands);
+ registry.registerAll(tableCommands);
+ registry.registerAll(pageCommands);
+ registry.registerAll(toolCommands);
++// [hwpxxx] 도구 막대 버튼 툴팁(기능 이름 + 실제 단축키)
++initCommandTooltips(registry, dispatcher);
+ 
+ /**
+  * embed 프로파일의 메뉴·도구막대 정리 — index.html은 그대로 두고 부트 시 런타임에
+diff --git a/rhwp-studio/src/style.css b/rhwp-studio/src/style.css
+index fec98dfa..b62a957f 100644
+--- a/rhwp-studio/src/style.css
++++ b/rhwp-studio/src/style.css
+@@ -48,3 +48,38 @@
+    토글은 view/busy-cursor.ts. */
+ :root.rhwp-busy,
+ :root.rhwp-busy * { cursor: wait !important; }
++
++/* [hwpxxx] 도구 막대 버튼 툴팁 — ui/command-tooltip.ts */
++.hwpxxx-tooltip {
++  position: fixed;
++  z-index: 100000;
++  max-width: 320px;
++  padding: 5px 8px;
++  border: 1px solid var(--ui-border, #c8c8c8);
++  border-radius: 4px;
++  background: var(--color-surface-raised, #fff);
++  color: var(--color-text, #222);
++  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
++  font-size: 12px;
++  line-height: 1.4;
++  pointer-events: none;
++  opacity: 0;
++  transition: opacity 120ms ease-out;
++  display: flex;
++  flex-wrap: wrap;
++  align-items: center;
++  gap: 4px 8px;
++}
++.hwpxxx-tooltip.visible { opacity: 1; }
++.hwpxxx-tooltip[hidden] { display: none; }
++.hwpxxx-tooltip-keys { color: var(--color-text-secondary, #555); white-space: nowrap; }
++.hwpxxx-tooltip-keys kbd {
++  font: inherit;
++  font-size: 11px;
++  padding: 0 4px;
++  border: 1px solid var(--ui-border-strong, #aaa);
++  border-radius: 3px;
++  background: var(--ui-surface-muted, #f3f3f3);
++}
++.hwpxxx-tooltip-reason { flex-basis: 100%; color: var(--color-text-muted, #777); font-size: 11px; }
++@media (prefers-reduced-motion: reduce) { .hwpxxx-tooltip { transition: none; } }
+diff --git a/rhwp-studio/src/ui/command-tooltip.ts b/rhwp-studio/src/ui/command-tooltip.ts
+new file mode 100644
+index 00000000..996269e8
+--- /dev/null
++++ b/rhwp-studio/src/ui/command-tooltip.ts
+@@ -0,0 +1,155 @@
++/**
++ * [hwpxxx] 도구 막대 버튼 툴팁 — 기능 이름 + 실제 단축키.
++ *
++ * 이름과 단축키는 명령 등록부(CommandRegistry)의 label·shortcutLabel을 그대로 쓴다. 메뉴의 단축키
++ * 표시(menu-shortcut-labels)와 같은 원천이라 따로 하드코딩하지 않는다. 명령이 연결되지 않은 버튼은
++ * 기존 title 문구를 이름으로 쓴다. 브라우저 기본 title 도움말과 겹치지 않도록 hover/focus 동안 title을
++ * 잠시 비워 두고, 사라질 때 되돌린다(언어 전환이 title을 다시 쓰는 경로를 그대로 둔다).
++ */
++import type { CommandRegistry } from '../command/registry';
++import type { CommandDispatcher } from '../command/dispatcher';
++import { formatShortcutLabel } from '../engine/navigation-keymap.ts';
++
++const TARGETS = [
++  '#icon-toolbar button', '#style-bar button', '#style-bar select', '#style-bar input',
++  '.tb-btn', '.sb-btn', '.sb-arrow', '[data-cmd]:not(.md-item)',
++].join(',');
++// 메뉴 항목·대화상자 안 요소는 자체 표시가 있으므로 제외한다.
++const EXCLUDED = '.md-item, .md-dropdown, .dialog, [role="dialog"], .sb-dropdown-item';
++const SHOW_DELAY = 500;
++
++// data-cmd 가 없는 기존 버튼이 실제로 실행하는 명령.
++const COMMAND_BY_ID: Record<string, string> = {
++  'btn-bold': 'format:bold', 'btn-italic': 'format:italic', 'btn-underline': 'format:underline',
++  'btn-strike': 'format:strikethrough',
++};
++const COMMAND_BY_SPRITE: Record<string, string> = {
++  'icon-cut': 'edit:cut', 'icon-copy': 'edit:copy', 'icon-paste': 'edit:paste',
++};
++
++/** 'Ctrl+M,K' → ['Ctrl+M', 'K'] — 연속 키는 순서대로 배지를 나눈다. */
++export function shortcutParts(label: string): string[] {
++  return label.split(/\s*,\s*/).map(part => formatShortcutLabel(part.trim())).filter(Boolean);
++}
++
++/** 기존 title 의 끝에 붙은 "(Ctrl+X)" 같은 단축키 표기를 떼어 낸 이름. */
++export function nameFromTitle(title: string): string {
++  return title.replace(/\s*\((?:Ctrl|Alt|Shift|Cmd|F\d)[^)]*\)\s*$/i, '').trim();
++}
++
++function commandOf(el: HTMLElement): string | undefined {
++  if (el.dataset.cmd) return el.dataset.cmd;
++  if (el.id && COMMAND_BY_ID[el.id]) return COMMAND_BY_ID[el.id];
++  const sprite = el.querySelector('.tb-sprite');
++  if (sprite) for (const cls of sprite.classList) if (COMMAND_BY_SPRITE[cls]) return COMMAND_BY_SPRITE[cls];
++  return undefined;
++}
++
++export function initCommandTooltips(registry: CommandRegistry, dispatcher: CommandDispatcher): void {
++  const tip = document.createElement('div');
++  tip.id = 'hwpxxx-command-tooltip';
++  tip.className = 'hwpxxx-tooltip';
++  tip.setAttribute('role', 'tooltip');
++  tip.hidden = true;
++  document.body.appendChild(tip);
++
++  let target: HTMLElement | null = null;
++  let timer = 0;
++  let stashedTitle: string | null = null;
++
++  const restoreTitle = () => {
++    if (target && stashedTitle !== null && !target.getAttribute('title')) target.setAttribute('title', stashedTitle);
++    stashedTitle = null;
++  };
++  const hide = () => {
++    window.clearTimeout(timer);
++    if (target) { restoreTitle(); if (target.getAttribute('aria-describedby') === tip.id) target.removeAttribute('aria-describedby'); }
++    target = null;
++    tip.classList.remove('visible');
++    tip.hidden = true;
++  };
++
++  const render = (el: HTMLElement): boolean => {
++    const commandId = commandOf(el);
++    const def = commandId ? registry.get(commandId) : undefined;
++    const title = stashedTitle ?? el.getAttribute('title') ?? '';
++    const name = (def?.label && def.label.trim()) || nameFromTitle(title) || el.getAttribute('aria-label') || '';
++    if (!name) return false;
++    const disabled = el.matches(':disabled, .disabled, [aria-disabled="true"]')
++      || (!!def && !!commandId && !dispatcher.isEnabled(commandId));
++    tip.replaceChildren();
++    const label = document.createElement('span');
++    label.className = 'hwpxxx-tooltip-name';
++    label.textContent = name;
++    tip.appendChild(label);
++    // 실제로 실행할 수 없는 상태에서는 단축키를 정상 지원처럼 보이지 않게 한다.
++    if (def?.shortcutLabel && !disabled) {
++      const keys = document.createElement('span');
++      keys.className = 'hwpxxx-tooltip-keys';
++      shortcutParts(def.shortcutLabel).forEach((part, index) => {
++        if (index) keys.append(' → ');
++        const kbd = document.createElement('kbd');
++        kbd.textContent = part;
++        keys.appendChild(kbd);
++      });
++      tip.appendChild(keys);
++    }
++    if (disabled) {
++      const reason = document.createElement('span');
++      reason.className = 'hwpxxx-tooltip-reason';
++      reason.textContent = '지금은 사용할 수 없습니다';
++      tip.appendChild(reason);
++    }
++    return true;
++  };
++
++  const place = (el: HTMLElement) => {
++    const r = el.getBoundingClientRect();
++    tip.style.left = '0px'; tip.style.top = '0px';
++    const t = tip.getBoundingClientRect();
++    const margin = 6, vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
++    let top = r.bottom + margin;
++    if (top + t.height > vh - margin) top = Math.max(margin, r.top - margin - t.height);
++    const left = Math.min(Math.max(margin, r.left + r.width / 2 - t.width / 2), vw - t.width - margin);
++    tip.style.left = Math.round(left) + 'px';
++    tip.style.top = Math.round(top) + 'px';
++  };
++
++  const arm = (el: HTMLElement, immediate = false) => {
++    if (el === target) return;
++    hide();
++    target = el;
++    stashedTitle = el.getAttribute('title');
++    if (stashedTitle !== null) el.removeAttribute('title');
++    timer = window.setTimeout(() => {
++      if (target !== el || !el.isConnected || !render(el)) return;
++      tip.hidden = false;
++      place(el);
++      el.setAttribute('aria-describedby', tip.id);
++      requestAnimationFrame(() => tip.classList.add('visible'));
++    }, immediate ? 0 : SHOW_DELAY);
++  };
++
++  const find = (node: EventTarget | null): HTMLElement | null => {
++    const el = node instanceof Element ? node.closest(TARGETS) as HTMLElement | null : null;
++    return el && !el.closest(EXCLUDED) ? el : null;
++  };
++
++  // 비활성 버튼은 마우스 이벤트를 받지 못하므로 좌표로 버튼을 찾는다.
++  document.addEventListener('pointermove', e => {
++    if (e.pointerType === 'touch') return;
++    const el = find(document.elementFromPoint(e.clientX, e.clientY));
++    if (el) arm(el); else if (target && document.activeElement !== target) hide();
++  }, { passive: true });
++  document.addEventListener('focusin', e => {
++    const el = find(e.target);
++    if (el && el.matches(':focus-visible')) arm(el, false);
++  });
++  document.addEventListener('focusout', e => { if (e.target === target) hide(); });
++  document.addEventListener('pointerdown', hide, true);
++  document.addEventListener('keydown', e => { if (e.key === 'Escape' || target && e.target !== target) hide(); }, true);
++  document.addEventListener('wheel', hide, { passive: true, capture: true });
++  window.addEventListener('blur', hide);
++  window.addEventListener('resize', hide);
++  document.addEventListener('pointerleave', hide);
++}
+diff --git a/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
+new file mode 100644
+index 00000000..44e605f6
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
+@@ -0,0 +1,69 @@
++// [hwpxxx] 데스크톱 보강 회귀 시험 — 한글 입력 상태 단축키, 연속 키 글자, 툴팁 단축키 표기, 저장 중 편집 보호.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import { defaultShortcuts, matchShortcut, chordLetter } from '../src/command/shortcut-map.ts';
++import { EventBus } from '../src/core/event-bus.ts';
++import { DocumentDirtyState } from '../src/core/document-dirty-state.ts';
++import { shortcutParts, nameFromTitle } from '../src/ui/command-tooltip.ts';
++
++function key(input: Partial<KeyboardEvent>): KeyboardEvent {
++  return {
++    key: input.key ?? '', code: input.code ?? '',
++    shiftKey: input.shiftKey ?? false, ctrlKey: input.ctrlKey ?? false,
++    metaKey: input.metaKey ?? false, altKey: input.altKey ?? false,
++  } as KeyboardEvent;
++}
++const command = (input: Partial<KeyboardEvent>) => matchShortcut(key(input), defaultShortcuts, 'other');
++
++test('한글 입력 상태의 Ctrl 조합은 물리 키로 맞춘다', () => {
++  // 0.8.7 배포본에서는 아래 셋이 null 이었다(Ctrl+S·Ctrl+B 무반응).
++  assert.equal(command({ key: 'ㄴ', code: 'KeyS', ctrlKey: true }), 'file:save');
++  assert.equal(command({ key: 'ㅠ', code: 'KeyB', ctrlKey: true }), 'format:bold');
++  assert.equal(command({ key: 'Process', code: 'KeyB', ctrlKey: true }), 'format:bold');
++  assert.equal(command({ key: 'Process', code: 'KeyZ', ctrlKey: true }), 'edit:undo');
++  assert.equal(command({ key: 'Process', code: 'KeyY', ctrlKey: true }), 'edit:redo');
++  assert.equal(command({ key: 'Process', code: 'KeyI', ctrlKey: true }), 'format:italic');
++  assert.equal(command({ key: 'Process', code: 'KeyU', ctrlKey: true }), 'format:underline');
++  assert.equal(command({ key: 'Process', code: 'Equal', ctrlKey: true }), 'view:zoom-in');
++});
++
++test('영문 입력과 수정키 없는 입력은 그대로 둔다', () => {
++  assert.equal(command({ key: 's', code: 'KeyS', ctrlKey: true }), 'file:save');
++  // 다른 배열(예: 물리 KeyS 가 다른 글자)에서 영문 글자가 오면 글자 기준이 우선한다.
++  assert.equal(command({ key: 'o', code: 'KeyS', ctrlKey: true }), 'file:open');
++  // 수정키 없는 한글 입력은 단축키로 가로채지 않는다.
++  assert.equal(command({ key: 'ㄴ', code: 'KeyS' }), null);
++  // Shift 가 다르면 맞추지 않는다.
++  assert.equal(command({ key: 'Process', code: 'KeyB', ctrlKey: true, shiftKey: true }), null);
++});
++
++test('연속 키 두 번째 글자는 한글·조합 중에도 영문 글자로 읽는다', () => {
++  assert.equal(chordLetter(key({ key: 'ㄷ', code: 'KeyE' })), 'e');
++  assert.equal(chordLetter(key({ key: 'Process', code: 'KeyK' })), 'k');
++  assert.equal(chordLetter(key({ key: 'F', code: 'KeyF' })), 'f');
++  assert.equal(chordLetter(key({ key: 'Escape', code: 'Escape' })), 'escape');
++});
++
++test('툴팁 단축키 표기는 연속 키를 나누고 title 의 단축키를 뗀다', () => {
++  assert.deepEqual(shortcutParts('Ctrl+M,K'), ['Ctrl+M', 'K']);
++  assert.deepEqual(shortcutParts('Ctrl+K,E'), ['Ctrl+K', 'E']);
++  assert.deepEqual(shortcutParts('Ctrl+B'), ['Ctrl+B']);
++  assert.equal(nameFromTitle('오려두기 (Ctrl+X)'), '오려두기');
++  assert.equal(nameFromTitle('줄 간격 증가 (+5%)'), '줄 간격 증가 (+5%)');
++});
++
++test('저장 중에 생긴 편집은 저장 완료 후에도 변경 상태로 남는다', () => {
++  const state = new DocumentDirtyState(new EventBus());
++  state.markDirty('edit');
++  const revision = state.getRevision();
++  state.markDirty('edit-during-save');
++  assert.equal(state.markClean('save', revision), false);
++  assert.equal(state.isDirty(), true);
++  assert.equal(state.markClean('save', state.getRevision()), true);
++  assert.equal(state.isDirty(), false);
++  // revision 없이 부르는 기존 경로(문서 초기화 등)는 그대로 clean 으로 만든다.
++  state.markDirty('edit');
++  assert.equal(state.markClean('document-initialized'), true);
++  assert.equal(state.isDirty(), false);
++});
+-- 
+2.55.0.windows.5
+

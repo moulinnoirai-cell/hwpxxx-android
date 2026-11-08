@@ -1,0 +1,458 @@
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 28980d9..bdbd576 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -76,8 +76,7 @@ import {
+ import { userSettings } from '@/core/user-settings';
+ import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
+ import { clearAutosaveDrafts, deleteAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
+-import { recoveryFileName } from '@/recovery/recovery-format';
+-import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
++import { autosaveErrorMessage, restoreDraftWithNotice, showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
+ import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
+ import { cellSelectionPhaseLabel, type CellSelectionPhase } from '@/engine/cell-selection-phase';
+ import { TableObjectRenderer } from '@/engine/table-object-renderer';
+@@ -473,7 +472,7 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
+         ? '비밀번호를 알 수 없어 보호 문서의 복구용 자동 저장을 하지 않습니다'
+         : '보호 문서는 복구용 자동 저장을 하지 않습니다';
+   } else {
+-    nextMessage = '복구용 자동 저장 실패';
++    nextMessage = autosaveErrorMessage(status.error);
+   }
+   message.textContent = nextMessage;
+   if (restoreTarget !== null && restoreTarget !== nextMessage) {
+@@ -1818,13 +1817,14 @@ async function offerAutosaveRecoveryIfIdle(): Promise<void> {
+ }
+ 
+ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+-  const fileName = recoveryFileName(draft.fileName);
+-  await loadBytes(new Uint8Array(draft.data), fileName, null, performance.now(), { skipRecent: true });
+-  await deleteAutosaveDraft(draft.id);
+-  documentState.markDirty('autosave-recovered');
+-  showToast({
+-    message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
+-    durationMs: 5000,
++  // [hwpxxx-android] 복원 절차(열기 실패·암호 입력 취소 시 복구본 유지, 성공 시 dirty 표시 → 삭제 → 안내)와 손실 보고가 있는 복구본의
++  // 경고는 recovery-ui 에 있다(시험 가능). 일반 복구본의 동작과 문구는 그대로다.
++  await restoreDraftWithNotice(draft, {
++    loadBytes: (bytes, fileName) => loadBytes(bytes, fileName, null, performance.now(), { skipRecent: true }),
++    deleteDraft: deleteAutosaveDraft,
++    markDirty: () => documentState.markDirty('autosave-recovered'),
++    showToast,
++    warn: (message, error) => console.warn(message, error),
+   });
+ }
+ 
+diff --git a/rhwp-studio/src/recovery/recovery-ui.ts b/rhwp-studio/src/recovery/recovery-ui.ts
+index 6cca89b..e49febc 100644
+--- a/rhwp-studio/src/recovery/recovery-ui.ts
++++ b/rhwp-studio/src/recovery/recovery-ui.ts
+@@ -1,18 +1,84 @@
+ import { ModalDialog } from '@/ui/dialog';
+ import type { AutosaveDraft } from './autosave-store.ts';
+-import { describeDraft } from './recovery-format.ts';
++import { describeDraft, recoveryFileName } from './recovery-format.ts';
++
++/**
++ * [hwpxxx-android] 엔진이 '이 복구본은 일부 개체가 빠졌다'고 보고한 복구본(`draft.lossy === true`)에만 보이는 안내.
++ * 옛 Android 작업기의 "일부 개체가 빠졌을 수 있어요"와 같은 뜻이다. 손실 보고가 없는 복구본에는 어떤 안내도 붙이지 않는다.
++ */
++export const LOSSY_DRAFT_NOTICE = '일부 개체가 빠졌을 수 있어요. 복구한 문서를 원본과 비교한 뒤 저장하세요.';
++/** 암호 문서의 복구본(`draft.encrypted === true`)에만 보이는 안내 — 열 때 비밀번호를 다시 묻는다. */
++export const ENCRYPTED_DRAFT_NOTICE = '암호 문서 복구본이에요. 복구할 때 비밀번호를 입력해야 해요.';
++/** 셸의 복구 저장소가 '일부 개체가 빠졌을 수 있음' 표시를 저장하지 못해 자동 저장을 거절했을 때(0107 저장소의 거절 사유) 상태 줄 문구. */
++const LOSSY_UNSUPPORTED_STATUS = '일부 개체가 빠졌을 수 있어 복구용 자동 저장을 하지 않습니다 (이 기기의 복구 저장소가 이 표시를 지원하지 않아요)';
++const AUTOSAVE_FAILED_STATUS = '복구용 자동 저장 실패';
++
++/** 자동 저장 오류를 상태 줄 문구로. 손실 표시를 못 담는 저장소의 거절만 따로 알리고, 나머지는 기존 문구 그대로다. */
++export function autosaveErrorMessage(error: unknown): string {
++  const text = String((error as { message?: unknown } | null)?.message ?? error ?? '');
++  return text.includes('복구본이라 표시할 수 없어') ? LOSSY_UNSUPPORTED_STATUS : AUTOSAVE_FAILED_STATUS;
++}
++
++export interface RestoredDraftToast {
++  message: string;
++  durationMs: number;
++  confirmLabel?: string;
++}
++
++/**
++ * 복구본을 연 뒤의 안내. 손실 보고가 있는 복구본은 닫기를 눌러야 사라지게 해 놓치지 않게 하고, 그렇지 않은 복구본은 이전과 같다.
++ * 파일 이름은 안내 문구에 그대로(텍스트로) 들어가므로 호출한 쪽은 textContent 로만 그린다(showToast 가 그렇다).
++ */
++export function restoredDraftToast(fileName: string, draft: Pick<AutosaveDraft, 'lossy'>): RestoredDraftToast {
++  if (draft.lossy === true) {
++    return {
++      message: `"${fileName}" 복구본을 열었습니다.\n${LOSSY_DRAFT_NOTICE}\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
++      durationMs: 0,
++      confirmLabel: '확인',
++    };
++  }
++  return { message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`, durationMs: 5000 };
++}
++
++export interface RestoreDraftDeps {
++  /** 복구본 바이트를 문서로 연다(암호 복구본은 여기서 비밀번호를 묻고, 취소하면 던진다). */
++  loadBytes(bytes: Uint8Array, fileName: string): Promise<unknown>;
++  deleteDraft(id: string): Promise<void>;
++  markDirty(): void;
++  showToast(toast: RestoredDraftToast): void;
++  warn?(message: string, error: unknown): void;
++}
++
++/**
++ * 복구본 복원. 열기가 실패하거나 취소되면(예: 암호 입력 취소) 복구본을 지우지도 안내하지도 않고 그대로 던진다 — 복구본이 남는다.
++ * 열기에 성공하면 먼저 '저장하지 않은 문서'로 표시한 뒤(복구 문서를 저장 없이 닫을 수 없게) 복구본을 지운다. 지우기가 실패해도
++ * 복원은 성공이며 안내는 나간다(복구본이 남아 다음 시작 때 다시 보일 뿐이다).
++ */
++export async function restoreDraftWithNotice(draft: AutosaveDraft, deps: RestoreDraftDeps): Promise<void> {
++  const fileName = recoveryFileName(draft.fileName);
++  await deps.loadBytes(new Uint8Array(draft.data), fileName);
++  deps.markDirty();
++  try {
++    await deps.deleteDraft(draft.id);
++  } catch (error) {
++    deps.warn?.('[autosave] 복구본 삭제 실패(복구본이 남습니다):', error);
++  }
++  deps.showToast(restoredDraftToast(fileName, draft));
++}
+ 
+ export type AutosaveRecoveryChoice =
+   | { action: 'restore'; draftId: string }
+   | { action: 'delete-all' }
+   | { action: 'later' };
+ 
+-class AutosaveRecoveryDialog extends ModalDialog {
++export class AutosaveRecoveryDialog extends ModalDialog {
+   private resolve!: (choice: AutosaveRecoveryChoice) => void;
+   private selectedDraftId: string;
++  private readonly drafts: AutosaveDraft[];
+ 
+-  constructor(private readonly drafts: AutosaveDraft[]) {
++  constructor(drafts: AutosaveDraft[]) {
+     super('문서 복구', 520);
++    this.drafts = drafts;
+     this.selectedDraftId = drafts[0]?.id ?? '';
+   }
+ 
+@@ -76,6 +142,9 @@ class AutosaveRecoveryDialog extends ModalDialog {
+       meta.style.fontSize = '12px';
+       meta.style.color = 'var(--text-muted, #8b95a1)';
+       text.append(title, meta);
++      // [hwpxxx-android] 실제로 표시가 있는 복구본에만 안내를 붙인다(텍스트로만 그린다).
++      if (draft.encrypted === true) text.appendChild(this.notice(ENCRYPTED_DRAFT_NOTICE, 'recovery-draft-encrypted', 'var(--text-muted, #8b95a1)'));
++      if (draft.lossy === true) text.appendChild(this.notice(LOSSY_DRAFT_NOTICE, 'recovery-draft-lossy', 'var(--warning, #b45309)'));
+ 
+       label.append(radio, text);
+       list.appendChild(label);
+@@ -85,6 +154,18 @@ class AutosaveRecoveryDialog extends ModalDialog {
+     return body;
+   }
+ 
++  private notice(message: string, className: string, color: string): HTMLElement {
++    const line = document.createElement('div');
++    line.classList.add(className);
++    line.setAttribute('role', 'note');
++    line.textContent = message;
++    line.style.fontSize = '12px';
++    line.style.marginTop = '4px';
++    line.style.color = color;
++    line.style.fontWeight = '600';
++    return line;
++  }
++
+   protected onConfirm(): boolean {
+     this.resolve({ action: 'restore', draftId: this.selectedDraftId });
+     return true;
+diff --git a/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts b/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts
+new file mode 100644
+index 0000000..635e61c
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts
+@@ -0,0 +1,286 @@
++// [hwpxxx-android] 복구 선택창·복원 안내 시험: 손실 보고가 있는 복구본(lossy)에만 경고가 나가고, 이름·내용은 텍스트로만 그려지며,
++// 복원이 취소되면 복구본이 남고, 암호/평문 보호와 손실 표시를 못 담는 저장소의 거절이 이어지는지 확인한다.
++// 비밀번호는 시험마다 새로 만든 합성 값, 문서는 저장소 샘플뿐이다. 선택창은 작은 가짜 DOM 에서 실제 코드를 실행한다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { randomUUID } from 'node:crypto';
++import { register } from 'node:module';
++import { fileURLToPath } from 'node:url';
++
++const g = globalThis as Record<string, any>;
++const pkg = (name: string) => fileURLToPath(new URL(`../../pkg/${name}`, import.meta.url));
++const sample = (name: string) => new Uint8Array(readFileSync(fileURLToPath(new URL(`../public/samples/${name}`, import.meta.url))));
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++const synthPassword = () => `synthetic-${randomUUID()}`;
++
++// ── 가짜 DOM: ModalDialog.createBody 가 쓰는 만큼만 ──────────────────────────────────────
++class FakeElement {
++  tagName: string; children: Array<FakeElement | string> = []; style: Record<string, string> = {};
++  attrs: Record<string, string> = {}; listeners: Record<string, Array<() => void>> = {};
++  private classes = new Set<string>(); own = ''; type = ''; name = ''; value = ''; checked = false; title = ''; htmlSet = false;
++  constructor(tag: string) { this.tagName = tag.toUpperCase(); }
++  get classList() { return { add: (c: string) => { this.classes.add(c); }, contains: (c: string) => this.classes.has(c) }; }
++  set className(v: string) { this.classes = new Set(v.split(/\s+/).filter(Boolean)); }
++  get className() { return [...this.classes].join(' '); }
++  set textContent(v: string) { this.own = v; this.children = []; }
++  get textContent(): string { return this.own + this.children.map((c) => (typeof c === 'string' ? c : c.textContent)).join(''); }
++  set innerHTML(_v: string) { this.htmlSet = true; }
++  setAttribute(k: string, v: string) { this.attrs[k] = v; }
++  appendChild(c: FakeElement) { this.children.push(c); return c; }
++  append(...cs: Array<FakeElement | string>) { this.children.push(...cs); }
++  addEventListener(type: string, fn: () => void) { (this.listeners[type] ??= []).push(fn); }
++  fire(type: string) { for (const fn of this.listeners[type] ?? []) fn(); }
++  walk(visit: (el: FakeElement) => void) { visit(this); for (const c of this.children) if (typeof c !== 'string') c.walk(visit); }
++  find(pred: (el: FakeElement) => boolean): FakeElement[] { const out: FakeElement[] = []; this.walk((el) => { if (pred(el)) out.push(el); }); return out; }
++}
++const createdTags: string[] = [];
++g.document = { createElement: (tag: string) => { createdTags.push(tag.toLowerCase()); return new FakeElement(tag); } };
++g.window ??= new EventTarget();
++
++register(new URL('./support/studio-alias-hooks.mjs', import.meta.url), import.meta.url);
++const core = await import(pkg('rhwp.js'));
++await core.default({ module_or_path: readFileSync(pkg('rhwp_bg.wasm')) });
++const Doc = core.HwpDocument as { new (b: Uint8Array): any };
++const ui = await import('../src/recovery/recovery-ui.ts');
++const { recoveryFileName } = await import('../src/recovery/recovery-format.ts');
++const { AutosaveManager } = await import('../src/recovery/autosave-manager.ts');
++const { saveAutosaveDraft, listAutosaveDrafts, getAutosaveDraft } = await import('../src/recovery/autosave-store.ts');
++const { WasmBridge } = await import('../src/core/wasm-bridge.ts');
++
++type Draft = { id: string; fileName: string; sourceFormat: string; savedAt: number; byteLength: number; data: Uint8Array; encrypted?: unknown; lossy?: unknown };
++const draft = (over: Partial<Draft> = {}): Draft => ({ id: randomUUID(), fileName: '문서.hwp', sourceFormat: 'hwp', savedAt: 1_700_000_000_000, byteLength: 3, data: new Uint8Array([1, 2, 3]), ...over });
++const body = (drafts: Draft[]) => (new ui.AutosaveRecoveryDialog(drafts as never) as any).createBody() as FakeElement;
++const lossyLines = (el: FakeElement) => el.find((e) => e.className.includes('recovery-draft-lossy'));
++const encryptedLines = (el: FakeElement) => el.find((e) => e.className.includes('recovery-draft-encrypted'));
++const rows = (el: FakeElement) => el.find((e) => e.tagName === 'LABEL');
++
++// ── 선택창 ────────────────────────────────────────────────────────────────────────────
++test('선택창: 손실 보고가 있는 복구본(lossy===true)에만 경고를 붙이고, 없거나 true 가 아닌 값에는 아무 경고도 붙이지 않는다', () => {
++  const el = body([draft({ fileName: '손실.hwp', lossy: true }), draft({ fileName: '정상.hwp' }), draft({ fileName: '거짓.hwp', lossy: false }), draft({ fileName: '문자열.hwp', lossy: 'true' })]);
++  const [lossy, normal, falsy, stringy] = rows(el);
++  assert.equal(lossyLines(lossy).length, 1);
++  assert.equal(lossyLines(lossy)[0].textContent, ui.LOSSY_DRAFT_NOTICE);
++  assert.match(ui.LOSSY_DRAFT_NOTICE, /일부 개체가 빠졌을 수 있어요/);
++  for (const row of [normal, falsy, stringy]) assert.equal(lossyLines(row).length, 0, '손실 보고가 없는 복구본에 경고가 없다');
++  assert.equal(lossyLines(el).length, 1, '경고는 전체 목록에서 정확히 한 번(일반적인 안내문이 아니다)');
++  assert.ok(!el.textContent.includes('일부 개체') || lossyLines(el)[0].textContent.includes('일부 개체'));
++  assert.equal(lossyLines(lossy)[0].attrs.role, 'note');
++});
++
++test('선택창: 암호 복구본에만 암호 안내를 붙이고, 손실 경고와 독립적으로 나온다', () => {
++  const el = body([draft({ encrypted: true, lossy: true }), draft({ encrypted: true }), draft({}), draft({ encrypted: 'yes' })]);
++  const [both, onlyEnc, plain, truthy] = rows(el);
++  assert.equal(encryptedLines(both).length, 1); assert.equal(lossyLines(both).length, 1);
++  assert.equal(encryptedLines(onlyEnc).length, 1); assert.equal(lossyLines(onlyEnc).length, 0);
++  assert.equal(encryptedLines(plain).length, 0); assert.equal(lossyLines(plain).length, 0);
++  assert.equal(encryptedLines(truthy).length, 0, 'true 가 아닌 값은 암호 복구본으로 표시하지 않는다');
++  assert.equal(encryptedLines(both)[0].textContent, ui.ENCRYPTED_DRAFT_NOTICE);
++});
++
++test('선택창: 파일 이름·형식에 HTML/스크립트 모양이 있어도 텍스트로만 그린다(요소·속성·innerHTML 을 만들지 않는다)', () => {
++  const evil = '<img src=x onerror=alert(1)>"\'&<script>.hwp';
++  createdTags.length = 0;
++  const el = body([draft({ fileName: evil, sourceFormat: '<b>hwpx</b>', lossy: true, encrypted: true })]);
++  assert.ok(!createdTags.some((t) => ['img', 'script', 'b', 'iframe'].includes(t)), `만든 요소: ${[...new Set(createdTags)]}`);
++  assert.ok(el.find((e) => e.htmlSet).length === 0);
++  assert.equal(el.find((e) => e.className.includes('recovery-draft-title'))[0].textContent, evil);
++  assert.ok(el.textContent.includes('<B>HWPX</B>'), '형식 문자열도 가공 없이 텍스트로 들어간다');
++  const source_ = source('recovery/recovery-ui.ts');
++  assert.ok(!/innerHTML|insertAdjacentHTML|outerHTML/.test(source_), '복구 UI 는 HTML 문자열을 만들지 않는다');
++  assert.match(source('ui/toast.ts'), /body\.textContent = options\.message;/, '안내 문구도 텍스트로만 그린다');
++  assert.ok(!/innerHTML/.test(source('ui/toast.ts')));
++});
++
++test('선택창: 기본 선택·선택 변경·복구/나중에 동작은 그대로이고 손실 경고가 선택을 바꾸지 않는다', () => {
++  const a = draft({ fileName: 'a.hwp', lossy: true }), b = draft({ fileName: 'b.hwp' });
++  const dialog = new ui.AutosaveRecoveryDialog([a, b] as never) as any;
++  const el = dialog.createBody() as FakeElement;
++  const radios = el.find((e) => e.tagName === 'INPUT');
++  assert.deepEqual(radios.map((r) => r.checked), [true, false]);
++  const choices: unknown[] = [];
++  dialog.resolve = (c: unknown) => choices.push(c);
++  assert.equal(dialog.onConfirm(), true);
++  radios[1].fire('change');
++  dialog.onConfirm();
++  assert.deepEqual(choices, [{ action: 'restore', draftId: a.id }, { action: 'restore', draftId: b.id }]);
++});
++
++// ── 복원 안내 ────────────────────────────────────────────────────────────────────────
++test('복원 안내: 손실 복구본은 경고가 들어간 닫기 전까지 남는 안내, 일반 복구본은 이전과 똑같은 문구·시간', () => {
++  const lossy = ui.restoredDraftToast('문서 복구본.hwp', { lossy: true });
++  assert.equal(lossy.durationMs, 0);
++  assert.equal(lossy.confirmLabel, '확인');
++  assert.ok(lossy.message.includes(ui.LOSSY_DRAFT_NOTICE));
++  assert.ok(lossy.message.includes('원본 파일은 자동으로 덮어쓰지 않습니다.'));
++  const normal = ui.restoredDraftToast('문서 복구본.hwp', {});
++  assert.deepEqual(normal, { message: '"문서 복구본.hwp" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.', durationMs: 5000 });
++  for (const falsy of [{ lossy: false }, { lossy: undefined }, { lossy: 'true' as unknown as boolean }]) {
++    assert.deepEqual(ui.restoredDraftToast('x.hwp', falsy), ui.restoredDraftToast('x.hwp', {}), '손실 표시가 정확히 true 일 때만 경고');
++  }
++  const named = ui.restoredDraftToast('<b>"이름"</b>\n.hwp', { lossy: true });
++  assert.ok(named.message.includes('<b>"이름"</b>\n.hwp'), '이름은 가공 없이 텍스트로 들어간다(그리는 쪽이 textContent)');
++});
++
++function restoreFixture(over: { load?: (b: Uint8Array, n: string) => Promise<unknown>; del?: (id: string) => Promise<void> } = {}) {
++  const events: string[] = []; const toasts: any[] = []; const warnings: string[] = [];
++  const deps = {
++    loadBytes: over.load ?? (async (_b: Uint8Array, name: string) => { events.push(`load:${name}`); }),
++    deleteDraft: over.del ?? (async (id: string) => { events.push(`delete:${id}`); }),
++    markDirty: () => { events.push('dirty'); },
++    showToast: (t: unknown) => { toasts.push(t); events.push('toast'); },
++    warn: (m: string) => { warnings.push(m); },
++  };
++  return { deps, events, toasts, warnings };
++}
++
++test('복원: 성공하면 열기 → dirty 표시 → 복구본 삭제 → 안내 순서이고, 손실 복구본은 경고 안내를 낸다', async () => {
++  const f = restoreFixture();
++  const lossy = draft({ fileName: '원본.hwpx', sourceFormat: 'hwpx', lossy: true });
++  await ui.restoreDraftWithNotice(lossy as never, f.deps);
++  assert.deepEqual(f.events, [`load:${recoveryFileName('원본.hwpx')}`, 'dirty', `delete:${lossy.id}`, 'toast']);
++  assert.ok(f.toasts[0].message.includes(ui.LOSSY_DRAFT_NOTICE));
++  assert.equal(f.toasts[0].durationMs, 0);
++  const g2 = restoreFixture();
++  await ui.restoreDraftWithNotice(draft({ fileName: '정상.hwp' }) as never, g2.deps);
++  assert.ok(!g2.toasts[0].message.includes('일부 개체'), '일반 복구본에는 경고가 없다');
++  assert.equal(g2.toasts[0].durationMs, 5000);
++});
++
++test('복원: 열기가 실패하거나 취소되면(암호 입력 취소 포함) 복구본을 지우지도 dirty/안내를 내지도 않고 그대로 던진다', async () => {
++  const cancel = new Error('DocumentOpenCancelled');
++  const f = restoreFixture({ load: async () => { throw cancel; } });
++  await assert.rejects(ui.restoreDraftWithNotice(draft({ lossy: true, encrypted: true }) as never, f.deps), (e) => e === cancel);
++  assert.deepEqual(f.events, []);
++  assert.deepEqual(f.toasts, []);
++});
++
++test('복원: 복구본 삭제가 실패해도 복원은 성공이고(dirty 표시·안내 유지) 경고만 남긴다', async () => {
++  const f = restoreFixture({ del: async () => { throw new Error('native 삭제 실패'); } });
++  await ui.restoreDraftWithNotice(draft({ lossy: true }) as never, f.deps);
++  assert.deepEqual(f.events, [`load:${recoveryFileName('문서.hwp')}`, 'dirty', 'toast']);
++  assert.equal(f.warnings.length, 1);
++  assert.ok(f.toasts[0].message.includes(ui.LOSSY_DRAFT_NOTICE));
++});
++
++test('복원: 바이트는 복사본으로 넘기고 파일 이름은 recoveryFileName 규칙을 따른다', async () => {
++  let received: Uint8Array | null = null;
++  const f = restoreFixture({ load: async (b: Uint8Array) => { received = b; } });
++  const d = draft({ data: new Uint8Array([9, 8, 7]), fileName: 'a.hml', sourceFormat: 'hml' });
++  await ui.restoreDraftWithNotice(d as never, f.deps);
++  assert.deepEqual([...received!], [9, 8, 7]);
++  assert.notEqual(received, d.data);
++});
++
++// ── 상태 줄 · 저장소 거절 · 종단 ─────────────────────────────────────────────────────────
++const nativeStore = (extra: Record<string, unknown> = {}) => {
++  const rowsSaved = new Map<string, any>();
++  return {
++    rowsSaved,
++    store: {
++      saveDraft: async (d: any) => { rowsSaved.set(d.id, structuredClone(d)); },
++      getDraft: async (id: string) => rowsSaved.get(id) ?? null,
++      listDrafts: async () => [...rowsSaved.values()],
++      deleteDraft: async (id: string) => { rowsSaved.delete(id); },
++      clearDrafts: async () => { rowsSaved.clear(); },
++      ...extra,
++    },
++  };
++};
++const hostWith = (store: unknown) => { g.AndroidStudioHost = { recovery: store }; };
++const noHost = () => { delete g.AndroidStudioHost; delete g.rhwpAndroidHost; };
++
++test('상태 줄: 손실 표시를 못 담는 저장소의 거절(0107 저장소의 실제 오류)만 따로 알리고, 다른 오류는 기존 문구 그대로', async () => {
++  const { store, rowsSaved } = nativeStore();
++  hostWith(store);
++  try {
++    let refusal: unknown;
++    await saveAutosaveDraft(draft({ lossy: true }) as never).catch((e) => { refusal = e; });
++    assert.ok(refusal, '지원을 알리지 않은 저장소는 손실 복구본을 거절한다');
++    assert.equal(rowsSaved.size, 0, '표시 없이 저장하지 않는다');
++    assert.match(ui.autosaveErrorMessage(refusal), /일부 개체가 빠졌을 수 있어 복구용 자동 저장을 하지 않습니다/);
++    assert.equal(ui.autosaveErrorMessage(new Error('디스크 가득')), '복구용 자동 저장 실패');
++    assert.equal(ui.autosaveErrorMessage(undefined), '복구용 자동 저장 실패');
++    assert.equal(ui.autosaveErrorMessage('문자열 오류'), '복구용 자동 저장 실패');
++  } finally { noHost(); }
++});
++
++test('종단: 손실 표시를 지원하는 셸이면 lossy 가 저장 → 목록 → 선택창 경고로 이어지고, 일반 복구본에는 이어지지 않는다', async () => {
++  const { store } = nativeStore({ supportsLossyDrafts: true });
++  hostWith(store);
++  try {
++    await saveAutosaveDraft(draft({ id: 'L', fileName: '손실.hwp', lossy: true }) as never);
++    await saveAutosaveDraft(draft({ id: 'N', fileName: '정상.hwp' }) as never);
++    const listed = await listAutosaveDrafts();
++    assert.equal(listed.find((d) => d.id === 'L')?.lossy, true);
++    assert.equal('lossy' in listed.find((d) => d.id === 'N')!, false);
++    const el = body(listed as never);
++    const byTitle = (name: string) => rows(el).find((r) => r.find((e) => e.className.includes('recovery-draft-title'))[0].textContent === name)!;
++    assert.equal(lossyLines(byTitle('손실.hwp')).length, 1);
++    assert.equal(lossyLines(byTitle('정상.hwp')).length, 0);
++    assert.equal((await getAutosaveDraft('L'))?.lossy, true);
++  } finally { noHost(); }
++});
++
++test('종단: 암호 + 손실 복구본 — 자동 저장은 암호화된 바이트와 lossy 를 함께 보내고, 복원은 비밀번호 입력 취소 시 복구본을 남기며, 성공하면 암호가 이어진다', async () => {
++  const password = synthPassword();
++  const { store, rowsSaved } = nativeStore({ supportsLossyDrafts: true });
++  hostWith(store);
++  try {
++    const bridge = new WasmBridge();
++    const plain = new Doc(sample('biz_plan.hwp'));
++    const encryptedBytes = plain.exportHwpWithPassword(password) as Uint8Array;
++    bridge.loadDocumentWithPassword(encryptedBytes, password, '암호.hwp');
++    const original = bridge.exportHwpWithPasswordAndReport.bind(bridge);
++    bridge.exportHwpWithPasswordAndReport = (p: string) => ({ ...original(p), contentLoss: { schemaVersion: 1, outputFormat: 'hwp', count: 1, losses: [{ path: 'x', kind: 'test' }] } });
++    const manager = new AutosaveManager({
++      exportBytes: () => bridge.exportAndroidRecoveryBytes(),
++      isEncrypted: () => bridge.requiresPasswordForSave,
++      isRecoveryBlocked: () => !bridge.canExportAndroidRecovery(),
++      logger: { warn() {}, debug() {} } as never,
++    });
++    await manager.beginDocument({ fileName: '암호.hwp', sourceFormat: 'hwp' });
++    await manager.flushNow('android-lifecycle');
++    assert.equal(rowsSaved.size, 1);
++    const saved = [...rowsSaved.values()][0];
++    assert.equal(saved.encrypted, true);
++    assert.equal(saved.lossy, true);
++    assert.throws(() => new Doc(saved.data).free(), /비밀번호가 필요한/, '저장소로 가는 바이트는 암호화돼 있다');
++    assert.ok(!JSON.stringify({ ...saved, data: undefined }).includes(password));
++
++    const listed = await listAutosaveDrafts();
++    const el = body(listed as never);
++    assert.equal(lossyLines(el).length, 1); assert.equal(encryptedLines(el).length, 1);
++
++    // 비밀번호 입력을 취소하면 복구본이 남는다
++    const restored = new WasmBridge();
++    const cancelled = restoreFixture({ load: async () => { throw new Error('DocumentOpenCancelled'); }, del: async (id) => { await store.deleteDraft(id); } });
++    await assert.rejects(ui.restoreDraftWithNotice(listed[0] as never, cancelled.deps));
++    assert.equal(rowsSaved.size, 1, '취소하면 복구본이 그대로 남는다');
++    assert.deepEqual(cancelled.toasts, []);
++
++    // 비밀번호를 입력하면 복원되고, 복구본이 지워지고, 경고가 나가며, 이후 복구본도 같은 비밀번호로 암호화된다
++    const ok = restoreFixture({
++      load: async (bytes) => { restored.loadDocumentWithPassword(bytes, password, '복구.hwp'); },
++      del: async (id) => { await store.deleteDraft(id); },
++    });
++    await ui.restoreDraftWithNotice(listed[0] as never, ok.deps);
++    assert.equal(rowsSaved.size, 0);
++    assert.ok(ok.toasts[0].message.includes(ui.LOSSY_DRAFT_NOTICE));
++    assert.equal(restored.requiresPasswordForSave, true);
++    const next = restored.exportAndroidRecoveryBytes();
++    assert.throws(() => new Doc(next).free(), /비밀번호가 필요한/);
++    assert.equal(core.HwpDocument.openWithPassword(next, password).free(), undefined);
++  } finally { noHost(); }
++});
++
++test('main.ts 연결 보호: 복원·상태 줄이 recovery-ui 의 시험된 함수를 쓰고 예전의 무조건 안내가 남아 있지 않다', () => {
++  const main = source('main.ts');
++  const restore = main.slice(main.indexOf('async function restoreAutosaveDraft'), main.indexOf('async function createNewDocument'));
++  assert.match(restore, /restoreDraftWithNotice\(draft, \{/);
++  assert.match(restore, /markDirty: \(\) => documentState\.markDirty\('autosave-recovered'\)/);
++  assert.match(restore, /performance\.now\(\), \{ skipRecent: true \}/, '복구본은 최근 문서에 넣지 않는다(이전과 같다)');
++  assert.ok(!restore.includes('복구본을 열었습니다'), '문구는 recovery-ui 한 곳에서만 만든다');
++  assert.match(main, /nextMessage = autosaveErrorMessage\(status\.error\);/);
++  assert.ok(!/nextMessage = '복구용 자동 저장 실패';/.test(main));
++});

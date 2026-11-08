@@ -1,0 +1,406 @@
+From 9ac10ea1829406915117898eea35f174ec0bd083 Mon Sep 17 00:00:00 2001
+From: moulinnoirai-cell <331239397+moulinnoirai-cell@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 11:04:32 +0900
+Subject: [PATCH] hwpxxx desktop: format painter dialog (Alt+C) with body,
+ style and cell options
+
+---
+ rhwp-studio/src/command/commands/edit.ts |   9 +-
+ rhwp-studio/src/engine/input-handler.ts  | 130 ++++++++++++++-----
+ rhwp-studio/src/ui/format-copy-dialog.ts | 151 +++++++++++++++++++++++
+ 3 files changed, 256 insertions(+), 34 deletions(-)
+ create mode 100644 rhwp-studio/src/ui/format-copy-dialog.ts
+
+diff --git a/rhwp-studio/src/command/commands/edit.ts b/rhwp-studio/src/command/commands/edit.ts
+index 609d0525d..5125decc6 100644
+--- a/rhwp-studio/src/command/commands/edit.ts
++++ b/rhwp-studio/src/command/commands/edit.ts
+@@ -2,6 +2,7 @@ import type { CommandDef } from '../types';
+ import { FieldEditDialog } from '@/ui/field-edit-dialog';
+ import { FindDialog, navigateToSearchHit } from '@/ui/find-dialog';
+ import { GotoDialog } from '@/ui/goto-dialog';
++import { FormatCopyDialog } from '@/ui/format-copy-dialog';
+ import { HistoryDialog } from '@/ui/history-dialog';
+ import { CompareDialog } from '@/ui/compare-dialog';
+ import { CompareSessionStore } from '@/compare/session';
+@@ -75,7 +76,13 @@ export const editCommands: CommandDef[] = [
+     shortcutLabel: 'Alt+C',
+     canExecute: (ctx) => ctx.hasDocument,
+     execute(services) {
+-      services.getInputHandler()?.performFormatCopy();
++      // [hwpxxx] 복사한 모양이 있으면 선택 영역에 붙이고, 없으면 복사 범위를 묻는다.
++      const handler = services.getInputHandler();
++      if (!handler || handler.tryApplyCopiedFormat()) return;
++      new FormatCopyDialog(
++        { inCell: handler.isCursorInCell(), charStyleAvailable: false },
++        (options) => handler.copyFormatAtCursor(options),
++      ).show();
+     },
+   },
+   {
+diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
+index 646f4f2df..b3acdcdaf 100644
+--- a/rhwp-studio/src/engine/input-handler.ts
++++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -55,6 +55,7 @@ import { showInitialCaretAndPublishFocus } from './initial-caret-focus';
+ import { CaretLayoutReveal } from './caret-layout-reveal';
+ import { emitHeaderFooterModeChanged } from './header-footer-mode';
+ import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
++import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
+ 
+ const SVG_NS = 'http://www.w3.org/2000/svg';
+ const DRAG_SCROLL_EDGE_PX = 48;
+@@ -115,7 +116,11 @@ function isSameSelectionCellContainer(a: DocumentPosition, b: DocumentPosition):
+ type FormatCopyState = {
+   charProps: Partial<CharProperties>;
+   paraProps: Partial<ParaProperties>;
++  /** 문단 스타일 복사 시 스타일 번호 */
++  styleId?: number;
+   cellProps?: Partial<CellProperties>;
++  /** 셀 블록에 붙일 때 본문 모양도 함께 적용하는가 */
++  includeBody: boolean;
+ };
+ 
+ type PagePoint = {
+@@ -184,7 +189,8 @@ const FORMAT_COPY_PARA_KEYS: Array<keyof ParaProperties> = [
+   'borderIgnoreMargin',
+ ];
+ 
+-const FORMAT_COPY_CELL_KEYS: Array<keyof CellProperties> = [
++/** 셀 속성 */
++const FORMAT_COPY_CELL_ATTR_KEYS: Array<keyof CellProperties> = [
+   'paddingLeft',
+   'paddingRight',
+   'paddingTop',
+@@ -196,9 +202,11 @@ const FORMAT_COPY_CELL_KEYS: Array<keyof CellProperties> = [
+   'cellProtect',
+   'fieldName',
+   'editableInForm',
+-  'borderFillId',
+ ];
+ 
++/** 셀 테두리·배경 — 한 borderFillId 에 함께 들어 있어 따로 떼어 복사할 수 없다 */
++const FORMAT_COPY_CELL_BORDER_KEYS: Array<keyof CellProperties> = ['borderFillId'];
++
+ function pickDefined<T extends object, K extends keyof T>(source: T, keys: K[]): Partial<T> {
+   const result: Partial<T> = {};
+   for (const key of keys) {
+@@ -257,13 +265,21 @@ function fitDroppedImageSizeRaw(
+   };
+ }
+ 
++/**
++ * 문단 간격 읽기값은 소수 첫째 자리 px 로 반올림돼 있어(10pt → 10.01pt) 그대로 되돌리면 값이 조금씩 어긋난다.
++ * 문단 모양 창이 0.1pt 단위(1/200pt × 20)로 입력받으므로 같은 단위로 맞춘다.
++ */
++function snapSpacingRaw(raw: number): number {
++  return Math.round(raw / 20) * 20;
++}
++
+ function normalizeFormatCopyParaProps(props: Partial<ParaProperties>): Partial<ParaProperties> {
+   const normalized = { ...props };
+   if (props.marginLeft !== undefined) normalized.marginLeft = pxToRaw2x(props.marginLeft);
+   if (props.marginRight !== undefined) normalized.marginRight = pxToRaw2x(props.marginRight);
+   if (props.indent !== undefined) normalized.indent = pxToRaw2x(props.indent);
+-  if (props.spacingBefore !== undefined) normalized.spacingBefore = pxToRaw(props.spacingBefore);
+-  if (props.spacingAfter !== undefined) normalized.spacingAfter = pxToRaw(props.spacingAfter);
++  if (props.spacingBefore !== undefined) normalized.spacingBefore = snapSpacingRaw(pxToRaw(props.spacingBefore));
++  if (props.spacingAfter !== undefined) normalized.spacingAfter = snapSpacingRaw(pxToRaw(props.spacingAfter));
+   return normalized;
+ }
+ 
+@@ -5646,57 +5662,105 @@ export class InputHandler {
+   }
+ 
+   private applyCopiedFormatToCurrentTarget(): boolean {
+-    if (!this.formatCopyState) return false;
++    const state = this.formatCopyState;
++    if (!state) return false;
+ 
+     if (this.cursor.isInCellSelectionMode()) {
+-      if (this.formatCopyState.cellProps && Object.keys(this.formatCopyState.cellProps).length > 0) {
+-        const applied = this.applyCopiedCellPropsToSelection(this.formatCopyState.cellProps);
+-        if (applied) this.formatCopyState = null;
+-        return applied;
+-      }
+-      return false;
++      const hasCellProps = !!state.cellProps && Object.keys(state.cellProps).length > 0;
++      if (!hasCellProps && !state.includeBody) return false;
++      if (hasCellProps && !this.applyCopiedCellPropsToSelection(state.cellProps!)) return false;
++      if (state.includeBody) this.applyCopiedBodyFormat(state, null);
++      this.formatCopyState = null;
++      this.focusTextarea();
++      return true;
+     }
+ 
+     const sel = this.getSelection();
+     if (!sel) return false;
+ 
+-    const { charProps, paraProps } = this.formatCopyState;
+-    if (Object.keys(charProps).length > 0) {
+-      this.applyCharPropsToRange(sel.start, sel.end, charProps);
+-    }
+-    if (Object.keys(paraProps).length > 0) {
+-      this.applyParaPropsToRange(sel.start, sel.end, paraProps);
+-    }
++    this.applyCopiedBodyFormat(state, sel);
+     // 한컴 호환: 복사한 모양은 한 번 붙여넣으면 자동 해제한다.
+     this.formatCopyState = null;
+     this.focusTextarea();
+     return true;
+   }
+ 
+-  private copyFormatAtCursor(): void {
+-    const currentCharProps = this.getCharProperties();
+-    const charProps = pickDefined(currentCharProps, FORMAT_COPY_CHAR_KEYS) as Partial<CharProperties>;
+-    if (charProps.fontIds === undefined && charProps.fontId === undefined) {
+-      const fontFamily = currentCharProps.fontFamily;
+-      if (fontFamily) {
+-        const fontId = this.wasm.findOrCreateFontId(fontFamily);
+-        if (fontId >= 0) charProps.fontId = fontId;
+-      }
++  /** 복사한 글자·문단 모양(또는 문단 스타일)을 적용한다. sel 이 null 이면 셀 블록에 적용한다 */
++  private applyCopiedBodyFormat(
++    state: FormatCopyState,
++    sel: { start: DocumentPosition; end: DocumentPosition } | null,
++  ): void {
++    if (state.styleId !== undefined) {
++      this.applyStyle(state.styleId);
++      return;
+     }
+-    const paraProps = normalizeFormatCopyParaProps(
+-      pickDefined(this.getParaProperties(), FORMAT_COPY_PARA_KEYS) as Partial<ParaProperties>,
+-    );
++    if (Object.keys(state.charProps).length > 0) {
++      if (sel) this.applyCharPropsToRange(sel.start, sel.end, state.charProps);
++      else this.applyCharFormat(state.charProps);
++    }
++    if (Object.keys(state.paraProps).length > 0) {
++      if (sel) this.applyParaPropsToRange(sel.start, sel.end, state.paraProps);
++      else this.applyParaFormat(state.paraProps as Record<string, unknown>);
++    }
++  }
++
++  /** 커서가 표 셀 안에 있는가 (모양 복사 대화상자의 셀 항목 활성화용) */
++  isCursorInCell(): boolean { return this.cursor.getPosition().parentParaIndex !== undefined; }
++
++  /** 복사해 둔 모양을 현재 선택 영역에 붙인다. 붙일 대상이 없으면 false (모양 복사 대화상자용) */
++  tryApplyCopiedFormat(): boolean {
++    return this.applyCopiedFormatToCurrentTarget();
++  }
++
++  /** 커서 위치의 모양을 복사한다. 복사 범위는 모양 복사 대화상자의 옵션을 따른다 */
++  copyFormatAtCursor(options: FormatCopyOptions = DEFAULT_FORMAT_COPY_OPTIONS): void {
++    const { body } = options;
++    const wantsChar = body === 'char' || body === 'both';
++    const wantsPara = body === 'para' || body === 'both';
+     const pos = this.cursor.getPosition();
+-    const cellProps = pos.parentParaIndex !== undefined
++    const inCell = pos.parentParaIndex !== undefined;
++
++    let charProps: Partial<CharProperties> = {};
++    if (wantsChar) {
++      const currentCharProps = this.getCharProperties();
++      charProps = pickDefined(currentCharProps, FORMAT_COPY_CHAR_KEYS) as Partial<CharProperties>;
++      if (charProps.fontIds === undefined && charProps.fontId === undefined) {
++        const fontFamily = currentCharProps.fontFamily;
++        if (fontFamily) {
++          const fontId = this.wasm.findOrCreateFontId(fontFamily);
++          if (fontId >= 0) charProps.fontId = fontId;
++        }
++      }
++    }
++    const paraProps = wantsPara
++      ? normalizeFormatCopyParaProps(
++          pickDefined(this.getParaProperties(), FORMAT_COPY_PARA_KEYS) as Partial<ParaProperties>,
++        )
++      : {};
++
++    let styleId: number | undefined;
++    if (body === 'paraStyle') {
++      styleId = inCell
++        ? this.wasm.getCellStyleAt(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!).id
++        : this.wasm.getStyleAt(pos.sectionIndex, pos.paragraphIndex).id;
++    }
++
++    const cellKeys = [
++      ...(options.cellAttr ? FORMAT_COPY_CELL_ATTR_KEYS : []),
++      ...(options.cellBorder || options.cellBackground ? FORMAT_COPY_CELL_BORDER_KEYS : []),
++    ];
++    const cellProps = inCell && cellKeys.length > 0
+       ? pickDefined(
+-          this.wasm.getCellOwnProperties(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!, pos.cellIndex!),
+-          FORMAT_COPY_CELL_KEYS,
++          this.wasm.getCellOwnProperties(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, pos.cellIndex!),
++          cellKeys,
+         ) as Partial<CellProperties>
+       : undefined;
+     this.formatCopyState = {
+       charProps: JSON.parse(JSON.stringify(charProps)),
+       paraProps: JSON.parse(JSON.stringify(paraProps)),
++      styleId,
+       cellProps: cellProps ? JSON.parse(JSON.stringify(cellProps)) : undefined,
++      includeBody: !cellProps || options.tableTarget === 'both',
+     };
+     this.focusTextarea();
+   }
+diff --git a/rhwp-studio/src/ui/format-copy-dialog.ts b/rhwp-studio/src/ui/format-copy-dialog.ts
+new file mode 100644
+index 000000000..72ecbedf4
+--- /dev/null
++++ b/rhwp-studio/src/ui/format-copy-dialog.ts
+@@ -0,0 +1,151 @@
++import { ModalDialog } from './dialog';
++
++/** [hwpxxx] 모양 복사 옵션 — 한/글 Alt+C 대화상자(모양 복사)와 같은 구성 */
++export interface FormatCopyOptions {
++  /** 본문 모양 복사: 글자 모양 / 문단 모양 / 둘 다 / 글자 스타일 / 문단 스타일 */
++  body: 'char' | 'para' | 'both' | 'charStyle' | 'paraStyle';
++  /** 셀 모양 복사 (표 안에서만) */
++  cellAttr: boolean;
++  cellBorder: boolean;
++  cellBackground: boolean;
++  /** 표에서 적용 대상: 본문 모양과 셀 모양 둘 다 / 셀 모양만 */
++  tableTarget: 'both' | 'cellOnly';
++}
++
++export const DEFAULT_FORMAT_COPY_OPTIONS: FormatCopyOptions = {
++  body: 'char',
++  cellAttr: false,
++  cellBorder: false,
++  cellBackground: false,
++  tableTarget: 'both',
++};
++
++export interface FormatCopyContext {
++  /** 커서가 표 셀 안에 있는가 (셀 모양 항목 활성화) */
++  inCell: boolean;
++  /** 글자 스타일 복사를 쓸 수 있는가 (엔진이 글자 스타일 위치를 알려주지 않아 현재는 항상 false) */
++  charStyleAvailable: boolean;
++}
++
++const BODY_OPTIONS: ReadonlyArray<{ value: FormatCopyOptions['body']; label: string }> = [
++  { value: 'char', label: '글자 모양' },
++  { value: 'para', label: '문단 모양' },
++  { value: 'both', label: '글자 모양과 문단 모양 둘 다 복사' },
++  { value: 'charStyle', label: '글자 스타일' },
++  { value: 'paraStyle', label: '문단 스타일' },
++];
++
++/** 모양 복사 대화상자 — 커서 위치에서 복사할 서식 범위를 고른다 */
++export class FormatCopyDialog extends ModalDialog {
++  private bodyRadios: HTMLInputElement[] = [];
++  private cellBoxes: Record<'cellAttr' | 'cellBorder' | 'cellBackground', HTMLInputElement> | null = null;
++  private targetRadios: HTMLInputElement[] = [];
++
++  constructor(
++    private context: FormatCopyContext,
++    private onCopy: (options: FormatCopyOptions) => void,
++  ) {
++    super('모양 복사', 300);
++  }
++
++  protected createBody(): HTMLElement {
++    const body = document.createElement('div');
++    body.appendChild(this.section('본문 모양 복사', this.buildBody()));
++    body.appendChild(this.section('셀 모양 복사', this.buildCells()));
++    body.appendChild(this.section('표에서 적용 대상', this.buildTarget()));
++    this.syncTarget();
++    return body;
++  }
++
++  private section(title: string, content: HTMLElement): HTMLElement {
++    const section = document.createElement('div');
++    section.style.marginBottom = '10px';
++    const heading = document.createElement('div');
++    heading.textContent = title;
++    heading.style.cssText = 'font-weight:bold;border-bottom:1px solid #99a;margin-bottom:4px;color:#335';
++    section.appendChild(heading);
++    section.appendChild(content);
++    return section;
++  }
++
++  private option(input: HTMLInputElement, label: string): HTMLLabelElement {
++    const lbl = document.createElement('label');
++    lbl.appendChild(input);
++    lbl.appendChild(document.createTextNode(label));
++    // 라디오·체크박스는 입력 칸으로 취급돼 Enter 가 확인 버튼까지 닿지 않는다.
++    input.addEventListener('keydown', (e) => {
++      if (e.key !== 'Enter') return;
++      e.preventDefault();
++      this.dialog.querySelector<HTMLButtonElement>('.dialog-btn-primary')?.click();
++    });
++    return lbl;
++  }
++
++  private buildBody(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    for (const { value, label } of BODY_OPTIONS) {
++      const input = document.createElement('input');
++      input.type = 'radio';
++      input.name = 'format-copy-body';
++      input.value = value;
++      input.checked = value === DEFAULT_FORMAT_COPY_OPTIONS.body;
++      input.disabled = value === 'charStyle' && !this.context.charStyleAvailable;
++      group.appendChild(this.option(input, label));
++      this.bodyRadios.push(input);
++    }
++    return group;
++  }
++
++  private buildCells(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    const make = (label: string): HTMLInputElement => {
++      const input = document.createElement('input');
++      input.type = 'checkbox';
++      input.disabled = !this.context.inCell;
++      input.addEventListener('change', () => this.syncTarget());
++      group.appendChild(this.option(input, label));
++      return input;
++    };
++    this.cellBoxes = { cellAttr: make('셀 속성'), cellBorder: make('셀 테두리'), cellBackground: make('셀 배경') };
++    return group;
++  }
++
++  private buildTarget(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    for (const [value, label] of [['both', '본문 모양과 셀 모양 둘 다'], ['cellOnly', '셀 모양만']] as const) {
++      const input = document.createElement('input');
++      input.type = 'radio';
++      input.name = 'format-copy-target';
++      input.value = value;
++      input.checked = value === DEFAULT_FORMAT_COPY_OPTIONS.tableTarget;
++      group.appendChild(this.option(input, label));
++      this.targetRadios.push(input);
++    }
++    return group;
++  }
++
++  /** 셀 모양 항목을 하나라도 골라야 표 적용 대상을 고를 수 있다 */
++  private syncTarget(): void {
++    const any = this.cellBoxes !== null && Object.values(this.cellBoxes).some((box) => box.checked);
++    for (const radio of this.targetRadios) radio.disabled = !any;
++  }
++
++  show(): void {
++    super.show();
++    (this.bodyRadios.find((r) => r.checked) ?? this.bodyRadios[0])?.focus();
++  }
++
++  protected onConfirm(): void {
++    const boxes = this.cellBoxes;
++    this.onCopy({
++      body: (this.bodyRadios.find((r) => r.checked)?.value ?? DEFAULT_FORMAT_COPY_OPTIONS.body) as FormatCopyOptions['body'],
++      cellAttr: boxes?.cellAttr.checked ?? false,
++      cellBorder: boxes?.cellBorder.checked ?? false,
++      cellBackground: boxes?.cellBackground.checked ?? false,
++      tableTarget: (this.targetRadios.find((r) => r.checked)?.value ?? DEFAULT_FORMAT_COPY_OPTIONS.tableTarget) as FormatCopyOptions['tableTarget'],
++    });
++  }
++}
+-- 
+2.55.0.windows.5
+

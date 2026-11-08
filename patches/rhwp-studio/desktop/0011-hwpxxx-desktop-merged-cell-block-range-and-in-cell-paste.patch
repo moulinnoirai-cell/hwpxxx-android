@@ -1,0 +1,82 @@
+--- a/rhwp-studio/src/engine/cursor.ts
++++ b/rhwp-studio/src/engine/cursor.ts
+@@ -1768,12 +1768,51 @@
+   /** 선택된 셀 범위를 반환한다 (정렬된 start/end). */
+   getSelectedCellRange(): { startRow: number; startCol: number; endRow: number; endCol: number } | null {
+     if (!this._cellSelectionMode || !this.cellAnchor || !this.cellFocus) return null;
+-    return {
++    const range = {
+       startRow: Math.min(this.cellAnchor.row, this.cellFocus.row),
+       startCol: Math.min(this.cellAnchor.col, this.cellFocus.col),
+       endRow: Math.max(this.cellAnchor.row, this.cellFocus.row),
+       endCol: Math.max(this.cellAnchor.col, this.cellFocus.col),
+     };
++    return this.coverMergedCells(range);
++  }
++
++  /**
++   * 범위가 걸친 병합 셀을 통째로 포함할 때까지 넓힌다(한컴과 같은 방식).
++   * 병합 셀을 일부만 걸치면 칸 합치기가 "병합 범위를 벗어납니다"로 거부된다.
++   */
++  private coverMergedCells<T extends { startRow: number; startCol: number; endRow: number; endCol: number }>(range: T): T {
++    const ctx = this.cellTableCtx;
++    if (!ctx) return range;
++    let bboxes: CellBbox[];
++    try {
++      bboxes = ctx.cellPath
++        ? this.wasm.getTableCellBboxesByPath(ctx.sec, ctx.ppi, JSON.stringify(ctx.cellPath))
++        : this.wasm.getTableCellBboxes(ctx.sec, ctx.ppi, ctx.ci);
++    } catch { return range; }
++    const merged = bboxes.filter((b) => b.rowSpan > 1 || b.colSpan > 1);
++    if (merged.length === 0) return range;
++    const out = { ...range };
++    for (let changed = true; changed;) {
++      changed = false;
++      for (const b of merged) {
++        const overlaps = b.row <= out.endRow && b.row + b.rowSpan - 1 >= out.startRow
++          && b.col <= out.endCol && b.col + b.colSpan - 1 >= out.startCol;
++        if (!overlaps) continue;
++        const next = {
++          startRow: Math.min(out.startRow, b.row),
++          startCol: Math.min(out.startCol, b.col),
++          endRow: Math.max(out.endRow, b.row + b.rowSpan - 1),
++          endCol: Math.max(out.endCol, b.col + b.colSpan - 1),
++        };
++        if (next.startRow !== out.startRow || next.startCol !== out.startCol
++          || next.endRow !== out.endRow || next.endCol !== out.endCol) {
++          Object.assign(out, next);
++          changed = true;
++        }
++      }
++    }
++    return out;
+   }
+ 
+   /** 제외된 셀 목록을 반환한다. */
+--- a/rhwp-studio/src/engine/input-handler-keyboard.ts
++++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
+@@ -2066,6 +2066,9 @@
+  * 호출한 쪽이 종전 HTML 경로로 되돌아가게 한다.
+  */
+ function pasteHwpJsonModel(this: any, model: string, hasSelection: boolean): boolean {
++  // 표 칸 안은 스냅샷에 들어가기 전에 HTML 경로로 넘긴다. 스냅샷 안에서 undefined 를
++  // 돌려주면 커서가 {} 로 바뀌어 칸 밖 본문에 붙는다.
++  if (this.cursor.getPosition().parentParaIndex !== undefined) return false;
+   let ok = false;
+   try {
+     this.executeOperation({
+@@ -2073,13 +2076,11 @@
+       operationType: 'pasteHwpJson',
+       operation: (wasm: WasmBridge) => {
+         const p = this.cursor.getPosition();
+-        // 표 칸 안은 아직 HTML 경로가 담당한다(코어에 셀 진입점이 없다).
+-        if (p.parentParaIndex !== undefined) return undefined;
+         if (hasSelection) this.deleteSelection({ deferRecord: true });
+         const result = wasm.pasteHwpJson(p.sectionIndex, p.paragraphIndex, p.charOffset, model);
+         console.debug('[paste] pasteHwpJson 결과:', String(result).slice(0, 200));
+         const parsed = JSON.parse(result);
+-        if (!parsed.ok) return undefined;
++        if (!parsed.ok) return this.cursor.getPosition();
+         ok = true;
+         return positionAfterPasteResult(p, parsed);
+       },

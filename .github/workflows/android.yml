@@ -32,13 +32,15 @@ jobs:
         with:
           path: .build/engine
           key: rhwp-memo-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'patches/rhwp-engine/*.patch', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
+      # The pinned upstream checkout is needed on EVERY run: the engine build (cache miss only) and the desktop Studio build (always;
+      # scripts/build-studio.mjs reads rhwp-studio, assets/fonts, assets/logo and the licence files via `git archive` of this commit).
       - uses: actions/checkout@v4
-        if: steps.memo-engine.outputs.cache-hit != 'true'
         with:
           repository: edwardkim/rhwp
           ref: 1a76570e833917d15817415a53c09ad61ab3203f
           path: .build/rhwp
           sparse-checkout: |
+            rhwp-studio
             src
             crates
             tools
@@ -82,28 +84,77 @@ jobs:
         with:
           path: .build/engine
           key: ${{ steps.memo-engine.outputs.cache-primary-key }}
+      - name: Build the desktop Studio frontend (11 PC patches + Android patches, npm ci, strict-CSP production bundle for /studio/)
+        run: |
+          node scripts/build-studio.mjs --upstream .build/rhwp --run-tests
+          node scripts/verify-studio.mjs
       - run: node tests/build-qa-fixtures.mjs
       - name: Engine integrity gate (pinned build, build-info.json hashes, CI pins)
         run: |
           node scripts/verify-engine.mjs
           node --test tests/engine-integrity.test.mjs
+      - name: Studio build gates (pins, destructive-path guard, verifyStudio negative cases, CSP equals MainActivity)
+        run: |
+          node scripts/verify-studio.mjs
+          node --test tests/studio-build.test.mjs
       - name: Document worker regression tests
         run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
       - name: Emulator test harness (ANR guard parsers and decisions, no device needed)
         run: |
           node --test tests/android-anr.test.mjs tests/android-termux-fixtures.test.mjs
           for f in tests/android-emulator.cjs tests/android-termux.cjs tests/android-suites.cjs tests/android-system.cjs tests/android-anr-parse.cjs tests/legacy-webview-driver.cjs; do node --check "$f"; done
-      - name: File store regression tests
+      - name: Install fonts for the FontStore JVM test (real TTF regular/bold + CFF OTF come from distro packages; the Korean face is the bundled Noto Sans KR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-liberation fonts-urw-base35
+          for f in LiberationSans-Regular.ttf LiberationSans-Bold.ttf NimbusSans-Regular.otf; do
+            p="$(find /usr/share/fonts -name "$f" | head -n 1)"
+            test -n "$p" || { echo "font fixture $f not installed"; exit 1; }
+            echo "$p"
+          done
+      - name: File/export/font/private-state/host-intent/clipboard store regression tests (JVM, SDK 35 classpath)
         run: |
           mkdir -p build/fs-test
-          javac -encoding UTF-8 -d build/fs-test app/src/main/java/kr/offline/hwp/FileStore.java app/src/main/java/kr/offline/hwp/TimedCall.java app/src/main/java/kr/offline/hwp/TermuxWalker.java app/src/main/java/kr/offline/hwp/DraftStore.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java
+          H=app/src/main/java/kr/offline/hwp
+          # ClipboardImageProvider extends android.content.ContentProvider: compile (and run its pure pruning test) with the SDK 35 android.jar installed by the sdkmanager step; no Android runtime is started.
+          ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
+          test -f "$ANDROID_JAR" || { echo "missing $ANDROID_JAR"; exit 1; }
+          javac -encoding UTF-8 -cp "$ANDROID_JAR" -d build/fs-test $H/FileStore.java $H/TimedCall.java $H/TermuxWalker.java $H/DraftStore.java $H/ExportStore.java $H/FontStore.java $H/PrivateStateStore.java $H/ClipboardImageProvider.java $H/HostIntents.java $H/HostState.java $H/ProviderRead.java $H/NativeSessions.java $H/NativeHandleRegistry.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java tests/ExportStoreTest.java tests/FontStoreTest.java tests/PrivateStateStoreTest.java tests/ClipboardImageProviderTest.java tests/HostIntentsTest.java tests/HostStateTest.java tests/NativeAvailabilityTest.java
           java -cp build/fs-test kr.offline.hwp.FileStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
           java -cp build/fs-test kr.offline.hwp.TermuxWalkerTest
           java -cp build/fs-test kr.offline.hwp.DraftStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
-      - name: Browser regression tests
+          java -cp build/fs-test kr.offline.hwp.ExportStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
+          java -cp build/fs-test kr.offline.hwp.PrivateStateStoreTest "$H/PrivateStateStore.java"
+          java -cp build/fs-test kr.offline.hwp.HostIntentsTest
+          java -cp build/fs-test kr.offline.hwp.HostStateTest
+          java -cp build/fs-test kr.offline.hwp.NativeAvailabilityTest
+          java -cp "build/fs-test:$ANDROID_JAR" kr.offline.hwp.ClipboardImageProviderTest
+          fonts() { find /usr/share/fonts -name "$1" | head -n 1; }
+          java -cp build/fs-test kr.offline.hwp.FontStoreTest "$(fonts LiberationSans-Regular.ttf)" "$(fonts LiberationSans-Bold.ttf)" "$(fonts NimbusSans-Regular.otf)" app/src/main/assets/fonts/NotoSansKR-Regular.ttf
+      - name: Font provider and host protocol tests (Node; real studio-host.js against a mock OfflineNative, no WebView)
         run: |
+          npm install --no-save --package-lock=false playwright@1.48.2
           python -m pip install playwright
           python -m playwright install --with-deps chromium
+          # The tests default to /usr/bin/chromium (local sandbox); on the runner use the browser Playwright just installed.
+          CHROME="$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$CHROME" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_NODE_MODULES=$PWD/node_modules" >> "$GITHUB_ENV"
+          export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$CHROME" PLAYWRIGHT_NODE_MODULES="$PWD/node_modules"
+          node --test tests/android-fonts.test.mjs tests/studio-host.test.mjs
+      - name: Production desktop Studio browser tests (real patched Studio + WASM in Chromium; native bridge is a MOCK — not WebView, not DeX)
+        run: |
+          python tests/studio-ui.py
+      - name: Android integration tests on the patched Studio source tree (real WasmBridge, real fonts provider and save lifecycle in Chromium; native bridge is a MOCK)
+        run: |
+          S="$PWD/.build/studio-src/rhwp-studio"
+          python tests/android-font-renderer.py --studio-root "$S"
+          python tests/studio-save-lifecycle.py --studio-root "$S"
+          python tests/studio-interaction.py --studio-root "$S"
+      - name: Studio smoke with a minimal STUB host (contract/CSP/offline; stub is not the real studio-host.js)
+        run: python tests/studio-smoke.py
+      - name: Legacy bespoke-editor fallback browser tests (the original limited UI kept as fallback; NOT the desktop Studio)
+        run: |
           python tests/tablet-ui.py
           python tests/dex-ui.py
           python tests/review-ui.py
@@ -126,6 +177,8 @@ jobs:
             .qa/review-*.png
             .qa/desktop-*.png
             .qa/desktop-ui-results.json
+            .qa/studio-*
+            app/src/main/assets/studio/build-info.json
             app/src/main/assets/engine/build-info.json
           include-hidden-files: true
           if-no-files-found: warn

@@ -1,0 +1,86 @@
+From 1fb7720dcbbe92480139eaab41340aed88c81ee2 Mon Sep 17 00:00:00 2001
+From: moulinnoirai-cell <331239397+moulinnoirai-cell@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 14:10:44 +0900
+Subject: [PATCH] hwpxxx desktop: compute missing linesegs when opening HWPX
+
+---
+ rhwp-studio/src/core/lineseg-autoreflow.ts       | 16 ++++++++++++++++
+ rhwp-studio/src/main.ts                          | 10 ++++++++++
+ .../tests/hwpxxx-lineseg-autoreflow.test.ts      | 14 ++++++++++++++
+ 3 files changed, 40 insertions(+)
+ create mode 100644 rhwp-studio/src/core/lineseg-autoreflow.ts
+ create mode 100644 rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
+
+diff --git a/rhwp-studio/src/core/lineseg-autoreflow.ts b/rhwp-studio/src/core/lineseg-autoreflow.ts
+new file mode 100644
+index 00000000..c59ca85f
+--- /dev/null
++++ b/rhwp-studio/src/core/lineseg-autoreflow.ts
+@@ -0,0 +1,16 @@
++// [hwpxxx] 줄 정보(linesegarray)가 없는 HWPX 의 열기 보정.
++//
++// 다른 도구(예: AI 가 만든 HWPX)가 저장한 문서는 본문 문단에 linesegarray 가 없을 수 있다. 화면 글자는
++// 렌더 단계에서 다시 줄바꿈되지만, 선택 영역·줄 이동·줄 수 조회는 저장 줄 정보를 쓰므로 여러 줄 문단이
++// "한 줄"로 취급되어 첫 줄만 선택된 것처럼 보인다. 경고가 전부 '줄 배열 없음'일 때만 열면서 한 번 계산한다.
++// 한컴이 계산해 둔 줄 정보(LinesegTextRunReflow 등)가 섞인 문서는 쪽 수가 바뀔 수 있으므로 건드리지 않는다.
++export interface ValidationReportLike {
++  count: number;
++  warnings?: Array<{ kind?: string }>;
++}
++
++export function onlyEmptyLinesegWarnings(report: ValidationReportLike | null | undefined): boolean {
++  if (!report || report.count <= 0) return false;
++  const warnings = report.warnings ?? [];
++  return warnings.length > 0 && warnings.every(w => w.kind === 'LinesegArrayEmpty');
++}
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index e6527b6d..29f4dae7 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -108,6 +108,7 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+ import { enrichFontDecisionTrace } from '@/core/font-decision-trace';
+ import { DocumentAgentController } from '@/document-agent/controller';
+ import { initI18n, t } from '@/i18n/index.ts';
++import { onlyEmptyLinesegWarnings } from '@/core/lineseg-autoreflow';
+ import { initCommandTooltips } from '@/ui/command-tooltip';
+ 
+ // 언어팩 초기화 — 정적 마크업의 라벨을 결정된 로케일로 갱신한다. 카탈로그에 없는 키는
+@@ -1383,6 +1384,15 @@ async function initializeDocument(
+     // 저장 snapshot은 권한 prompt 없이 읽을 수 있다. Canvas2D 첫 paint의 family 해소가
+     // 이미 승인된 exact local face를 놓치지 않도록 문서 view보다 먼저 준비한다 (#4739).
+     await loadStoredLocalFonts();
++    // [hwpxxx] 줄 정보가 없는 HWPX(다른 도구가 만든 문서)는 열면서 한 번 줄 정보를 계산한다. 편집으로 치지 않는다.
++    try {
++      if (wasm.getSourceFormat() === 'hwpx' && onlyEmptyLinesegWarnings(wasm.getValidationWarnings())) {
++        const reflowed = wasm.reflowLinesegs();
++        console.log(`[hwpxxx] 줄 정보 없는 문단 ${reflowed}개 보정`);
++      }
++    } catch (e) {
++      console.warn('[hwpxxx] 줄 정보 보정 실패 (치명적이지 않음):', e);
++    }
+     await updateLoadProgress(75, '문서 상태 적용 중...');
+     totalSections = docInfo.sectionCount ?? 1;
+     sbSection().textContent = t('ui.sbSection.text', { p1: 1, p2: totalSections });
+diff --git a/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
+new file mode 100644
+index 00000000..6c39eb5e
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
+@@ -0,0 +1,14 @@
++// [hwpxxx] 줄 정보 없는 HWPX 열기 보정의 적용 조건.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import { onlyEmptyLinesegWarnings } from '../src/core/lineseg-autoreflow.ts';
++
++test('경고가 전부 줄 배열 없음일 때만 보정한다', () => {
++  assert.equal(onlyEmptyLinesegWarnings({ count: 2, warnings: [{ kind: 'LinesegArrayEmpty' }, { kind: 'LinesegArrayEmpty' }] }), true);
++  // 한컴이 계산한 줄 정보가 섞이면 쪽 수가 바뀔 수 있어 그대로 둔다.
++  assert.equal(onlyEmptyLinesegWarnings({ count: 2, warnings: [{ kind: 'LinesegArrayEmpty' }, { kind: 'LinesegTextRunReflow' }] }), false);
++  assert.equal(onlyEmptyLinesegWarnings({ count: 0, warnings: [] }), false);
++  assert.equal(onlyEmptyLinesegWarnings({ count: 3 }), false);
++  assert.equal(onlyEmptyLinesegWarnings(null), false);
++});
+-- 
+2.55.0.windows.5
+

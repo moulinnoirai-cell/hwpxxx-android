@@ -1,0 +1,221 @@
+diff --git a/rhwp-studio/src/hwpxxx/android-host.ts b/rhwp-studio/src/hwpxxx/android-host.ts
+new file mode 100644
+index 0000000..b4411b9
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/android-host.ts
+@@ -0,0 +1,149 @@
++// [hwpxxx-android] Android 셸(WebView)과 Studio 를 잇는 얇은 호스트 통합면.
++//
++// - `window.rhwpAndroidHost` 가 있으면(셸이 Studio 번들보다 먼저 `studio-host.js` 로 설치) Android 모드다.
++//   Android 모드에서는 실패를 조용히 삼키지 않는다: 저장 폴백(브라우저 다운로드)과 IndexedDB 평문
++//   복구본을 끄고, 네이티브가 준 핸들·복구 저장소만 쓴다.
++// - `window.rhwpStudio.android` 는 셸이 부르는 API 다. WASM·DEV 개체는 노출하지 않는다.
++//
++// 이 파일은 데스크톱 편집 기능을 바꾸지 않는다. 상태·저장 흐름은 main.ts 가 넘겨준 의존성으로만 읽는다.
++
++export type AndroidSaveMode = 'save' | 'save-as';
++
++export interface AndroidSaveGuardInput {
++  bytes: Uint8Array;
++  format: 'hwp' | 'hwpx' | 'hml';
++  fileName: string;
++  encrypted: boolean;
++  contentLoss: unknown;
++  mode: AndroidSaveMode;
++}
++
++export type AndroidSaveGuard = (input: AndroidSaveGuardInput) => void | Promise<void>;
++
++export interface AndroidRecoveryDraft {
++  id: string;
++  fileName: string;
++  sourceFormat: string;
++  savedAt: number;
++  byteLength: number;
++  data: Uint8Array;
++  dirtyReason?: string;
++}
++
++/** 셸이 `rhwpAndroidHost.recoveryStore` 로 건네는 비공개(암호화) 복구 저장소. */
++export interface AndroidRecoveryStore {
++  saveDraft(draft: AndroidRecoveryDraft): Promise<void>;
++  getDraft(id: string): Promise<AndroidRecoveryDraft | null>;
++  listDrafts(): Promise<AndroidRecoveryDraft[]>;
++  deleteDraft(id: string): Promise<void>;
++  clearDrafts(): Promise<void>;
++}
++
++interface AndroidHostGlobal {
++  version?: number;
++  recoveryStore?: AndroidRecoveryStore;
++}
++
++export type AndroidFlushResult =
++  | { ok: true }
++  | { ok: false; skipped: 'no-document' | 'clean' | 'encrypted' | 'no-store' | 'busy' | 'error' };
++
++export function getAndroidHost(): AndroidHostGlobal | null {
++  const host = (globalThis as { rhwpAndroidHost?: unknown }).rhwpAndroidHost;
++  return host && typeof host === 'object' ? host as AndroidHostGlobal : null;
++}
++
++export function isAndroidHost(): boolean {
++  return getAndroidHost() !== null;
++}
++
++/** 복구용 자동 저장을 쓸 수 없는 Android 모드(비공개 저장소가 없음)인가. */
++export function androidRecoveryUnavailable(): boolean {
++  const host = getAndroidHost();
++  return host !== null && !host.recoveryStore;
++}
++
++let saveGuard: AndroidSaveGuard | null = null;
++
++/** 저장 직전에 실제 내보내기 바이트를 검사한다. 던지면 저장을 막고 문서는 dirty 로 남는다. */
++export async function runAndroidSaveGuard(input: AndroidSaveGuardInput): Promise<void> {
++  if (saveGuard) await saveGuard(input);
++}
++
++/**
++ * Android 모드에서 브라우저 다운로드로 내보낼 수 없을 때 호스트 저장 선택기(FSA 어댑터)로 쓴다.
++ * 어댑터가 거절하면(확장자·정책) 그대로 던진다.
++ */
++export async function androidExportBlob(blob: Blob, fileName: string): Promise<void> {
++  const picker = (window as unknown as {
++    showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{
++      createWritable(): Promise<{ write(data: Blob): Promise<void>; close(): Promise<void> }>;
++    }>;
++  }).showSaveFilePicker;
++  if (typeof picker !== 'function') {
++    throw new Error('이 앱에서는 파일 저장 위치를 고를 수 없어 내보내지 못했습니다.');
++  }
++  const handle = await picker.call(window, { suggestedName: fileName });
++  const writable = await handle.createWritable();
++  await writable.write(blob);
++  await writable.close();
++}
++
++let lastAutosaveStatus: unknown = null;
++
++/** main.ts 의 자동 저장 상태 콜백이 호출한다. */
++export function recordAutosaveStatus(status: unknown): void {
++  lastAutosaveStatus = status;
++}
++
++export interface AndroidHostDeps {
++  hasDocument(): boolean;
++  getFileName(): string;
++  isDirty(): boolean;
++  isEncrypted(): boolean;
++  getFormat(): 'hwp' | 'hwpx' | 'hml';
++  /** 일반 '저장하지 않은 변경' 확인(저장/버리기/취소). 계속해도 되면 true. */
++  canReplaceDocument(): Promise<boolean>;
++  flushAutosave(reason: string): Promise<void>;
++  newDocument(): void;
++}
++
++export function createAndroidHostApi(deps: AndroidHostDeps) {
++  return {
++    version: 1,
++    getState() {
++      const hasDocument = deps.hasDocument();
++      return {
++        hasDocument,
++        fileName: hasDocument ? deps.getFileName() : '',
++        dirty: hasDocument && deps.isDirty(),
++        encrypted: hasDocument && deps.isEncrypted(),
++        format: hasDocument ? deps.getFormat() : null,
++      };
++    },
++    /** 떠나도 되면 true. 이동은 셸이 직접 한다. */
++    async close(): Promise<boolean> {
++      return deps.canReplaceDocument();
++    },
++    async flushRecovery(): Promise<AndroidFlushResult> {
++      if (!deps.hasDocument()) return { ok: false, skipped: 'no-document' };
++      if (deps.isEncrypted()) return { ok: false, skipped: 'encrypted' };
++      if (androidRecoveryUnavailable()) return { ok: false, skipped: 'no-store' };
++      if (!deps.isDirty()) return { ok: false, skipped: 'clean' };
++      lastAutosaveStatus = null;
++      await deps.flushAutosave('android-host');
++      const status = lastAutosaveStatus as { state?: string } | null;
++      if (status === null) return { ok: false, skipped: 'busy' };
++      if (status.state === 'saved') return { ok: true };
++      if (status.state === 'blocked') return { ok: false, skipped: 'encrypted' };
++      return { ok: false, skipped: 'error' };
++    },
++    setSaveGuard(guard: AndroidSaveGuard | null): void {
++      saveGuard = typeof guard === 'function' ? guard : null;
++    },
++    /** 새 문서(저장하지 않은 변경 확인 포함). 열기는 표준 launchQueue / showOpenFilePicker 로 한다. */
++    newDocument(): void {
++      deps.newDocument();
++    },
++  };
++}
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 8eb428a..d2b009e 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -112,6 +112,12 @@ import { DocumentAgentController } from '@/document-agent/controller';
+ import { initI18n, t } from '@/i18n/index.ts';
+ import { onlyEmptyLinesegWarnings } from '@/core/lineseg-autoreflow';
+ import { initCommandTooltips } from '@/ui/command-tooltip';
++import {
++  androidRecoveryUnavailable,
++  createAndroidHostApi,
++  isAndroidHost,
++  recordAutosaveStatus,
++} from '@/hwpxxx/android-host';
+ 
+ // 언어팩 초기화 — 정적 마크업의 라벨을 결정된 로케일로 갱신한다. 카탈로그에 없는 키는
+ // 원문(ko)으로 물러나므로 번역이 없는 상태에서도 화면은 도입 전과 같다.
+@@ -125,7 +131,8 @@ documentState.installBeforeUnload(window);
+ const autosaveManager = new AutosaveManager({
+   exportBytes: () => wasm.exportHwp(),
+   // exportHwp()는 평문 HWP 바이트를 만든다. 보호 문서에서는 복구본을 남기지 않는다 (#5992).
+-  isRecoveryBlocked: () => wasm.requiresPasswordForSave,
++  // [hwpxxx-android] 비공개 복구 저장소가 없는 Android 모드에서는 평문 복구본을 만들지 않는다.
++  isRecoveryBlocked: () => wasm.requiresPasswordForSave || androidRecoveryUnavailable(),
+   schedule: autosaveScheduleFromUserSettings(),
+   onStatus: handleAutosaveStatus,
+ });
+@@ -161,6 +168,19 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
+   notifySaved: (fileName?: string) => completeHostSave(fileName),
+   fonts: { setProvider: setHostFontProvider, getState: getHostFontState },
+ };
++// [hwpxxx-android] 셸이 부르는 API. 셸(`window.rhwpAndroidHost`)이 있을 때만 노출한다.
++if (isAndroidHost()) {
++  (window as any).rhwpStudio.android = createAndroidHostApi({
++    hasDocument: () => wasm.pageCount > 0,
++    getFileName: () => wasm.fileName,
++    isDirty: () => documentState.isDirty(),
++    isEncrypted: () => wasm.requiresPasswordForSave,
++    getFormat: () => wasm.getSourceFormat() as 'hwp' | 'hwpx' | 'hml',
++    canReplaceDocument: () => canReplaceCurrentDocument(),
++    flushAutosave: (reason) => autosaveManager.flushNow(reason),
++    newDocument: () => eventBus.emit('create-new-document'),
++  });
++}
+ 
+ // E2E 테스트용 전역 노출 (개발 모드 전용)
+ if (import.meta.env.DEV) {
+@@ -416,6 +436,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
+ }
+ 
+ function handleAutosaveStatus(status: AutosaveStatus): void {
++  recordAutosaveStatus(status);
+   const message = document.getElementById('sb-message');
+   if (!message) return;
+   if (autosaveStatusRestoreTimer) {
+@@ -439,7 +460,9 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
+     nextMessage = `복구용 자동 저장 완료 (${formatBytes(status.byteLength)})`;
+   } else if (status.state === 'blocked') {
+     // 실패가 아니라 의도된 차단이므로 구분해서 알린다 (#5992).
+-    nextMessage = '보호 문서는 복구용 자동 저장을 하지 않습니다';
++    nextMessage = androidRecoveryUnavailable() && !wasm.requiresPasswordForSave
++      ? '비공개 복구 저장소가 없어 복구용 자동 저장을 하지 않습니다'
++      : '보호 문서는 복구용 자동 저장을 하지 않습니다';
+   } else {
+     nextMessage = '복구용 자동 저장 실패';
+   }

@@ -20,7 +20,11 @@
 |---|---|
 | `app/src/main/java/kr/offline/hwp/MainActivity.java` | WebView, 로컬 가상 origin, Native 브리지(`OfflineNative`) |
 | `app/src/main/java/kr/offline/hwp/FileStore.java` | 경로 검증, 문서 검증, 원자적 저장, 백업, 이동 |
-| `app/src/main/assets/app.js` | 문서함·읽기·편집·폴더 선택 UI |
+| `app/src/main/assets/studio-host.js` | 데스크톱 편집기의 Android 파일·복구·글꼴·클립보드·인쇄 연결 |
+| `app/src/main/assets/studio/` | 고정한 데스크톱 Studio에서 생성하는 편집기 번들 (Git 제외) |
+| `config/android-studio.json`, `patches/rhwp-studio/` | 데스크톱 1.6.1 소스와 Android 연결 패치의 빌드 고정 정보 |
+| `app/src/main/assets/app.js` | 명시적으로 선택하는 기존 문서함·편집기 테스트 경로 |
+| `app/src/main/java/kr/offline/hwp/FontStore.java` | 가져온 TTF/OTF의 비공개 영구 보관·검증 |
 | `app/src/main/assets/intro.js` | 파일 접근 미허용 안내 3화면과 전환 |
 | `app/src/main/assets/library.css` | 승인 디자인에서 생성한 문서함·안내·팝업 스타일 (`scripts/make_library_css.py`) |
 | `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.8.7, Noto Sans KR, Lucide (원래 라이선스 포함) |
@@ -31,9 +35,21 @@
 
 PC 1.6.1의 메모·형광펜 모드·모양 복사·문단 간격·자간/장평·표 칸 합치기를 추가했습니다. 갤럭시 탭 S7 가로 화면에서는 오른쪽 편집 패널을 사용하고 회전 중에도 입력을 유지합니다. 범위와 기기 시험 상태는 [변경 안내](docs/CHANGES-0.3.0.md)를 참고하세요.
 
+현재 개발 브랜치는 **데스크톱의 실제 편집기 코드**를 기본 화면으로 사용합니다. 단축키·마우스 선택·툴팁·서식·표·쪽·개체 명령을 공유하고, Android 파일 저장과 내려받은 글꼴 등록을 연결합니다. 사용법과 검증 구분은 [DeX 데스크톱 편집기](docs/DEX-DESKTOP-PARITY.md), 글꼴의 형식·보관 방식은 [글꼴 안내](docs/ANDROID-FONTS.md)를 참고하세요. 실행한 검사와 기기 확인 범위는 [검증 기록](docs/DEX-VALIDATION.md)에 정리했습니다.
+
 ## 빌드
 
 먼저 `config/android-engine.json`의 커밋을 별도 rhwp 작업 사본에 체크아웃하고 Rust nightly-2026-02-01(rust-src 및 wasm32-unknown-unknown 타깃), wasm-bindgen-cli 0.2.127로 `bash scripts/build-engine.sh <rhwp 작업 사본>`을 실행하세요. 새 엔진은 GitHub Actions에서도 빌드합니다.
+
+이어서 Node.js 22 이상으로 공유 편집기를 빌드합니다. 작업 사본에는 `rhwp-studio`, `assets/fonts`, `assets/logo`와 upstream 라이선스 파일도 있어야 합니다. `npm ci`는 고정한 잠금 파일의 의존성을 설치합니다.
+
+```bash
+node scripts/install-engine.mjs .build/engine
+node scripts/build-studio.mjs --upstream .build/rhwp --run-tests
+node scripts/verify-studio.mjs
+```
+
+엔진 또는 Studio가 없거나 빌드 정보와 파일 해시가 맞지 않으면 Gradle 빌드는 중단됩니다. 생성한 런타임 파일을 소스 변경으로 커밋하지 않습니다.
 
 JDK 17과 Android SDK(platform 35, build-tools 35.0.0)가 필요합니다. `local.properties`에 다음을 적습니다. 이 파일은 커밋하지 않습니다.
 
@@ -74,4 +90,4 @@ node tests/intro-timing.cjs http://localhost:8765
 
 ## Termux 프로젝트 검색
 
-설정의 **Termux 프로젝트 폴더 연결**로 Android 폴더 선택 화면에서 프로젝트 폴더를 선택합니다. 하위 폴더의 HWP/HWPX를 검색하고 열 수 있으며, 편집 결과는 기기 저장공간에 복사본으로 저장합니다. 연결은 재시작 후에도 유지됩니다. 연결 해제는 Termux 파일을 삭제하지 않습니다. 자세한 동작과 실제 APK 검증 범위는 [DeX 시험 문서](docs/DEX-QA.md)를 참고하세요.
+기본 편집기에서는 `Ctrl+O`로 파일 열기 대화상자를 띄운 뒤 **폴더 연결**에서 Android 폴더 선택 화면의 프로젝트 폴더를 선택합니다. 기존 테스트 편집기는 설정의 **Termux 프로젝트 폴더 연결**을 사용합니다. 하위 폴더의 HWP/HWPX를 검색하고 열 수 있으며, 편집 결과는 기기 저장공간에 복사본으로 저장합니다. 연결은 재시작 후에도 유지됩니다. 연결 해제는 Termux 파일을 삭제하지 않습니다. 자세한 동작과 실제 APK 검증 범위는 [DeX 시험 문서](docs/DEX-QA.md)를 참고하세요.

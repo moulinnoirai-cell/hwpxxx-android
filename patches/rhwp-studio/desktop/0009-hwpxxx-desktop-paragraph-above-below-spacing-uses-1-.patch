@@ -1,0 +1,64 @@
+From aad24f874e6aaf2a3a4e2687daf90af9a3c74d5b Mon Sep 17 00:00:00 2001
+From: moulinnoirai-cell <331239397+moulinnoirai-cell@users.noreply.github.com>
+Date: Fri, 30 Oct 2026 11:04:32 +0900
+Subject: [PATCH 09/10] hwpxxx desktop: paragraph above/below spacing uses
+ 1/200pt units
+
+---
+ rhwp-studio/src/ui/para-shape-dialog.ts | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/rhwp-studio/src/ui/para-shape-dialog.ts b/rhwp-studio/src/ui/para-shape-dialog.ts
+index 32547766e..547410f43 100644
+--- a/rhwp-studio/src/ui/para-shape-dialog.ts
++++ b/rhwp-studio/src/ui/para-shape-dialog.ts
+@@ -74,6 +74,22 @@ function ptToRaw(pt: number): number {
+   return Math.round(pt * HWPUNIT_PER_PT);
+ }
+ 
++/**
++ * [hwpxxx] 문단 위/아래 간격은 1/200pt 단위로 저장·렌더링된다(WASM 읽기값은 raw/75 px).
++ * 100/pt로 바꾸면 입력한 값의 절반만 적용되고 화면에는 2배로 보인다.
++ */
++const SPACING_RAW_PER_PT = 200;
++
++/** 문단 간격 px(WASM 읽기값) → pt 표시값 */
++function spacingPxToPt(px: number): number {
++  return pxToRaw(px) / SPACING_RAW_PER_PT;
++}
++
++/** 문단 간격 pt → raw (1/200pt) */
++function spacingPtToRaw(pt: number): number {
++  return Math.round(pt * SPACING_RAW_PER_PT);
++}
++
+ /** 줄 간격 입력값을 lineSpacingInput의 min/max(0~9999)로 클램프 */
+ function clampLineSpacing(value: number): number {
+   return Math.max(0, Math.min(9999, value));
+@@ -660,8 +676,8 @@ export class ParaShapeDialog {
+     }
+ 
+     // 문단 간격 (px → pt)
+-    this.spacingBeforeInput.value = pxToPt(p.spacingBefore ?? 0).toFixed(1);
+-    this.spacingAfterInput.value = pxToPt(p.spacingAfter ?? 0).toFixed(1);
++    this.spacingBeforeInput.value = spacingPxToPt(p.spacingBefore ?? 0).toFixed(1);
++    this.spacingAfterInput.value = spacingPxToPt(p.spacingAfter ?? 0).toFixed(1);
+ 
+     // ── 확장 탭
+     const ht = p.headType || 'None';
+@@ -818,10 +834,10 @@ export class ParaShapeDialog {
+     if (newLS !== origLS) mods.lineSpacing = newLS;
+ 
+     // 문단 간격 (비교: 원본 px → HWPUNIT 1x 변환 후 비교)
+-    const newSB = ptToRaw(parseFloat(this.spacingBeforeInput.value) || 0);
++    const newSB = spacingPtToRaw(parseFloat(this.spacingBeforeInput.value) || 0);
+     if (newSB !== pxToRaw(p.spacingBefore ?? 0)) mods.spacingBefore = newSB;
+ 
+-    const newSA = ptToRaw(parseFloat(this.spacingAfterInput.value) || 0);
++    const newSA = spacingPtToRaw(parseFloat(this.spacingAfterInput.value) || 0);
+     if (newSA !== pxToRaw(p.spacingAfter ?? 0)) mods.spacingAfter = newSA;
+ 
+     // ── 확장 탭
+-- 
+2.55.0.windows.5
+

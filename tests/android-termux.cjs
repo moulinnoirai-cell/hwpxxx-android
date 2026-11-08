@@ -3,6 +3,9 @@ const {chromium}=require('playwright');
 const {execFileSync}=require('node:child_process');
 const fs=require('node:fs'),assert=require('node:assert/strict');
 const {waitForWindow,recoverSystemAnr,disableNetwork,start:startAnrGuard,check:anrCheck,finish:anrFinish,guardedKey}=require('./android-system.cjs');
+// DEBUG-only opt-in: the default app UI is now the shared desktop Studio. These suites drive the OLD library UI, so they
+// explicitly request the debug legacy fallback. They are LEGACY-FALLBACK results and never a pass for the new default Studio.
+const LEGACY_UI=['--ez','legacyUiForTests','true'];console.log('UI_UNDER_TEST legacy-fallback (debug legacyUiForTests); NOT the default shared Studio');
 const pkg='kr.offline.hwp.preview',home='/data/data/com.termux/files/home',project=home+'/hwpxxx-project',qa='.qa/android-termux-'+process.env.ANDROID_API;
 fs.mkdirSync(qa,{recursive:true});let page,browser,lastXml='';const checks=[],errors=[];
 const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:45000}).trim();
@@ -23,7 +26,7 @@ async function connect(){
  }catch(e){error=e;await disconnect();await pause(500);}
  throw error||new Error('Unable to connect to installed WebView');
 }
-async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);await connect();}
+async function start(){sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`,...LEGACY_UI);await connect();}
 async function restart(){sh('am','force-stop',pkg);await start();}
 function privateHash(){return sh('run-as','com.termux','sha256sum',project+'/nested/termux-nested.hwpx').split(/\s/)[0];}
 function privateWrite(name,src){const bytes=fs.readFileSync(src).toString('base64');adb('shell',`run-as com.termux sh -c 'printf %s ${bytes} | base64 -d > ${name}'`);assert.equal(sh('run-as','com.termux','stat','-c','%s',name),String(fs.statSync(src).size));}
@@ -119,5 +122,5 @@ async function native(op,args={}){const r=await page.evaluate(({op,args})=>new P
   assert.deepEqual(errors,[]);
  }catch(e){checks.push({name:e.scenario||'infrastructure',passed:false,error:e.stack});console.error(e);console.error('TERMUX_FOREGROUND',foreground());(()=>{try{screenshot(qa+'/failure.png');}catch{}})();if(page)console.error('TERMUX_PAGE',await page.locator('body').innerText().catch(()=>'<closed>'));process.exitCode=1;}
  finally{try{anrGuard=anrFinish([pkg,'com.termux']);}catch(e){anrGuard={error:e.message};checks.push({name:'ANR guard: no app/unknown ANR or crash dialog during the suite',passed:false,error:e.message});process.exitCode=1;console.error(e.message);}
-  console.log('TERMUX_SUMMARY',JSON.stringify({api:process.env.ANDROID_API,anrGuard:anrGuard.error?anrGuard.error:{systemRecoveries:anrGuard.systemRecoveries,systemAnrInLogs:anrGuard.systemAnrInLogs,failures:anrGuard.failures},passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,errors}));fs.writeFileSync(qa+'/results.json',JSON.stringify({anrGuard,checks,errors,termux:'official GitHub v0.118.3 x86_64',provider:'com.termux.documents'},null,2));fs.writeFileSync(qa+'/native-ui.xml',lastXml);fs.writeFileSync(qa+'/logcat.txt',adb('logcat','-d','-t','1000'));await disconnect();process.exit(process.exitCode||0);}
+  console.log('TERMUX_SUMMARY',JSON.stringify({uiUnderTest:'legacy-fallback (debug legacyUiForTests); not the default shared Studio',api:process.env.ANDROID_API,anrGuard:anrGuard.error?anrGuard.error:{systemRecoveries:anrGuard.systemRecoveries,systemAnrInLogs:anrGuard.systemAnrInLogs,failures:anrGuard.failures},passed:checks.filter(c=>c.passed).length,failed:checks.filter(c=>!c.passed).length,errors}));fs.writeFileSync(qa+'/results.json',JSON.stringify({anrGuard,checks,errors,termux:'official GitHub v0.118.3 x86_64',provider:'com.termux.documents'},null,2));fs.writeFileSync(qa+'/native-ui.xml',lastXml);fs.writeFileSync(qa+'/logcat.txt',adb('logcat','-d','-t','1000'));await disconnect();process.exit(process.exitCode||0);}
 })();

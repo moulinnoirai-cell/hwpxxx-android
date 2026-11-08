@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>studio-host protocol harness</title>
+<!-- Test-only page. The Studio below is a FAKE that implements only the rhwpStudio.android hook surface
+     (see host-contract.md). The real Studio bundle is covered by tests/studio-ui.py. -->
+<span id="sb-message"></span>
+<script src="/__mock.js"></script>
+<script src="/studio-host.js"></script>
+<script>
+window.__studio = {
+  calls: {flush: 0, notifySaved: 0, close: 0}, closeResult: true, closeError: null, guard: null, provider: null,
+  state: {hasDocument: true, fileName: '', dirty: false, encrypted: false, format: 'hwp', fileHandle: null},
+};
+window.rhwpStudio = {
+  notifySaved() { __studio.calls.notifySaved++; },
+  fonts: {async setProvider(provider) { __studio.provider = provider; }, getState() { return {}; }},
+  android: {
+    getState() { return {...__studio.state}; },
+    async close() { __studio.calls.close++; if (__studio.closeError) throw new Error(__studio.closeError); return __studio.closeResult; },
+    async flushRecovery() { __studio.calls.flush++; return {ok: true}; },
+    setSaveGuard(guard) { __studio.guard = guard; },
+  },
+};
+window.__h = {};
+</script>

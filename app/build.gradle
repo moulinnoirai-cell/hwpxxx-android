@@ -36,3 +36,12 @@ tasks.register('verifyMemoEngine', Exec) {
     commandLine 'node', 'scripts/verify-engine.mjs'
 }
 tasks.named('preBuild').configure { dependsOn 'verifyMemoEngine' }
+
+// The Android shell hosts the pinned desktop editor. A missing or stale bundle must
+// fail the build instead of producing an APK that opens an empty editor screen.
+tasks.register('verifyDesktopStudio', Exec) {
+    description = 'Verifies desktop Studio source pins and every packaged asset hash'
+    workingDir rootProject.projectDir
+    commandLine 'node', 'scripts/verify-studio.mjs'
+}
+tasks.named('preBuild').configure { dependsOn 'verifyDesktopStudio' }

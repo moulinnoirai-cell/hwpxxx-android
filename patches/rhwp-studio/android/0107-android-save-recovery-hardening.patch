@@ -1,0 +1,1690 @@
+diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
+index dd66911..9712e63 100644
+--- a/rhwp-studio/src/core/wasm-bridge.ts
++++ b/rhwp-studio/src/core/wasm-bridge.ts
+@@ -222,7 +222,8 @@ import {
+ import { rememberRawCanvasFontDescriptor } from './canvas-font-raw';
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
+ import { isAndroidHost } from '@/hwpxxx/android-host';
+-import { verifyReopenedDocument, type VerifiableDocument } from '@/hwpxxx/android-save-verify';
++import { verifyReopenedDocument, type VerifiableDocument, type VerifyCoverage } from '@/hwpxxx/android-save-verify';
++import type { RecoveryBytes } from '@/recovery/autosave-store';
+ 
+ /**
+  * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
+@@ -302,18 +303,53 @@ function installCanvasFontSubstitution(): void {
+   canvasFontSubstitutionInstalled = true;
+ }
+ 
++/**
++ * [hwpxxx-android] 암호 문서의 비공개 상태(메모리 전용).
++ * - `password`: 지금 열린 문서가 어떤 비밀번호로 보호되는지(열 때 입력했거나, 보호 저장에 성공한 비밀번호). 복구본 암호화에만 쓴다.
++ * - 저장은 `stage → commit | discard` 로 이어진다. 저장이 끝나기 전에는 기준(password)을 바꾸지 않는다(취소·실패 시 그대로).
++ * - `lastStageGeneration`: 마지막으로 저장을 시작한 문서 세대. 저장이 진행되는 동안 다른 문서가 열렸다면(문서 교체로 이 상태 전체가
++ *   지워진다) 늦게 도착한 완료 통지는 새 문서의 기준을 건드리지 못한다.
++ * - 저장이 겹치면(`inflight > 1`) 어느 비밀번호가 파일에 쓰였는지 알 수 없으므로 비밀번호를 지운다(복구본을 막는 쪽으로 실패).
++ */
++interface AndroidSecrets {
++  password: string | null;
++  stage: { password: string | null } | null;
++  lastStageGeneration: number | null;
++  inflight: number;
++  ambiguous: boolean;
++}
++const androidSecrets = new WeakMap<object, AndroidSecrets>();
++const PASSWORD_REQUIRED_TEXT = '비밀번호가 필요한 암호 문서';
++
++function secretsOf(owner: object): AndroidSecrets {
++  let secrets = androidSecrets.get(owner);
++  if (!secrets) {
++    secrets = { password: null, stage: null, lastStageGeneration: null, inflight: 0, ambiguous: false };
++    androidSecrets.set(owner, secrets);
++  }
++  return secrets;
++}
++
++/** 비밀번호 없이 열리면(= 암호화되지 않았으면) 던진다. `openWithPassword` 는 평문 파일도 열기 때문에 암호화 증명이 따로 필요하다. */
++function assertNeedsPassword(bytes: Uint8Array): void {
++  let opened: HwpDocument | null = null;
++  try {
++    opened = new HwpDocument(bytes);
++  } catch (error) {
++    if (String((error as { message?: unknown } | null)?.message ?? error).includes(PASSWORD_REQUIRED_TEXT)) return;
++    throw new Error('암호가 적용됐는지 확인하지 못해 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++  }
++  try { opened.free(); } catch { /* noop */ }
++  throw new Error('암호가 적용되지 않은 결과라 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++}
++
+ export class WasmBridge {
+   private doc: HwpDocument | null = null;
+   private canvasMetrics = new CanvasMetricSession();
+   private readonly hostCanvasFonts = new HostCanvasFontSession();
+   private canvasFontGeneration = 0;
+-  /**
+-   * [hwpxxx-android] 암호 문서의 비밀번호: 이 객체의 메모리에만 둔다(저장소·로그·메타데이터·공개 API 없음).
+-   * 복구본을 같은 비밀번호로 암호화해 내보내는 데만 쓰고, 문서가 바뀌거나 페이지가 내려가면 지운다.
+-   * 데스크톱 모드(셸 없음)에서는 보관하지 않는다.
+-   */
+-  private androidPassword: string | null = null;
+-  private stagedAndroidPassword: string | null = null;
++  // [hwpxxx-android] 암호 문서의 비밀번호는 이 파일 안의 모듈 비공개 저장(`androidSecrets`)에만 둔다 — 인스턴스 속성이 아니므로
++  // 개발용 전역(`__wasm`)이나 공개 API 로 읽히지 않는다. 저장소·로그·메타데이터에도 두지 않는다.
+   constructor() {
+     if (typeof window !== 'undefined') {
+       window.addEventListener('pagehide', () => this.clearAndroidPasswords());
+@@ -473,7 +509,6 @@ export class WasmBridge {
+     fileName: string | undefined,
+     requiresPasswordForSave: boolean,
+     createDocument: () => HwpDocument,
+-    openPassword: string | null = null,
+   ): void {
+     const nextFileName = fileName ?? 'document.hwp';
+     const nextDocumentDigest = `blake3:${bytesToHex(blake3(data))}`;
+@@ -495,7 +530,6 @@ export class WasmBridge {
+       // 문서 교체 성공과 같은 commit 구간에서 갱신한다 (#5986).
+       this._requiresPasswordForSave = requiresPasswordForSave;
+       this.clearAndroidPasswords();
+-      this.androidPassword = requiresPasswordForSave && isAndroidHost() ? openPassword : null;
+       this._documentDigest = nextDocumentDigest;
+       this._documentGeneration += 1;
+       this.releaseCanvasFontResources();
+@@ -538,8 +572,9 @@ export class WasmBridge {
+       fileName,
+       true,
+       () => HwpDocument.openWithPassword(data, password),
+-      password,
+     );
++    // [hwpxxx-android] 문서 교체가 성공한 뒤에만(실패하면 이전 문서와 그 기준이 그대로다) 이 문서를 연 비밀번호를 비공개로 기억한다.
++    this.rememberOpenPassword(password);
+   }
+ 
+   /** [Task #741 후속] 외부 file path 그림 영역 영역 dev 서버 영역 영역 fetch + inject. */
+@@ -660,54 +695,99 @@ export class WasmBridge {
+   }
+ 
+   set requiresPasswordForSave(value: boolean) {
++    if (isAndroidHost()) {
++      // [hwpxxx-android] 보호 상태는 이 문서를 위해 시작한 저장이 끝날 때만 바뀐다. 저장 중 다른 문서로 바뀐 뒤 늦게 도착한
++      // 완료 통지가 새 문서의 보호 상태를 풀어 암호 문서를 평문 복구본으로 내보내게 하면 안 된다.
++      if (androidSecrets.get(this)?.lastStageGeneration !== this._documentGeneration) return;
++    }
+     this._requiresPasswordForSave = value;
+   }
+ 
+   // ── [hwpxxx-android] 비공개 비밀번호 보관 · 저장 검증 · 암호 복구본 ─────────────────────────
+ 
+   private clearAndroidPasswords(): void {
+-    this.androidPassword = null;
+-    this.stagedAndroidPassword = null;
++    androidSecrets.delete(this);
+   }
+ 
+-  /** 저장 내보내기에 쓴 비밀번호를 '저장 성공 때 보관'하도록 잠시 둔다. */
++  /** 지금 열린 문서를 연 비밀번호(복구본 암호화용)를 기억한다 — 문서 교체의 commit 구간에서만 부른다. */
++  private rememberOpenPassword(password: string | null): void {
++    if (password !== null && isAndroidHost()) secretsOf(this).password = password;
++  }
++
++  /** 저장을 시작한다: 이 저장이 쓰는 비밀번호(없으면 null)를 '저장 성공 때 반영'하도록 잠시 둔다. 기준은 아직 바꾸지 않는다. */
+   stageAndroidPassword(password: string | null): void {
+-    this.stagedAndroidPassword = isAndroidHost() ? password : null;
++    if (!isAndroidHost()) return;
++    const secrets = secretsOf(this);
++    secrets.inflight += 1;
++    if (secrets.inflight > 1) secrets.ambiguous = true;
++    secrets.stage = { password };
++    secrets.lastStageGeneration = this._documentGeneration;
+   }
+ 
+-  /** 저장이 성공했을 때: 보호 저장이면 그 비밀번호를 보관하고, 아니면 지운다. */
++  private settleAndroidStage(secrets: AndroidSecrets): void {
++    if (secrets.inflight > 0) secrets.inflight -= 1;
++    if (secrets.inflight === 0) { secrets.stage = null; secrets.ambiguous = false; }
++  }
++
++  /**
++   * 저장이 성공했을 때: 보호 저장이면 그 비밀번호가 새 기준이 되고, 아니면 기준이 지워진다.
++   * - 저장 중 다른 문서로 바뀌었으면(상태가 이미 지워졌다) 새 문서의 기준을 건드리지 않는다.
++   * - 저장이 겹쳤거나 시작 기록이 사라졌다면 어느 비밀번호가 쓰였는지 몰라 기준을 지운다(복구본을 만들지 않는 쪽).
++   */
+   commitAndroidPassword(protectedSave: boolean): void {
+-    this.androidPassword = protectedSave ? (this.stagedAndroidPassword ?? this.androidPassword) : null;
+-    this.stagedAndroidPassword = null;
++    if (!isAndroidHost()) return;
++    const secrets = androidSecrets.get(this);
++    if (!secrets || secrets.lastStageGeneration !== this._documentGeneration) return;
++    const stage = secrets.stage;
++    let next: string | null = null;
++    if (stage && !secrets.ambiguous && secrets.inflight === 1 && (stage.password !== null) === protectedSave) {
++      next = stage.password;
++    }
++    secrets.password = next;
++    this.settleAndroidStage(secrets);
+   }
+ 
+-  /** 저장이 실패·취소됐을 때: 보관 대기 중인 비밀번호를 버린다(이미 보관된 것은 그대로). */
++  /** 저장이 실패·취소됐을 때: 이 저장의 대기 기록만 버린다(이미 정해진 기준은 그대로). */
+   discardStagedAndroidPassword(): void {
+-    this.stagedAndroidPassword = null;
++    const secrets = androidSecrets.get(this);
++    if (secrets) this.settleAndroidStage(secrets);
+   }
+ 
+   /** 암호 문서의 복구본을 만들 수 있는가(비밀번호를 이 세션에서 알고 있는가). */
+   canExportAndroidRecovery(): boolean {
+-    return !this._requiresPasswordForSave || this.androidPassword !== null;
++    return !this._requiresPasswordForSave || (androidSecrets.get(this)?.password ?? null) !== null;
+   }
+ 
+   /**
+    * 복구본 바이트(항상 HWP). 암호 문서는 보관한 비밀번호로 암호화해 내보낸다 — 평문은 만들지 않는다.
+-   * 원래 형식은 복구 메타데이터(sourceFormat)에 남는다.
++   * 암호화된 결과인지(비밀번호 없이는 열리지 않는지) 확인하고, 아니면 던진다. 원래 형식은 복구 메타데이터(sourceFormat)에 남는다.
++   * 엔진이 내용 손실을 보고하면 바이트는 그대로 두되 `lossy` 로 표시한다(복구본을 완전한 사본처럼 보이게 하지 않는다).
+    */
+-  exportAndroidRecoveryBytes(): Uint8Array {
+-    if (!this._requiresPasswordForSave) return this.exportHwp();
+-    if (this.androidPassword === null) throw new Error('암호 문서의 복구본은 비밀번호를 알 때만 만들 수 있습니다.');
+-    return this.exportHwpWithPasswordAndReport(this.androidPassword).bytes;
++  exportAndroidRecoveryBytes(): RecoveryBytes {
++    let artifact: DocumentExportArtifact;
++    if (!this._requiresPasswordForSave) {
++      artifact = this.exportHwpWithReport();
++    } else {
++      const password = androidSecrets.get(this)?.password ?? null;
++      if (password === null) throw new Error('암호 문서의 복구본은 비밀번호를 알 때만 만들 수 있습니다.');
++      artifact = this.exportHwpWithPasswordAndReport(password);
++      assertNeedsPassword(artifact.bytes);
++    }
++    const bytes: RecoveryBytes = artifact.bytes;
++    const loss = artifact.contentLoss;
++    if (loss && (loss.count > 0 || loss.losses.length > 0)) bytes.lossy = true;
++    return bytes;
+   }
+ 
+   /**
+    * 저장 직전, 내보낸 바이트를 다시 열어 편집 중인 문서와 비교한다. 다르면 던진다(네이티브 저장 전에 멈춘다).
+-   * 비밀번호는 이 호출 범위의 지역 값으로만 쓰고 어디에도 두지 않는다.
++   * 비밀번호는 이 호출 범위의 지역 값으로만 쓰고 어디에도 두지 않는다. 암호 저장은 비밀번호 없이 열리지 않는지도 확인한다.
++   * 비교한 범위와 비교하지 못한 곳을 돌려준다.
+    */
+-  verifyAndroidSave(bytes: Uint8Array, format: 'hwp' | 'hwpx' | 'hml', password?: string): void {
+-    if (!isAndroidHost()) return;
++  verifyAndroidSave(bytes: Uint8Array, format: 'hwp' | 'hwpx' | 'hml', password?: string): VerifyCoverage | null {
++    if (!isAndroidHost()) return null;
+     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    if (password !== undefined) assertNeedsPassword(bytes);
+     let reopened: HwpDocument;
+     try {
+       reopened = password !== undefined ? HwpDocument.openWithPassword(bytes, password) : new HwpDocument(bytes);
+@@ -716,7 +796,7 @@ export class WasmBridge {
+       throw new Error('저장한 문서를 다시 열 수 없어 저장을 멈췄어요. 원본은 변경하지 않았어요.');
+     }
+     try {
+-      verifyReopenedDocument(
++      return verifyReopenedDocument(
+         this.doc as unknown as VerifiableDocument,
+         reopened as unknown as VerifiableDocument,
+         bytes.byteLength,
+diff --git a/rhwp-studio/src/hwpxxx/android-save-verify.ts b/rhwp-studio/src/hwpxxx/android-save-verify.ts
+index 1778eb6..eed061e 100644
+--- a/rhwp-studio/src/hwpxxx/android-save-verify.ts
++++ b/rhwp-studio/src/hwpxxx/android-save-verify.ts
+@@ -2,9 +2,20 @@
+ //
+ // 옛 Android 작업기(engine-worker.js)의 저장 검사(글 전체·쪽 수·쪽 그리기·서식·메모)와 같은 수준을
+ // 편집 대상 추적 없이 문서 전체로 확장한 것이다. Studio 는 거의 모든 편집이 가능하므로 "건드린 곳만"
+-// 비교할 수 없다. 모든 구역·문단(본문과 최상위 표 칸)의 문단/글자 속성, 표·칸 속성, 개체 목록, 메모를 비교한다.
+-// 하나라도 다르면 던진다 — 호출한 쪽은 네이티브 저장 전에 멈춘다. 비밀번호는 이 모듈이 받지 않는다
+-// (이미 열린 문서 두 개만 받는다).
++// 비교할 수 없다. 하나라도 다르면 던진다 — 호출한 쪽은 네이티브 저장 전에 멈춘다. 비밀번호는 이 모듈이
++// 받지 않는다(이미 열린 문서 두 개만 받는다).
++//
++// 비교 범위(실제 코어 API 기준, `VerifyCoverage` 로 돌려준다):
++//  - 글 전체, 쪽 수, 첫/끝 쪽 그리기, 구역·문단 수·문단 길이, 개체 구성(getControls)
++//  - 모든 본문 문단: 문단 서식, 글자 서식 — `getCharShapeRuns` 의 런(run) 경계마다(시작·끝) 두 문서에서 실제 속성을 비교
++//    (번호는 다시 매겨지므로 charShapeId 가 아니라 속성값을 비교한다). 빈 문단은 삽입 서식(0 위치)을 비교한다.
++//  - 본문 표(구역을 가로지르는 본문 문단 번호를 구역/문단으로 풀어) · 칸 속성 · 칸 안 문단 서식 · 칸 안 글자 서식(런 경계)
++//  - 중첩 표와 글상자·캡션: 경로 API(getXxxByPath)로 같은 방식. 문단 서식 API 가 경로 변형이 없어 중첩 문단의 문단 서식은
++//    비교하지 못한다(`uncovered` 에 남긴다).
++//  - 머리말·꼬리말: 문단 서식, 글자 하나하나(짧다)
++//  - 메모(글쓴이·내용)
++// 비교하지 못하는 곳(각주·미주 글자 서식, 도형/그림 속성 일부 등)은 `uncovered` 에 그대로 적어 호출한 쪽이 "문서 전체를 확인했다"고
++// 거짓으로 말하지 않게 한다.
+ 
+ export interface VerifiableDocument {
+   getTextFileUnicode(): string;
+@@ -15,6 +26,8 @@ export interface VerifiableDocument {
+   getParagraphLength(section: number, para: number): number;
+   getCharPropertiesAt(section: number, para: number, offset: number): string;
+   getParaPropertiesAt(section: number, para: number): string;
++  getCharShapeRuns(section: number, para: number, start: number, end: number): string;
++  getCharShapeRunsInCellByPath(section: number, para: number, path: string, start: number, end: number): string;
+   getControls(): string;
+   getTableDimensions(section: number, para: number, control: number): string;
+   getTableProperties(section: number, para: number, control: number): string;
+@@ -23,11 +36,46 @@ export interface VerifiableDocument {
+   getCellParagraphLength(section: number, para: number, control: number, cell: number, cellPara: number): number;
+   getCellCharPropertiesAt(section: number, para: number, control: number, cell: number, cellPara: number, offset: number): string;
+   getCellParaPropertiesAt(section: number, para: number, control: number, cell: number, cellPara: number): string;
++  getTableDimensionsByPath(section: number, para: number, path: string): string;
++  getCellPropertiesByPath(section: number, para: number, path: string, cell: number): string;
++  getCellParagraphCountByPath(section: number, para: number, path: string): number;
++  getCellParagraphLengthByPath(section: number, para: number, path: string): number;
++  getCellCharPropertiesAtByPath(section: number, para: number, path: string, offset: number): string;
++  getHeaderFooter(section: number, isHeader: boolean, applyTo: number): string;
++  getHeaderFooterParaInfo(section: number, isHeader: boolean, applyTo: number, hfPara: number): string;
++  getParaPropertiesInHf(section: number, isHeader: boolean, applyTo: number, hfPara: number): string;
++  getCharPropertiesInHeaderFooter(section: number, isHeader: boolean, applyTo: number, hfPara: number, offset: number): string;
+   getMemoList?: () => string;
+ }
+ 
++/** 실제로 비교한 양과, 비교하지 못한 곳. 호출한 쪽·시험이 "무엇을 확인했는가"를 정직하게 말할 때 쓴다. */
++export interface VerifyCoverage {
++  bodyParagraphs: number;
++  bodyCharSamples: number;
++  tables: number;
++  nestedTables: number;
++  cellParagraphs: number;
++  cellCharSamples: number;
++  textBoxLists: number;
++  headerFooterParagraphs: number;
++  memos: number;
++  uncovered: string[];
++}
++
+ export const ANDROID_MAX_SAVE_BYTES = 32 * 1024 * 1024;
+ const MAX_PAGES = 500;
++/** 머리말·꼬리말 문단은 짧다. 이보다 길면 글자 하나하나 대신 앞 4096자만 비교하고 `uncovered` 에 적는다. */
++const MAX_HF_CHARS = 4096;
++
++/** 필수 API 이름 — 하나라도 없으면 확인할 수 없으므로 저장을 막는다(조용히 건너뛰지 않는다). */
++const REQUIRED_APIS: ReadonlyArray<keyof VerifiableDocument> = [
++  'getTextFileUnicode', 'pageCount', 'renderPageSvg', 'getSectionCount', 'getParagraphCount', 'getParagraphLength',
++  'getCharPropertiesAt', 'getParaPropertiesAt', 'getCharShapeRuns', 'getCharShapeRunsInCellByPath', 'getControls',
++  'getTableDimensions', 'getTableProperties', 'getCellProperties', 'getCellParagraphCount', 'getCellParagraphLength',
++  'getCellCharPropertiesAt', 'getCellParaPropertiesAt', 'getTableDimensionsByPath', 'getCellPropertiesByPath',
++  'getCellParagraphCountByPath', 'getCellParagraphLengthByPath', 'getCellCharPropertiesAtByPath', 'getHeaderFooter',
++  'getHeaderFooterParaInfo', 'getParaPropertiesInHf', 'getCharPropertiesInHeaderFooter',
++];
+ 
+ /** 내보내기 때 다시 매겨지는 내부 번호(…Id)와 조판 결과로 다시 계산되는 값은 비교하지 않는다. */
+ const DERIVED_KEYS = new Set(['height', 'tableHeight', 'paraShapeId', 'charShapeId']);
+@@ -36,17 +84,49 @@ const DERIVED_KEYS = new Set(['height', 'tableHeight', 'paraShapeId', 'charShape
+  * (예: 무늬 종류·색 -1/0, 영문 줄나눔 단위, 표의 쪽 안 제한·겹침 허용). 같은 형식 저장은 이 목록 없이 전부 비교한다.
+  */
+ const CONVERSION_DEFAULT_KEYS = new Set(['patternType', 'patternColor', 'englishBreakUnit', 'restrictInPage', 'allowOverlap']);
+-let skipConversionDefaults = false;
+-const isIgnored = (key: string): boolean => DERIVED_KEYS.has(key) || /Id$/.test(key)
+-  || (skipConversionDefaults && CONVERSION_DEFAULT_KEYS.has(key));
+ 
+-function normalize(value: unknown): unknown {
+-  if (Array.isArray(value)) return value.map(normalize);
++interface Ctx {
++  skipConversionDefaults: boolean;
++  live: VerifiableDocument;
++  reopened: VerifiableDocument;
++  cov: VerifyCoverage;
++}
++
++/**
++ * 새로 만든 표의 메모리 기본값(바깥 여백 0, 쪽 안 제한 켬, 일부 속성만 바꿨을 때 가로 기준 '문단')을 HWP/HWPX 저장이 파일 기본값(바깥 여백 283 = 1mm, 쪽 안 제한 끔)으로
++ * 적는다 — 엔진의 정규화이지 사용자가 바꾼 값이 아니다. 새 표가 있는 문서를 저장하지 못하는 일이 없도록, 정확히 이 (편집 중 값 → 다시 연 값)
++ * 쌍일 때만 같다고 본다. 반대 방향이나 다른 값은 그대로 다르다고 본다.
++ */
++const TABLE_EXPORT_NORMALIZATION: ReadonlyArray<readonly [string, unknown, unknown]> = [
++  ['outerLeft', 0, 283], ['outerRight', 0, 283], ['outerTop', 0, 283], ['outerBottom', 0, 283],
++  ['restrictInPage', true, false],
++  // 새로 만든 표에 속성을 일부만 바꾸면 메모리의 가로 기준이 '문단'으로 적히지만 파일에는 '단'으로 저장된다(불러온 표는 그렇지 않다).
++  ['horzRelTo', 'Para', 'Column'],
++];
++
++function withoutTableExportNormalization(live: unknown, reopened: unknown): [unknown, unknown] {
++  if (!live || !reopened || typeof live !== 'object' || typeof reopened !== 'object') return [live, reopened];
++  const a = { ...(live as Record<string, unknown>) };
++  const b = { ...(reopened as Record<string, unknown>) };
++  for (const [key, from, to] of TABLE_EXPORT_NORMALIZATION) {
++    if (a[key] === from && b[key] === to) { delete a[key]; delete b[key]; }
++  }
++  return [a, b];
++}
++
++const isIgnored = (ctx: Ctx, key: string): boolean => DERIVED_KEYS.has(key) || /Id$/.test(key)
++  || (ctx.skipConversionDefaults && CONVERSION_DEFAULT_KEYS.has(key));
++
++function normalize(ctx: Ctx, value: unknown): unknown {
++  if (Array.isArray(value)) return value.map((item) => normalize(ctx, item));
+   if (value && typeof value === 'object') {
+     const out: Record<string, unknown> = {};
++    const record = value as Record<string, unknown>;
++    // 대각선이 없는 칸의 대각선 굵기: HWP 는 1, HWPX 는 0 으로 적는다(변환에서만 건너뛴다. 대각선이 있으면 그대로 비교한다).
++    const noDiagonal = ctx.skipConversionDefaults && record.diagonalLine === 0 && record.diagonalSlash === 0 && record.diagonalBackSlash === 0;
+     for (const key of Object.keys(value as object).sort()) {
+-      if (isIgnored(key)) continue;
+-      out[key] = normalize((value as Record<string, unknown>)[key]);
++      if (isIgnored(ctx, key) || (noDiagonal && key === 'diagonalWidth')) continue;
++      out[key] = normalize(ctx, (value as Record<string, unknown>)[key]);
+     }
+     return out;
+   }
+@@ -54,54 +134,305 @@ function normalize(value: unknown): unknown {
+   return typeof value === 'number' ? Math.round(value * 1000) / 1000 : value;
+ }
+ 
+-function same(a: unknown, b: unknown): boolean {
+-  return JSON.stringify(normalize(a)) === JSON.stringify(normalize(b));
++function same(ctx: Ctx, a: unknown, b: unknown): boolean {
++  return JSON.stringify(normalize(ctx, a)) === JSON.stringify(normalize(ctx, b));
+ }
+ 
+ const parse = (json: string): unknown => JSON.parse(json);
+-const lost = (what: string): Error =>
+-  new Error(`저장한 문서에서 ${what}이(가) 달라 저장을 멈췄어요. 원본은 변경하지 않았어요.`);
++const lost = (what: string, where = ''): Error =>
++  new Error(`저장한 문서에서 ${what}이(가) 달라 저장을 멈췄어요${where ? ` (${where})` : ''}. 원본은 변경하지 않았어요.`);
++
++// ── 글자 런(run) 경계 표본 ──────────────────────────────────────────────────────────────────
++interface Run { startOffset: number; endOffset: number }
++
++function parseRuns(json: string, length: number): Run[] {
++  const raw = parse(json);
++  if (!Array.isArray(raw)) throw new Error('글자 서식 런을 읽지 못해 저장을 멈췄어요.');
++  const runs: Run[] = [];
++  for (const item of raw as Array<Record<string, unknown>>) {
++    const start = Number(item.startOffset);
++    const end = Number(item.endOffset);
++    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end > length) {
++      throw new Error('글자 서식 런이 문단 범위를 벗어나 저장을 멈췄어요.');
++    }
++    runs.push({ startOffset: start, endOffset: end });
++  }
++  return runs;
++}
++
++/**
++ * 두 문서의 런 시작·끝(끝-1)의 합집합. 어느 위치든 (살아 있는 문서의 런) ∩ (다시 연 문서의 런)에 들고, 그 교집합의 시작은 두 런 목록의
++ * 시작 중 하나이므로, 이 표본이 문단의 모든 글자 위치의 속성 비교를 대신한다(속성은 런 안에서 같다).
++ * 런 번호는 내보내며 다시 매겨지고 같은 속성의 런이 합쳐질 수 있어 경계 자체는 비교하지 않는다.
++ */
++function samplePositions(liveRuns: Run[], reopenedRuns: Run[], length: number): number[] {
++  if (length <= 0) return [0]; // 빈 문단의 삽입 서식
++  const points = new Set<number>();
++  for (const run of [...liveRuns, ...reopenedRuns]) {
++    points.add(run.startOffset);
++    points.add(run.endOffset - 1);
++  }
++  if (points.size === 0) { // 런을 주지 않는 문단(방어): 처음·가운데·끝
++    points.add(0); points.add(Math.floor((length - 1) / 2)); points.add(length - 1);
++  }
++  return [...points].filter((o) => o >= 0 && o < length).sort((a, b) => a - b);
++}
++
++/** 문단 하나를 가리키는 방법(본문 또는 경로). 두 문서에 같은 값으로 묻는다. */
++interface ParaAccess {
++  length(d: VerifiableDocument): number;
++  runs(d: VerifiableDocument, length: number): string;
++  charAt(d: VerifiableDocument, offset: number): string;
++  where: string;
++}
++
++function verifyChars(ctx: Ctx, access: ParaAccess, what: string, counter: 'body' | 'cell'): number {
++  const length = access.length(ctx.live);
++  if (length !== access.length(ctx.reopened)) throw lost(`${what} 길이`, access.where);
++  const liveRuns = length > 0 ? parseRuns(access.runs(ctx.live, length), length) : [];
++  const reopenedRuns = length > 0 ? parseRuns(access.runs(ctx.reopened, length), length) : [];
++  let samples = 0;
++  for (const offset of samplePositions(liveRuns, reopenedRuns, length)) {
++    const a = parse(access.charAt(ctx.live, offset));
++    const b = parse(access.charAt(ctx.reopened, offset));
++    if (!same(ctx, a, b)) throw lost(`${what} 글자 서식`, `${access.where}, 위치 ${offset}`);
++    samples += 1;
++  }
++  if (counter === 'body') ctx.cov.bodyCharSamples += samples; else ctx.cov.cellCharSamples += samples;
++  return length;
++}
++
++// ── 개체 구성과 표 ──────────────────────────────────────────────────────────────────────────
++interface Control { ctrlId: string; list: number; para: number; controlIndex: number }
++interface Step { controlIndex: number; cellIndex: number; cellParaIndex: number }
++
++const tryCall = <T>(fn: () => T): { ok: true; value: T } | { ok: false } => {
++  try { return { ok: true, value: fn() }; } catch { return { ok: false }; }
++};
++
++function readControls(d: VerifiableDocument): Control[] {
++  return (parse(d.getControls()) as Array<Record<string, unknown>>).map((c) => ({
++    ctrlId: String(c.ctrlId ?? '').trim(), list: Number(c.list), para: Number(c.para), controlIndex: Number(c.controlIndex),
++  }));
++}
++
++function compareControls(ctx: Ctx): Control[] {
++  const strip = (items: Control[]) => items
++    .filter((c) => c.ctrlId !== '' && !c.ctrlId.startsWith('%'))
++    .map(({ ctrlId, list, para }) => ({ ctrlId, list, para }));
++  const a = readControls(ctx.live);
++  const b = readControls(ctx.reopened);
++  if (!same(ctx, strip(a), strip(b))) throw lost('개체(표·그림·도형 등) 구성');
++  return a;
++}
++
++const pathJson = (steps: Step[]): string => JSON.stringify(steps);
++
++class TableWalker {
++  private readonly byHost = new Map<string, Control[]>();
++  private readonly visitedHosts = new Set<string>();
++  private nextListId = 2; // 코어의 리스트 번호(FIRST_SUB_LIST_ID): 문서 순서 깊이 우선, 셀에 번호를 준 뒤 그 안으로 내려간다.
++  private numberingBroken = false;
++
++  private readonly ctx: Ctx;
++
++  constructor(ctx: Ctx, controls: Control[]) {
++    this.ctx = ctx;
++    for (const c of controls) {
++      const key = `${c.list}:${c.para}`;
++      const bucket = this.byHost.get(key);
++      if (bucket) bucket.push(c); else this.byHost.set(key, [c]);
++    }
++  }
++
++  /** 본문 문단 하나(구역을 가로지르는 번호)에 달린 개체를 깊이 우선으로 따른다. */
++  visitBodyParagraph(flat: number, section: number, para: number): void {
++    this.visitHost(0, flat, section, para, []);
++  }
+ 
+-function samplePoints(length: number): number[] {
+-  if (length <= 0) return [];
+-  return [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
++  /** 걷고 나서 따라가지 못한 중첩 개체를 `uncovered` 로 돌려준다. */
++  finish(): void {
++    let unreached = 0;
++    for (const [key, items] of this.byHost) {
++      const list = Number(key.split(':')[0]);
++      if (list === 0 || this.visitedHosts.has(key)) continue;
++      unreached += items.filter((c) => c.ctrlId === 'tbl' || c.ctrlId === 'gso').length;
++    }
++    if (unreached > 0) this.ctx.cov.uncovered.push(`중첩된 표·도형 ${unreached}개의 내용은 경로를 찾지 못해 비교하지 못했어요.`);
++    if (this.numberingBroken) this.ctx.cov.uncovered.push('일부 중첩 표의 칸 구성을 읽지 못해 그 아래 개체는 비교하지 못했어요.');
++  }
++
++  private visitHost(list: number, paraInList: number, section: number, rootPara: number, hostPath: Step[]): void {
++    const key = `${list}:${paraInList}`;
++    const items = this.byHost.get(key);
++    if (!items) return;
++    this.visitedHosts.add(key);
++    for (const item of items) {
++      if (item.ctrlId === 'tbl') this.visitTable(item, section, rootPara, hostPath);
++      else if (item.ctrlId === 'gso') this.visitShape(item, section, rootPara, hostPath);
++    }
++  }
++
++  private tableSteps(hostPath: Step[], control: number, cell = 0, cellPara = 0): Step[] {
++    return [...hostPath, { controlIndex: control, cellIndex: cell, cellParaIndex: cellPara }];
++  }
++
++  private visitTable(table: Control, section: number, rootPara: number, hostPath: Step[]): void {
++    const { ctx } = this;
++    const nested = hostPath.length > 0;
++    const control = table.controlIndex;
++    const tablePath = pathJson(this.tableSteps(hostPath, control));
++    const liveDims = nested
++      ? tryCall(() => parse(ctx.live.getTableDimensionsByPath(section, rootPara, tablePath)))
++      : tryCall(() => parse(ctx.live.getTableDimensions(section, rootPara, control)));
++    if (!liveDims.ok) { this.numberingBroken = true; return; }
++    const reDims = nested
++      ? tryCall(() => parse(ctx.reopened.getTableDimensionsByPath(section, rootPara, tablePath)))
++      : tryCall(() => parse(ctx.reopened.getTableDimensions(section, rootPara, control)));
++    if (!reDims.ok || !same(ctx, liveDims.value, reDims.value)) throw lost('표 구조', `구역 ${section + 1}, 문단 ${rootPara + 1}`);
++    ctx.cov.tables += 1;
++    if (nested) ctx.cov.nestedTables += 1;
++    if (!nested) {
++      const [a, b] = withoutTableExportNormalization(
++        parse(ctx.live.getTableProperties(section, rootPara, control)), parse(ctx.reopened.getTableProperties(section, rootPara, control)));
++      if (!same(ctx, a, b)) throw lost('표 속성', `구역 ${section + 1}, 문단 ${rootPara + 1}`);
++    }
++    const cells = Number((liveDims.value as { cellCount?: number }).cellCount ?? 0);
++    for (let cell = 0; cell < cells; cell += 1) {
++      const listId = this.nextListId; this.nextListId += 1;
++      const where = `구역 ${section + 1}, 문단 ${rootPara + 1}, 표 칸 ${cell + 1}${nested ? '(중첩)' : ''}`;
++      const a = nested ? parse(ctx.live.getCellPropertiesByPath(section, rootPara, tablePath, cell)) : parse(ctx.live.getCellProperties(section, rootPara, control, cell));
++      const b = nested ? parse(ctx.reopened.getCellPropertiesByPath(section, rootPara, tablePath, cell)) : parse(ctx.reopened.getCellProperties(section, rootPara, control, cell));
++      if (!same(ctx, a, b)) throw lost('표 칸 속성', where);
++      const first = pathJson(this.tableSteps(hostPath, control, cell, 0));
++      const paras = ctx.live.getCellParagraphCountByPath(section, rootPara, first);
++      if (paras !== ctx.reopened.getCellParagraphCountByPath(section, rootPara, first)) throw lost('표 칸 문단 수', where);
++      for (let q = 0; q < paras; q += 1) {
++        this.verifyListParagraph(section, rootPara, hostPath, control, cell, q, nested, where);
++        this.visitHost(listId, q, section, rootPara, this.tableSteps(hostPath, control, cell, q));
++      }
++    }
++  }
++
++  /**
++   * 글상자(0)·캡션(1) 리스트는 같은 경로 꼴을 쓴다. 있는 것만 번호를 받는다.
++   * 문단 수 조회는 칸 번호를 확인하지 않으므로 있는지는 글자 수 조회(엄격함)로 가른다. 살아 있는 문서에서 읽지 못하는 리스트는
++   * (번호는 받되) 내용을 비교하지 못한 곳으로 적는다 — 읽을 수 있는데 다시 연 문서가 다르면 저장을 막는다.
++   */
++  private visitShape(shape: Control, section: number, rootPara: number, hostPath: Step[]): void {
++    const { ctx } = this;
++    for (const node of [0, 1]) {
++      const first = pathJson(this.tableSteps(hostPath, shape.controlIndex, node, 0));
++      if (!tryCall(() => ctx.live.getCellParagraphLengthByPath(section, rootPara, first)).ok) continue;
++      const listId = this.nextListId; this.nextListId += 1;
++      const where = `구역 ${section + 1}, 문단 ${rootPara + 1}, ${node === 0 ? '글상자' : '캡션'}`;
++      const live = tryCall(() => ctx.live.getCellParagraphCountByPath(section, rootPara, first));
++      const readable = live.ok && live.value > 0 && Array.from({ length: live.value }, (_, q) => q).every((q) =>
++        tryCall(() => ctx.live.getCellParagraphLengthByPath(section, rootPara, pathJson(this.tableSteps(hostPath, shape.controlIndex, node, q)))).ok);
++      if (!live.ok || !readable) {
++        ctx.cov.uncovered.push('일부 글상자·캡션 안의 문단을 읽지 못해 비교하지 못했어요.');
++        continue;
++      }
++      const re = tryCall(() => ctx.reopened.getCellParagraphCountByPath(section, rootPara, first));
++      if (!re.ok || re.value !== live.value) throw lost('글상자·캡션 문단 수', where);
++      ctx.cov.textBoxLists += 1;
++      for (let q = 0; q < live.value; q += 1) {
++        this.verifyListParagraph(section, rootPara, hostPath, shape.controlIndex, node, q, true, where);
++        this.visitHost(listId, q, section, rootPara, this.tableSteps(hostPath, shape.controlIndex, node, q));
++      }
++    }
++  }
++
++  private verifyListParagraph(
++    section: number, rootPara: number, hostPath: Step[], control: number, cell: number, q: number, byPath: boolean, where: string,
++  ): void {
++    const { ctx } = this;
++    ctx.cov.cellParagraphs += 1;
++    const path = pathJson(this.tableSteps(hostPath, control, cell, q));
++    const topLevelTableCell = !byPath;
++    const access: ParaAccess = {
++      length: (d) => d.getCellParagraphLengthByPath(section, rootPara, path),
++      runs: (d, length) => d.getCharShapeRunsInCellByPath(section, rootPara, path, 0, length),
++      charAt: (d, offset) => d.getCellCharPropertiesAtByPath(section, rootPara, path, offset),
++      where: `${where}, 문단 ${q + 1}`,
++    };
++    verifyChars(ctx, access, '표 칸', 'cell');
++    if (topLevelTableCell) { // 문단 서식 API 는 최상위 표 칸에만 있다.
++      if (!same(ctx, parse(ctx.live.getCellParaPropertiesAt(section, rootPara, control, cell, q)), parse(ctx.reopened.getCellParaPropertiesAt(section, rootPara, control, cell, q)))) {
++        throw lost('표 칸 문단 서식', access.where);
++      }
++    }
++  }
+ }
+ 
+-function compareControls(live: VerifiableDocument, reopened: VerifiableDocument): Array<{ para: number; ctrl: number }> {
+-  const key = (c: Record<string, unknown>) => ({
+-    ctrlId: String(c.ctrlId ?? '').trim(), list: c.list, para: c.para,
+-  });
+-  const a = (parse(live.getControls()) as Array<Record<string, unknown>>);
+-  const b = (parse(reopened.getControls()) as Array<Record<string, unknown>>);
+-  const strip = (items: Array<Record<string, unknown>>) => items
+-    .map(key)
+-    .filter((c) => c.ctrlId !== '' && !c.ctrlId.startsWith('%'));
+-  if (!same(strip(a), strip(b))) throw lost('개체(표·그림·도형 등) 구성');
+-  return a
+-    .filter((c) => String(c.ctrlId ?? '').trim() === 'tbl' && c.list === 0)
+-    .map((c) => ({ para: Number(c.para), ctrl: Number(c.controlIndex) }));
++// ── 머리말·꼬리말 ───────────────────────────────────────────────────────────────────────────
++function verifyHeadersFooters(ctx: Ctx, sections: number): void {
++  const { live, reopened, cov } = ctx;
++  for (let s = 0; s < sections; s += 1) {
++    for (const isHeader of [true, false]) {
++      for (const applyTo of [0, 1, 2]) {
++        const where = `구역 ${s + 1}, ${isHeader ? '머리말' : '꼬리말'} ${applyTo}`;
++        const a = tryCall(() => parse(live.getHeaderFooter(s, isHeader, applyTo)) as { exists?: boolean; paraCount?: number });
++        const b = tryCall(() => parse(reopened.getHeaderFooter(s, isHeader, applyTo)) as { exists?: boolean; paraCount?: number });
++        if (!a.ok || !b.ok) {
++          if (a.ok !== b.ok) throw lost('머리말·꼬리말 구성', where);
++          continue;
++        }
++        if (Boolean(a.value.exists) !== Boolean(b.value.exists)) throw lost('머리말·꼬리말 구성', where);
++        if (!a.value.exists) continue;
++        const paras = Number(a.value.paraCount ?? 0);
++        if (paras !== Number(b.value.paraCount ?? 0)) throw lost('머리말·꼬리말 문단 수', where);
++        for (let hp = 0; hp < paras; hp += 1) {
++          cov.headerFooterParagraphs += 1;
++          const infoA = parse(live.getHeaderFooterParaInfo(s, isHeader, applyTo, hp)) as { charCount?: number; text?: string };
++          const infoB = parse(reopened.getHeaderFooterParaInfo(s, isHeader, applyTo, hp)) as { charCount?: number; text?: string };
++          if (!same(ctx, infoA, infoB)) throw lost('머리말·꼬리말 내용', `${where}, 문단 ${hp + 1}`);
++          if (!same(ctx, parse(live.getParaPropertiesInHf(s, isHeader, applyTo, hp)), parse(reopened.getParaPropertiesInHf(s, isHeader, applyTo, hp)))) {
++            throw lost('머리말·꼬리말 문단 서식', `${where}, 문단 ${hp + 1}`);
++          }
++          const count = Number(infoA.charCount ?? 0);
++          const limit = Math.min(Math.max(count, 1), MAX_HF_CHARS);
++          if (count > MAX_HF_CHARS) cov.uncovered.push('아주 긴 머리말·꼬리말 문단은 앞 4096자만 글자 서식을 비교했어요.');
++          for (let o = 0; o < limit; o += 1) {
++            if (!same(ctx, parse(live.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, o)), parse(reopened.getCharPropertiesInHeaderFooter(s, isHeader, applyTo, hp, o)))) {
++              throw lost('머리말·꼬리말 글자 서식', `${where}, 문단 ${hp + 1}, 위치 ${o}`);
++            }
++          }
++        }
++      }
++    }
++  }
+ }
+ 
+ /**
+- * 두 문서(방금 내보낸 바이트를 다시 연 것과 지금 편집 중인 것)가 같은 내용·서식인지 확인한다.
+- * `normalizeText`: HWP/HWPX 의 줄바꿈 표기 차이(\r\n)만 흡수한다.
++ * 두 문서(방금 내보낸 바이트를 다시 연 것과 지금 편집 중인 것)가 같은 내용·서식인지 확인한다. 같지 않으면 던진다.
++ * `crossFormat`: HWP ↔ HWPX 변환에서만 두 형식이 다르게 적는 기본값 필드를 건너뛴다.
++ * 돌려주는 값은 실제로 비교한 양과 비교하지 못한 곳이다 — 호출한 쪽은 이것을 넘겨 "문서 전체를 확인했다"고 말하면 안 된다.
+  */
+ export function verifyReopenedDocument(
+   live: VerifiableDocument,
+   reopened: VerifiableDocument,
+   bytes: number,
+   options: { crossFormat?: boolean } = {},
+-): void {
+-  skipConversionDefaults = options.crossFormat === true;
+-  try {
+-    verifyAll(live, reopened, bytes);
+-  } finally {
+-    skipConversionDefaults = false;
+-  }
++): VerifyCoverage {
++  const cov: VerifyCoverage = {
++    bodyParagraphs: 0, bodyCharSamples: 0, tables: 0, nestedTables: 0, cellParagraphs: 0, cellCharSamples: 0,
++    textBoxLists: 0, headerFooterParagraphs: 0, memos: 0, uncovered: [],
++  };
++  const ctx: Ctx = { skipConversionDefaults: options.crossFormat === true, live, reopened, cov };
++  verifyAll(ctx, bytes);
++  cov.uncovered = [...new Set(cov.uncovered)];
++  return cov;
+ }
+ 
+-function verifyAll(live: VerifiableDocument, reopened: VerifiableDocument, bytes: number): void {
++function verifyAll(ctx: Ctx, bytes: number): void {
++  const { live, reopened, cov } = ctx;
+   if (bytes > ANDROID_MAX_SAVE_BYTES) throw new Error('저장 결과가 32MB를 넘어 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++  for (const [name, doc] of [['편집 중인 문서', live], ['다시 연 문서', reopened]] as const) {
++    for (const api of REQUIRED_APIS) {
++      if (typeof doc[api] !== 'function') throw new Error(`${name}에서 ${String(api)} 기능을 쓸 수 없어 저장을 확인하지 못해 저장을 멈췄어요.`);
++    }
++  }
+ 
+   // 1. 글 전체
+   const text = (d: VerifiableDocument) => String(JSON.parse(d.getTextFileUnicode()) ?? '').replace(/\r\n/g, '\n');
+@@ -113,52 +444,49 @@ function verifyAll(live: VerifiableDocument, reopened: VerifiableDocument, bytes
+   reopened.renderPageSvg(0);
+   if (pages > 1) reopened.renderPageSvg(pages - 1);
+ 
+-  // 3. 구역·문단·글자·문단 서식
++  // 3. 개체 구성(표·그림·도형 목록)
++  const controls = compareControls(ctx);
++
++  // 4. 구역·본문 문단(문단 서식, 글자 런 경계 서식) — 본문 표·중첩 표·글상자는 문단 순서 그대로 따라 내려간다.
+   const sections = live.getSectionCount();
+   if (sections !== reopened.getSectionCount()) throw lost('구역 수');
+   for (let s = 0; s < sections; s += 1) {
+     const paragraphs = live.getParagraphCount(s);
+-    if (paragraphs !== reopened.getParagraphCount(s)) throw lost('문단 수');
+-    for (let p = 0; p < paragraphs; p += 1) {
+-      const length = live.getParagraphLength(s, p);
+-      if (length !== reopened.getParagraphLength(s, p)) throw lost('문단 길이');
+-      if (!same(parse(live.getParaPropertiesAt(s, p)), parse(reopened.getParaPropertiesAt(s, p)))) throw lost('문단 서식');
+-      for (const o of samplePoints(length)) {
+-        if (!same(parse(live.getCharPropertiesAt(s, p, o)), parse(reopened.getCharPropertiesAt(s, p, o)))) throw lost('글자 서식');
+-      }
+-    }
++    if (paragraphs !== reopened.getParagraphCount(s)) throw lost('문단 수', `구역 ${s + 1}`);
+   }
+-
+-  // 4. 개체 구성과 최상위 표(표·칸 속성, 칸 안 문단/글자 서식)
+-  for (const { para, ctrl } of compareControls(live, reopened)) {
+-    // 구역 번호는 getControls 가 주지 않아 첫 구역 기준으로만 열 수 있다 — 실패하면 둘 다 같은 이유로 실패해야 한다.
+-    for (let s = 0; s < sections; s += 1) {
+-      let dims: unknown;
+-      try { dims = parse(live.getTableDimensions(s, para, ctrl)); } catch { continue; }
+-      if (!same(dims, parse(reopened.getTableDimensions(s, para, ctrl)))) throw lost('표 구조');
+-      if (!same(parse(live.getTableProperties(s, para, ctrl)), parse(reopened.getTableProperties(s, para, ctrl)))) throw lost('표 속성');
+-      const cells = Number((dims as { cellCount?: number }).cellCount ?? 0);
+-      for (let c = 0; c < cells; c += 1) {
+-        if (!same(parse(live.getCellProperties(s, para, ctrl, c)), parse(reopened.getCellProperties(s, para, ctrl, c)))) throw lost('표 칸 속성');
+-        const cellParas = live.getCellParagraphCount(s, para, ctrl, c);
+-        if (cellParas !== reopened.getCellParagraphCount(s, para, ctrl, c)) throw lost('표 칸 문단 수');
+-        for (let q = 0; q < cellParas; q += 1) {
+-          const length = live.getCellParagraphLength(s, para, ctrl, c, q);
+-          if (length !== reopened.getCellParagraphLength(s, para, ctrl, c, q)) throw lost('표 칸 문단 길이');
+-          if (!same(parse(live.getCellParaPropertiesAt(s, para, ctrl, c, q)), parse(reopened.getCellParaPropertiesAt(s, para, ctrl, c, q)))) throw lost('표 칸 문단 서식');
+-          for (const o of samplePoints(length)) {
+-            if (!same(parse(live.getCellCharPropertiesAt(s, para, ctrl, c, q, o)), parse(reopened.getCellCharPropertiesAt(s, para, ctrl, c, q, o)))) throw lost('표 칸 글자 서식');
+-          }
+-        }
+-      }
+-      break;
++  const walker = new TableWalker(ctx, controls);
++  let flat = 0;
++  for (let s = 0; s < sections; s += 1) {
++    const paragraphs = live.getParagraphCount(s);
++    for (let p = 0; p < paragraphs; p += 1, flat += 1) {
++      cov.bodyParagraphs += 1;
++      if (!same(ctx, parse(live.getParaPropertiesAt(s, p)), parse(reopened.getParaPropertiesAt(s, p)))) throw lost('문단 서식', `구역 ${s + 1}, 문단 ${p + 1}`);
++      verifyChars(ctx, {
++        length: (d) => d.getParagraphLength(s, p),
++        runs: (d, length) => d.getCharShapeRuns(s, p, 0, length),
++        charAt: (d, offset) => d.getCharPropertiesAt(s, p, offset),
++        where: `구역 ${s + 1}, 문단 ${p + 1}`,
++      }, '문단', 'body');
++      walker.visitBodyParagraph(flat, s, p);
+     }
+   }
++  walker.finish();
++
++  // 5. 머리말·꼬리말
++  verifyHeadersFooters(ctx, sections);
++
++  // 6. 코어가 글자 서식 API 를 주지 않는 곳
++  const kinds = new Set(controls.map((c) => c.ctrlId));
++  if (kinds.has('fn') || kinds.has('en')) cov.uncovered.push('각주·미주 안의 글자 서식(코어에 글자 서식 조회가 없음)은 글 내용만 비교했어요.');
++  if (kinds.has('gso')) cov.uncovered.push('그림·도형 자체의 속성(크기·위치 등)은 개체 구성·개수만 비교했어요.');
++  if (cov.nestedTables > 0 || cov.textBoxLists > 0) cov.uncovered.push('중첩 표·글상자 안 문단의 문단 서식(코어에 경로 조회가 없음)은 비교하지 못했어요.');
+ 
+-  // 5. 메모(글쓴이·내용)
++  // 7. 메모(글쓴이·내용)
+   if (typeof live.getMemoList === 'function' && typeof reopened.getMemoList === 'function') {
+     const sig = (d: VerifiableDocument) => (parse(d.getMemoList!()) as Array<{ author?: string; text?: string }>)
+       .map(({ author, text: body }) => ({ author, text: body }));
+-    if (JSON.stringify(sig(live)) !== JSON.stringify(sig(reopened))) throw new Error('저장 전후의 메모 내용이 달라 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++    const a = sig(live);
++    if (JSON.stringify(a) !== JSON.stringify(sig(reopened))) throw new Error('저장 전후의 메모 내용이 달라 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++    cov.memos = a.length;
+   }
+ }
+diff --git a/rhwp-studio/src/recovery/autosave-manager.ts b/rhwp-studio/src/recovery/autosave-manager.ts
+index 5cff414..1e01902 100644
+--- a/rhwp-studio/src/recovery/autosave-manager.ts
++++ b/rhwp-studio/src/recovery/autosave-manager.ts
+@@ -133,6 +133,9 @@ export class AutosaveManager {
+     this.cancelTimers();
+     this.pendingReason = null;
+     this.lastSavedAt = 0;
++    // [hwpxxx-android] 이전 문서의 복구본을 지우는 교체라면 진행 중인 저장도 '버려진 저장'으로 만든다 — 그렇지 않으면 방금 지운
++    // 이전 문서(암호 문서 포함)의 복구본이 늦게 끝난 저장으로 되살아나 비공개 저장소에 남는다.
++    if (options.discardPreviousDraft && previousDraftId) this.discardGeneration += 1;
+     this.current = {
+       draftId: meta.draftId ?? this.idFactory(),
+       fileName: meta.fileName,
+@@ -206,7 +209,12 @@ export class AutosaveManager {
+     this.cancelTimers();
+     this.onStatus?.({ state: 'saving', reason });
+     try {
++      // [hwpxxx-android] 암호 표시는 바이트를 만들기 전과 후에 같아야 한다(보호 상태가 바뀌는 사이에 평문이 암호 복구본으로
++      // 표시되거나 그 반대가 되면 안 된다). 둘 다 같은 동기 구간이라 어긋나면 안 되는 일이지만, 어긋나면 저장하지 않는다.
++      const encryptedBefore = this.isEncrypted();
+       const bytes = this.exportBytes();
++      const encrypted = this.isEncrypted();
++      if (encrypted !== encryptedBefore) throw new Error('복구본을 만드는 사이 보호 상태가 바뀌어 저장하지 않았습니다.');
+       const savedAt = this.now();
+       const generationAtStart = this.discardGeneration;
+       await this.store.saveDraft({
+@@ -217,7 +225,9 @@ export class AutosaveManager {
+         byteLength: bytes.byteLength,
+         data: new Uint8Array(bytes),
+         dirtyReason: reason,
+-        ...(this.isEncrypted() ? { encrypted: true } : {}),
++        ...(encrypted ? { encrypted: true } : {}),
++        // [hwpxxx-android] 내용 손실 보고가 있는 복구본은 완전한 사본으로 보이지 않도록 표시한다.
++        ...((bytes as { lossy?: boolean }).lossy === true ? { lossy: true } : {}),
+       });
+       if (this.discardGeneration !== generationAtStart) {
+         // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
+diff --git a/rhwp-studio/src/recovery/autosave-store.ts b/rhwp-studio/src/recovery/autosave-store.ts
+index 889da47..b10e2ca 100644
+--- a/rhwp-studio/src/recovery/autosave-store.ts
++++ b/rhwp-studio/src/recovery/autosave-store.ts
+@@ -22,8 +22,16 @@ export interface AutosaveDraft {
+   dirtyReason?: string;
+   /** [hwpxxx-android] 비밀번호로 암호화된 복구본인가(비밀번호는 저장하지 않는다). */
+   encrypted?: boolean;
++  /**
++   * [hwpxxx-android] 엔진이 '이 복구본은 일부 개체가 빠졌다'고 보고했는가(내용 손실 보고). 옛 Android 작업기의 `lossy` 와 같다.
++   * 복구본을 완전한 사본처럼 보이게 하지 않으려는 표시이며, 이 표시를 저장·복원할 수 있다고 알린 셸에만 저장한다.
++   */
++  lossy?: boolean;
+ }
+ 
++/** 복구용으로 내보낸 바이트. 내용 손실 보고가 있으면 `lossy` 가 true 다(바이트 자체는 그대로). */
++export type RecoveryBytes = Uint8Array & { lossy?: boolean };
++
+ type DraftRow = Omit<AutosaveDraft, 'data'> & { data?: ArrayBuffer };
+ 
+ const memory = new Map<string, AutosaveDraft>();
+@@ -42,6 +50,26 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+   return copy.buffer as ArrayBuffer;
+ }
+ 
++/**
++ * [hwpxxx-android] 셸 저장소와 주고받는 복구본은 알려진 필드만 담는다 — 호출한 쪽이 실수로 덧붙인 값(비밀번호 등)이 비공개 저장소의
++ * 메타데이터로 가지 않게 한다. `encrypted` 는 정확히 true 일 때만 남긴다.
++ */
++function sanitizeDraft(draft: AutosaveDraft): AutosaveDraft {
++  // 셸이 데이터를 주지 않은(손상된) 항목은 빈 데이터로 돌려 목록에서 걸러지게 한다(목록 전체가 실패하지 않게).
++  const data = draft.data instanceof Uint8Array ? draft.data : new Uint8Array(0);
++  return {
++    id: draft.id,
++    fileName: draft.fileName,
++    sourceFormat: draft.sourceFormat,
++    savedAt: draft.savedAt,
++    byteLength: data.byteLength,
++    data: cloneBytes(data),
++    ...(typeof draft.dirtyReason === 'string' ? { dirtyReason: draft.dirtyReason } : {}),
++    ...(draft.encrypted === true ? { encrypted: true } : {}),
++    ...(draft.lossy === true ? { lossy: true } : {}),
++  };
++}
++
+ function cloneDraft(draft: AutosaveDraft): AutosaveDraft {
+   return { ...draft, data: cloneBytes(draft.data) };
+ }
+@@ -135,9 +163,16 @@ export async function saveAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+   const android = androidRecoveryStore();
+   if (android === null) throw new Error('비공개 복구 저장소가 없어 복구본을 저장하지 않습니다.');
+   if (android) {
+-    await android.saveDraft({ ...draft, byteLength: draft.data.byteLength, data: cloneBytes(draft.data) });
++    // 내용이 빠졌을 수 있는 복구본은 그 사실을 저장·표시할 수 있다고 알린 셸에만 맡긴다. 아니면 '완전한 복구본'처럼 보이게 되므로
++    // 보이는 실패로 멈춘다(평문으로 돌리지도, 표시 없이 저장하지도 않는다).
++    if (draft.lossy === true && (android as { supportsLossyDrafts?: unknown }).supportsLossyDrafts !== true) {
++      throw new Error('일부 개체가 빠졌을 수 있는 복구본이라 표시할 수 없어 복구용 자동 저장을 하지 않았습니다.');
++    }
++    await android.saveDraft(sanitizeDraft(draft));
+     return;
+   }
++  // 암호화된 복구본은 셸의 비공개 저장소 전용이다. IndexedDB·메모리에는 두지 않는다.
++  if (draft.encrypted === true) throw new Error('암호화된 복구본은 비공개 복구 저장소에만 저장할 수 있습니다.');
+   const normalized = cloneDraft({
+     ...draft,
+     byteLength: draft.data.byteLength,
+@@ -163,7 +198,10 @@ export async function saveAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+ export async function getAutosaveDraft(id: string): Promise<AutosaveDraft | null> {
+   const android = androidRecoveryStore();
+   if (android === null) return null;
+-  if (android) return await android.getDraft(id);
++  if (android) {
++    const found = await android.getDraft(id);
++    return found ? sanitizeDraft(found) : null;
++  }
+   const mem = memory.get(id);
+   if (mem) return cloneDraft(mem);
+ 
+@@ -185,7 +223,7 @@ export async function getAutosaveDraft(id: string): Promise<AutosaveDraft | null
+ export async function listAutosaveDrafts(): Promise<AutosaveDraft[]> {
+   const android = androidRecoveryStore();
+   if (android === null) return [];
+-  if (android) return (await android.listDrafts()).sort((a, b) => b.savedAt - a.savedAt);
++  if (android) return (await android.listDrafts()).map(sanitizeDraft).sort((a, b) => b.savedAt - a.savedAt);
+   return withDb(
+     async (db) =>
+       new Promise<AutosaveDraft[]>((resolve, reject) => {
+diff --git a/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts b/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts
+new file mode 100644
+index 0000000..ad4ffa6
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts
+@@ -0,0 +1,725 @@
++// [hwpxxx-android] 저장 안전·암호 복구 시험 — 실제 Android 코어(`../../pkg/rhwp.js`, `rhwp_bg.wasm`)와 실제 WasmBridge/AutosaveManager 로 확인한다.
++// 비밀번호는 시험마다 새로 만든 합성 값만 쓴다(사용자 문서·실제 비밀번호 없음). 문서는 코어가 만든 새 문서와 저장소 샘플뿐이다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { randomUUID } from 'node:crypto';
++import { register } from 'node:module';
++import { fileURLToPath } from 'node:url';
++import { verifyReopenedDocument, type VerifiableDocument } from '../src/hwpxxx/android-save-verify.ts';
++import { AutosaveManager } from '../src/recovery/autosave-manager.ts';
++import { clearAutosaveDrafts, listAutosaveDrafts, saveAutosaveDraft } from '../src/recovery/autosave-store.ts';
++
++const g = globalThis as Record<string, any>;
++const pkg = (name: string) => fileURLToPath(new URL(`../../pkg/${name}`, import.meta.url));
++const sample = (name: string) => new Uint8Array(readFileSync(fileURLToPath(new URL(`../public/samples/${name}`, import.meta.url))));
++const synthPassword = () => `synthetic-${randomUUID()}`;
++
++// 실제 WasmBridge 를 Node 에서 쓰기 위한 Vite 별칭 훅(시험 전용)과 최소 window.
++register(new URL('./support/studio-alias-hooks.mjs', import.meta.url), import.meta.url);
++g.window ??= new EventTarget();
++const core = await import(pkg('rhwp.js'));
++await core.default({ module_or_path: readFileSync(pkg('rhwp_bg.wasm')) });
++const Doc = core.HwpDocument as { new (b: Uint8Array): any; createEmpty(): any; openWithPassword(b: Uint8Array, p: string): any };
++const { WasmBridge } = await import('../src/core/wasm-bridge.ts');
++
++function blank(): any { const d = Doc.createEmpty(); d.createBlankDocument(); return d; }
++function exportDoc(d: any, fmt: 'hwp' | 'hwpx') {
++  const ex = fmt === 'hwp' ? d.exportHwpWithReport() : d.exportHwpxWithReport();
++  try { return { bytes: ex.takeBytes() as Uint8Array, loss: JSON.parse(ex.contentLoss()) }; } finally { ex.free(); }
++}
++/** 편집 중인 문서(live)를 내보내 다시 연다. 새 문서의 원본 형식은 hwp 라서 hwpx 저장은 변환(crossFormat)이다. */
++function roundTrip(live: any, fmt: 'hwp' | 'hwpx', sourceFmt: 'hwp' | 'hwpx' = 'hwp') {
++  const { bytes, loss } = exportDoc(live, fmt);
++  return { bytes, loss, reopened: new Doc(bytes), crossFormat: sourceFmt !== fmt };
++}
++const verify = (live: any, rt: { reopened: any; bytes: Uint8Array; crossFormat: boolean }) =>
++  verifyReopenedDocument(live as VerifiableDocument, rt.reopened as VerifiableDocument, rt.bytes.length, { crossFormat: rt.crossFormat });
++const LONG = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'; // 36자 — 옛 3점 표본은 0, 17, 35 뿐이다.
++const legacyPoints = (length: number) => [...new Set([0, Math.floor((length - 1) / 2), length - 1])];
++
++// ───────────────────────────── 저장 검증: 허용(유효한 저장은 막지 않는다) ─────────────────────────────
++test('유효한 저장: 샘플 문서(표·중첩 표·글상자·머리말)는 같은 형식·변환 저장 모두 통과하고 비교 범위를 보고한다', () => {
++  const expectations: Array<[string, 'hwp' | 'hwpx', (c: ReturnType<typeof verify>) => void]> = [
++    ['biz_plan.hwp', 'hwp', (c) => { assert.equal(c.tables, 8); assert.ok(c.headerFooterParagraphs >= 1); assert.ok(c.cellCharSamples > 100); }],
++    ['form-002.hwpx', 'hwpx', (c) => { assert.equal(c.tables, 15); assert.equal(c.nestedTables, 10); assert.ok(c.cellParagraphs > 600); }],
++    ['field-01.hwp', 'hwp', (c) => { assert.equal(c.textBoxLists, 6); }],
++    ['issue1949_giant_cell_nested_tables_perf.hwp', 'hwp', (c) => { assert.equal(c.nestedTables, 13); assert.ok(c.textBoxLists >= 1); }],
++    ['footnote-01.hwp', 'hwp', (c) => { assert.ok(c.uncovered.some((m) => m.includes('각주'))); }],
++  ];
++  for (const [name, source, check] of expectations) {
++    const live = new Doc(sample(name));
++    for (const fmt of ['hwp', 'hwpx'] as const) {
++      const rt = roundTrip(live, fmt, source);
++      const coverage = verify(live, rt);
++      if (fmt === source) check(coverage);
++      assert.ok(coverage.bodyParagraphs > 0 && coverage.bodyCharSamples >= coverage.bodyParagraphs, `${name}/${fmt}: 본문 문단 표본`);
++    }
++  }
++});
++
++test('유효한 저장: 새 문서의 표·메모·머리말·꼬리말·셀 서식·병합·그림이 있어도 HWP/HWPX 저장은 막히지 않는다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, LONG);
++  d.applyCharFormat(0, 0, 5, 8, JSON.stringify({ bold: true }));
++  d.createTable(0, 0, 0, 3, 3);
++  const table = JSON.parse(d.getControls()).find((c: any) => c.ctrlId === 'tbl');
++  d.insertTextInCell(0, table.para, table.controlIndex, 0, 0, 0, '첫 칸 텍스트입니다 길게');
++  d.applyCharFormatInCell(0, table.para, table.controlIndex, 0, 0, 3, 6, JSON.stringify({ bold: true }));
++  d.applyParaFormatInCell(0, table.para, table.controlIndex, 1, 0, JSON.stringify({ alignment: 'right' }));
++  d.mergeTableCells(0, table.para, table.controlIndex, 0, 1, 0, 2);
++  d.setCellProperties(0, table.para, table.controlIndex, 4, JSON.stringify({ fillColor: '#ffcc00', fillType: 'solid' }));
++  d.insertMemo(0, 0, 2, 6, JSON.stringify({ author: '시험', text: '메모 본문' }));
++  d.createHeaderFooter(0, true, 0);
++  d.insertTextInHeaderFooter(0, true, 0, 0, 0, '머리말 텍스트');
++  d.createHeaderFooter(0, false, 0);
++  d.insertTextInHeaderFooter(0, false, 0, 0, 0, '꼬리말');
++  d.insertPicture(0, 0, 3, '', Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')), 3000, 3000, 1, 1, 'png', '');
++  for (const fmt of ['hwp', 'hwpx'] as const) {
++    const rt = roundTrip(d, fmt);
++    assert.equal(rt.loss.count, 0, '시험 문서는 내용 손실 보고가 없다');
++    const coverage = verify(d, rt);
++    assert.equal(coverage.tables, 1);
++    assert.equal(coverage.memos, 1);
++    assert.ok(coverage.headerFooterParagraphs >= 2);
++  }
++});
++
++test('유효한 저장: 새로 만든 표의 메모리 기본값(바깥 여백·쪽 안 제한·가로 기준)은 엔진의 정규화라 막지 않지만, 다른 값 변경은 막는다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, 'abc');
++  d.createTable(0, 0, 3, 2, 2);
++  const table = JSON.parse(d.getControls()).find((c: any) => c.ctrlId === 'tbl');
++  d.setTableProperties(0, table.para, table.controlIndex, JSON.stringify({ cellSpacing: 100 })); // 일부 속성만 바꾸는 호출
++  verify(d, roundTrip(d, 'hwp'));
++  const rt = roundTrip(d, 'hwp');
++  d.setTableProperties(0, table.para, table.controlIndex, JSON.stringify({ paddingLeft: 777 })); // 저장 뒤 다른 값이 바뀌면 다르다
++  assert.throws(() => verify(d, rt), /표 속성/);
++});
++
++test('유효한 저장: 빈 문단의 삽입 서식(굵게·큰 글자)이 그대로면 통과하고, 다시 연 쪽 삽입 서식이 다르면 거절한다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, '굵은 글자 문단');
++  d.applyCharFormat(0, 0, 0, 8, JSON.stringify({ bold: true, fontSize: 2000 }));
++  d.splitParagraph(0, 0, 8);
++  d.splitParagraph(0, 1, d.getParagraphLength(0, 1));
++  const empty = d.getParagraphCount(0) - 1;
++  assert.equal(d.getParagraphLength(0, empty), 0);
++  assert.equal(JSON.parse(d.getCharPropertiesAt(0, empty, 0)).bold, true, '빈 문단이 삽입 서식을 이어받았다');
++  for (const fmt of ['hwp', 'hwpx'] as const) verify(d, roundTrip(d, fmt));
++  const rt = roundTrip(d, 'hwp');
++  rt.reopened.insertText(0, empty, 0, 'x');
++  rt.reopened.applyCharFormat(0, empty, 0, 1, JSON.stringify({ italic: true, fontSize: 900 }));
++  rt.reopened.deleteText(0, empty, 0, 1);
++  assert.equal(rt.reopened.getParagraphLength(0, empty), 0);
++  assert.throws(() => verify(d, rt), /문단 글자 서식.*위치 0/);
++});
++
++test('유효한 저장: 불러온 문서의 일반 편집(머리말 글·스타일·삭제·나누기·합치기·중첩 표 칸·글상자 글)은 막히지 않는다', () => {
++  const biz = new Doc(sample('biz_plan.hwp'));
++  biz.insertTextInHeaderFooter(0, true, 0, 0, 0, '머리말 추가 텍스트');
++  biz.applyStyle(0, 5, 1);
++  let p = 0; while (biz.getParagraphLength(0, p) < 8) p += 1;
++  biz.deleteText(0, p, 1, 3);
++  biz.splitParagraph(0, p, 4);
++  biz.mergeParagraph(0, 10);
++  for (const fmt of ['hwp', 'hwpx'] as const) verify(biz, roundTrip(biz, fmt));
++
++  const nested = new Doc(sample('issue1949_giant_cell_nested_tables_perf.hwp'));
++  const path = JSON.stringify([{ controlIndex: 2, cellIndex: 2, cellParaIndex: 81 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }]);
++  nested.insertTextInCellByPath(0, 0, path, 0, '중첩 추가');
++  nested.applyCharFormatInCellByPath(0, 0, path, 1, 4, JSON.stringify({ bold: true }));
++  verify(nested, roundTrip(nested, 'hwp'));
++
++  const field = new Doc(sample('field-01.hwp'));
++  const box = JSON.parse(field.getControls()).find((c: any) => c.ctrlId === 'gso' && c.list === 0);
++  let flat = box.para, section = 0;
++  while (flat >= field.getParagraphCount(section)) { flat -= field.getParagraphCount(section); section += 1; }
++  const boxPath = JSON.stringify([{ controlIndex: box.controlIndex, cellIndex: 0, cellParaIndex: 0 }]);
++  field.insertTextInCellByPath(section, flat, boxPath, 0, '상자 추가 글');
++  field.applyCharFormatInCellByPath(section, flat, boxPath, 1, 3, JSON.stringify({ italic: true }));
++  verify(field, roundTrip(field, 'hwp'));
++});
++
++// ───────────────────────────── 저장 검증: 거절(조금이라도 달라지면 막는다) ─────────────────────────────
++test('거절: 문단 한가운데가 아닌 곳(1/4 지점)의 글자 서식 차이도 잡는다 — 옛 3점 표본은 놓친다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, LONG);
++  const rt = roundTrip(d, 'hwp');
++  verify(d, rt);
++  d.applyCharFormat(0, 0, 5, 8, JSON.stringify({ bold: true })); // 저장 뒤 편집(내보낸 바이트에는 없다)
++  for (const o of [5, 6, 7]) assert.ok(!legacyPoints(LONG.length).includes(o), `옛 표본(${legacyPoints(LONG.length)})은 ${o} 를 보지 않는다`);
++  assert.throws(() => verify(d, rt), /글자 서식.*위치 5/);
++  // 반대 방향(다시 연 문서 쪽이 독립적으로 달라진 경우)
++  const d2 = blank();
++  d2.insertText(0, 0, 0, LONG);
++  const rt2 = roundTrip(d2, 'hwp');
++  rt2.reopened.applyCharFormat(0, 0, 9, 12, JSON.stringify({ textColor: '#ff0000' }));
++  assert.throws(() => verify(d2, rt2), /글자 서식/);
++});
++
++test('거절: 글자 서식 런의 끝(끝-1) 위치와 런 개수만 다른 변경도 잡는다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, LONG);
++  const rt = roundTrip(d, 'hwp');
++  rt.reopened.applyCharFormat(0, 0, 30, 36, JSON.stringify({ italic: true })); // 끝 쪽 런만
++  assert.throws(() => verify(d, rt), /글자 서식.*위치 30/);
++});
++
++test('거절: 표 칸 문단의 한가운데 서식(최상위 표)을 잡는다', () => {
++  const d = blank();
++  d.createTable(0, 0, 0, 2, 2);
++  const table = JSON.parse(d.getControls()).find((c: any) => c.ctrlId === 'tbl');
++  d.insertTextInCell(0, table.para, table.controlIndex, 3, 0, 0, '칸 안의 긴 글자 문단입니다 열둘셋');
++  const rt = roundTrip(d, 'hwp');
++  verify(d, rt);
++  rt.reopened.applyCharFormatInCell(0, table.para, table.controlIndex, 3, 0, 4, 7, JSON.stringify({ bold: true }));
++  assert.throws(() => verify(d, rt), /표 칸 글자 서식.*표 칸 4/);
++});
++
++test('거절: 중첩 표 칸·글상자 안의 서식 차이를 잡는다', () => {
++  const nested = new Doc(sample('issue1949_giant_cell_nested_tables_perf.hwp'));
++  const rt = roundTrip(nested, 'hwp');
++  const path = JSON.stringify([{ controlIndex: 2, cellIndex: 2, cellParaIndex: 81 }, { controlIndex: 0, cellIndex: 0, cellParaIndex: 0 }]);
++  const length = rt.reopened.getCellParagraphLengthByPath(0, 0, path);
++  assert.ok(length >= 3, '중첩 칸 문단에 글이 있다');
++  rt.reopened.applyCharFormatInCellByPath(0, 0, path, 1, 3, JSON.stringify({ bold: !JSON.parse(rt.reopened.getCellCharPropertiesAtByPath(0, 0, path, 1)).bold }));
++  assert.throws(() => verify(nested, rt), /표 칸 글자 서식.*\(중첩\)/);
++
++  const field = new Doc(sample('field-01.hwp'));
++  const rt2 = roundTrip(field, 'hwp');
++  const box = JSON.parse(field.getControls()).find((c: any) => c.ctrlId === 'gso' && c.list === 0);
++  let flat = box.para, section = 0;
++  while (flat >= field.getParagraphCount(section)) { flat -= field.getParagraphCount(section); section += 1; }
++  const boxPath = JSON.stringify([{ controlIndex: box.controlIndex, cellIndex: 0, cellParaIndex: 0 }]);
++  const boxLength = rt2.reopened.getCellParagraphLengthByPath(section, flat, boxPath);
++  assert.ok(boxLength >= 2);
++  rt2.reopened.applyCharFormatInCellByPath(section, flat, boxPath, 0, 2, JSON.stringify({ underline: true }));
++  assert.throws(() => verify(field, rt2), /글자 서식.*글상자/);
++});
++
++test('거절: 머리말 글자 서식·내용, 표 칸 속성, 표 구조, 메모 변경을 잡는다', () => {
++  const d = blank();
++  d.insertText(0, 0, 0, LONG);
++  d.createHeaderFooter(0, true, 0);
++  d.insertTextInHeaderFooter(0, true, 0, 0, 0, '머리말 텍스트 길게 씁니다');
++  d.createTable(0, 0, 0, 2, 2);
++  const table = JSON.parse(d.getControls()).find((c: any) => c.ctrlId === 'tbl');
++  d.insertMemo(0, 0, 2, 6, JSON.stringify({ author: '시험', text: '메모 본문' }));
++  const fresh = () => roundTrip(d, 'hwp');
++  verify(d, fresh());
++
++  let rt = fresh();
++  rt.reopened.applyCharFormatInHeaderFooter(0, true, 0, 0, 3, 0, 6, JSON.stringify({ bold: true }));
++  assert.throws(() => verify(d, rt), /머리말·꼬리말 글자 서식.*위치 3/);
++
++  rt = fresh();
++  rt.reopened.insertTextInHeaderFooter(0, true, 0, 0, 0, '다름');
++  assert.throws(() => verify(d, rt), /내용이 달라|머리말·꼬리말 내용/);
++
++  rt = fresh();
++  rt.reopened.setCellProperties(0, table.para, table.controlIndex, 1, JSON.stringify({ fillColor: '#00ff00', fillType: 'solid' }));
++  assert.throws(() => verify(d, rt), /표 칸 속성/);
++
++  rt = fresh();
++  rt.reopened.insertTableRow(0, table.para, table.controlIndex, 0, true);
++  assert.throws(() => verify(d, rt), /내용이 달라|표 구조|문단 수|개체/);
++
++  rt = fresh();
++  const memo = JSON.parse(rt.reopened.getMemoList())[0];
++  rt.reopened.setMemoText(memo.id, '바뀐 메모');
++  assert.throws(() => verify(d, rt), /메모 내용이 달라/);
++});
++
++test('거절: 글 내용·문단 서식·문단 수·32MB 초과는 그대로 막는다', () => {
++  const d = new Doc(sample('biz_plan.hwp'));
++  const rt = roundTrip(d, 'hwp');
++  verify(d, rt);
++  assert.throws(() => verifyReopenedDocument(d, rt.reopened, 33 * 1024 * 1024), /32MB/);
++  d.insertText(0, 0, 0, '가');
++  assert.throws(() => verify(d, rt), /내용이 달라/);
++  const d2 = new Doc(sample('biz_plan.hwp'));
++  const rt2 = roundTrip(d2, 'hwp');
++  d2.applyParaFormat(0, 0, JSON.stringify({ alignment: JSON.parse(d2.getParaPropertiesAt(0, 0)).alignment === 'center' ? 'left' : 'center' }));
++  assert.throws(() => verify(d2, rt2), /문단 서식/);
++});
++
++test('거절: 확인에 필요한 코어 기능이 없으면 조용히 건너뛰지 않고 저장을 멈춘다', () => {
++  const d = new Doc(sample('biz_plan.hwp'));
++  const rt = roundTrip(d, 'hwp');
++  const withoutRuns = new Proxy(d, { get: (t, k) => (k === 'getCharShapeRuns' ? undefined : Reflect.get(t, k).bind?.(t) ?? Reflect.get(t, k)) });
++  assert.throws(() => verifyReopenedDocument(withoutRuns as VerifiableDocument, rt.reopened, rt.bytes.length), /getCharShapeRuns 기능을 쓸 수 없어/);
++});
++
++test('보고: 검증은 비교한 범위와 비교하지 못한 곳을 정직하게 돌려준다(문서 전체 확인이라고 하지 않는다)', () => {
++  const nested = new Doc(sample('issue1949_giant_cell_nested_tables_perf.hwp'));
++  const coverage = verify(nested, roundTrip(nested, 'hwp'));
++  assert.ok(coverage.uncovered.some((m) => m.includes('중첩 표·글상자 안 문단의 문단 서식')), '경로 조회가 없는 중첩 문단 서식은 비교 밖이라고 밝힌다');
++  assert.ok(coverage.uncovered.length >= 1);
++  const plain = blank();
++  plain.insertText(0, 0, 0, 'x');
++  const c2 = verify(plain, roundTrip(plain, 'hwp'));
++  assert.deepEqual(c2.uncovered, []);
++});
++
++// ───────────────────────────── WasmBridge: 비밀번호 수명·복구본 ─────────────────────────────
++const enableHost = () => { g.AndroidStudioHost = {}; };
++const disableHost = () => { delete g.AndroidStudioHost; delete g.rhwpAndroidHost; };
++const needsPassword = (bytes: Uint8Array) => { try { new Doc(bytes).free(); return false; } catch (e) { return String((e as Error | undefined)?.message ?? e).includes('비밀번호가 필요한'); } };
++function encryptedBytes(password: string, source = 'biz_plan.hwp') {
++  const d = new Doc(sample(source));
++  try { return d.exportHwpWithPassword(password) as Uint8Array; } finally { d.free(); }
++}
++function openEncrypted(password: string): { bridge: any } {
++  const bridge = new WasmBridge();
++  bridge.loadDocumentWithPassword(encryptedBytes(password), password, '암호.hwp');
++  return { bridge };
++}
++const opensWith = (bytes: Uint8Array, password: string) => { try { Doc.openWithPassword(bytes, password).free(); return true; } catch { return false; } };
++
++test('비밀번호: 암호 문서를 연 비밀번호로 암호화된 복구본을 만든다(평문 아님), 평문 문서는 평문 복구본이다', () => {
++  enableHost();
++  try {
++    const password = synthPassword();
++    const { bridge } = openEncrypted(password);
++    assert.equal(bridge.requiresPasswordForSave, true);
++    assert.equal(bridge.canExportAndroidRecovery(), true);
++    const recovery = bridge.exportAndroidRecoveryBytes();
++    assert.equal(needsPassword(recovery), true, '비밀번호 없이는 열리지 않는다');
++    assert.equal(opensWith(recovery, password), true);
++    assert.equal(opensWith(recovery, synthPassword()), false);
++    const reopened = Doc.openWithPassword(recovery, password);
++    assert.equal(reopened.getTextFileUnicode(), bridge.doc.getTextFileUnicode());
++
++    const plain = new WasmBridge();
++    plain.loadDocument(sample('biz_plan.hwp'), 'a.hwp');
++    assert.equal(plain.canExportAndroidRecovery(), true);
++    assert.equal(needsPassword(plain.exportAndroidRecoveryBytes()), false);
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 인스턴스 속성·직렬화·공개 메서드 어디에도 비밀번호가 드러나지 않는다', () => {
++  enableHost();
++  try {
++    const password = synthPassword();
++    const { bridge } = openEncrypted(password);
++    const seen = new Set<unknown>();
++    const scan = (value: unknown, depth: number): void => {
++      if (typeof value === 'string') { assert.ok(!value.includes(password), '문자열 값에 비밀번호가 있다'); return; }
++      if (!value || typeof value !== 'object' || depth > 2 || seen.has(value) || ArrayBuffer.isView(value)) return;
++      seen.add(value);
++      for (const key of [...Object.getOwnPropertyNames(value), ...Object.getOwnPropertySymbols(value).map(String)]) {
++        assert.ok(!String(key).includes(password));
++        try { scan((value as Record<string, unknown>)[key as string], depth + 1); } catch (e) { if (e instanceof assert.AssertionError) throw e; }
++      }
++    };
++    scan(bridge, 0);
++    assert.ok(!JSON.stringify(Object.fromEntries(Object.entries(bridge).filter(([, v]) => typeof v !== 'object' || v === null))).includes(password));
++    const names = Object.getOwnPropertyNames(WasmBridge.prototype);
++    assert.ok(!names.some((n) => /^(get|read|peek|reveal)\w*Password/i.test(n)), `비밀번호를 돌려주는 메서드가 없다: ${names.filter((n) => /password/i.test(n))}`);
++    assert.deepEqual(Object.getOwnPropertyNames(bridge).filter((n) => /password/i.test(n)), ['_requiresPasswordForSave'], '비밀번호 값을 담는 인스턴스 속성이 없다(보호 여부 boolean 뿐)');
++    assert.equal(typeof bridge._requiresPasswordForSave, 'boolean');
++    assert.ok(!Object.getOwnPropertyNames(bridge).some((n) => /secret/i.test(n)));
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 새 비밀번호로 저장에 성공하면 그 비밀번호가 새 기준이 되어 복구본이 새 비밀번호로 암호화된다', () => {
++  enableHost();
++  try {
++    const oldPassword = synthPassword(), newPassword = synthPassword();
++    const { bridge } = openEncrypted(oldPassword);
++    bridge.stageAndroidPassword(newPassword);
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), oldPassword), true, '저장이 끝나기 전에는 기준이 그대로다');
++    bridge.requiresPasswordForSave = true;
++    bridge.commitAndroidPassword(true);
++    const recovery = bridge.exportAndroidRecoveryBytes();
++    assert.equal(opensWith(recovery, newPassword), true);
++    assert.equal(opensWith(recovery, oldPassword), false);
++    assert.equal(needsPassword(recovery), true);
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 평문 문서를 비밀번호와 함께 저장하는 데 성공하면 이후 복구본이 암호화되고, 보호 해제 저장은 기준을 지운다', () => {
++  enableHost();
++  try {
++    const bridge = new WasmBridge();
++    bridge.loadDocument(sample('biz_plan.hwp'), 'a.hwp');
++    const password = synthPassword();
++    bridge.stageAndroidPassword(password);
++    bridge.requiresPasswordForSave = true;
++    bridge.commitAndroidPassword(true);
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), password), true);
++    assert.equal(needsPassword(bridge.exportAndroidRecoveryBytes()), true);
++    bridge.stageAndroidPassword(null);
++    bridge.requiresPasswordForSave = false;
++    bridge.commitAndroidPassword(false);
++    assert.equal(needsPassword(bridge.exportAndroidRecoveryBytes()), false, '보호를 푼 문서는 평문 복구본(upstream 규칙)');
++    bridge.requiresPasswordForSave = true; // 보호 상태가 다시 켜졌다고 가정 — 이전 비밀번호는 남아 있지 않다
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 저장 취소·실패는 기준(비밀번호·보호 상태)을 바꾸지 않는다', () => {
++  enableHost();
++  try {
++    const oldPassword = synthPassword();
++    const { bridge } = openEncrypted(oldPassword);
++    bridge.stageAndroidPassword(synthPassword());
++    bridge.discardStagedAndroidPassword();
++    assert.equal(bridge.requiresPasswordForSave, true);
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), oldPassword), true);
++    bridge.discardStagedAndroidPassword(); // 시작 전 취소(암호 입력 대화상자 취소)도 아무 일 없다
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), oldPassword), true);
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 새 문서·다른 문서로 교체·해제·페이지 숨김에서 비밀번호가 지워지고, 교체 실패는 이전 기준을 지키며, 보호 상태는 저장 없이 못 바꾼다', () => {
++  enableHost();
++  try {
++    const first = synthPassword(), second = synthPassword();
++    const { bridge } = openEncrypted(first);
++    // 교체 실패(틀린 비밀번호)는 이전 문서와 그 기준을 그대로 둔다
++    assert.throws(() => bridge.loadDocumentWithPassword(encryptedBytes(second), synthPassword(), '다른.hwp'));
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), first), true);
++    // 다른 암호 문서로 교체하면 새 비밀번호만 남는다
++    bridge.loadDocumentWithPassword(encryptedBytes(second), second, '다른.hwp');
++    const recovery = bridge.exportAndroidRecoveryBytes();
++    assert.equal(opensWith(recovery, second), true);
++    assert.equal(opensWith(recovery, first), false);
++    // 평문 문서로 교체하면 지워진다(보호 상태를 강제로 켜 봐도 복구본을 만들 수 없다)
++    bridge.loadDocument(sample('biz_plan.hwp'), 'plain.hwp');
++    bridge.requiresPasswordForSave = true; // Android: 저장을 시작한 적 없으면 무시된다
++    assert.equal(bridge.requiresPasswordForSave, false, '저장 없이 보호 상태를 못 바꾼다');
++    bridge._requiresPasswordForSave = true; // 시험용으로 직접 강제
++    assert.equal(bridge.canExportAndroidRecovery(), false, '비밀번호가 남아 있지 않다');
++    assert.throws(() => bridge.exportAndroidRecoveryBytes(), /비밀번호를 알 때만/);
++    // 새 문서
++    const b2 = openEncrypted(first).bridge;
++    b2.createNewDocument();
++    b2._requiresPasswordForSave = true;
++    assert.equal(b2.canExportAndroidRecovery(), false);
++    // 해제
++    const b3 = openEncrypted(first).bridge;
++    b3.releaseDocument();
++    b3._requiresPasswordForSave = true;
++    assert.equal(b3.canExportAndroidRecovery(), false);
++    // 페이지 숨김
++    const b4 = openEncrypted(first).bridge;
++    assert.equal(b4.canExportAndroidRecovery(), true);
++    g.window.dispatchEvent(new Event('pagehide'));
++    assert.equal(b4.canExportAndroidRecovery(), false);
++  } finally { disableHost(); }
++});
++
++test('비밀번호 경쟁: 저장 중 다른 문서가 열린 뒤 늦게 온 완료는 새 문서의 비밀번호·보호 상태를 건드리지 못한다', () => {
++  enableHost();
++  try {
++    const a = synthPassword(), b = synthPassword(), c = synthPassword();
++    const { bridge } = openEncrypted(a);
++    bridge.stageAndroidPassword(b);                 // A 문서의 저장이 비동기로 진행 중
++    bridge.loadDocumentWithPassword(encryptedBytes(c), c, 'C.hwp'); // 그 사이 다른 암호 문서 C 가 열렸다
++    bridge.requiresPasswordForSave = true;          // 늦게 도착한 A 의 완료 통지
++    bridge.commitAndroidPassword(true);
++    const rc = bridge.exportAndroidRecoveryBytes();
++    assert.equal(opensWith(rc, c), true, 'C 의 기준이 그대로다');
++    assert.equal(opensWith(rc, b), false);
++    assert.equal(opensWith(rc, a), false);
++    // A 가 보호 없이 저장되던 중이었다면: C 의 보호가 풀리면 안 된다
++    bridge.stageAndroidPassword(null);
++    bridge.loadDocumentWithPassword(encryptedBytes(c), c, 'C2.hwp');
++    bridge.requiresPasswordForSave = false;
++    bridge.commitAndroidPassword(false);
++    assert.equal(bridge.requiresPasswordForSave, true, '다른 문서의 늦은 통지가 보호를 풀지 못한다');
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), c), true);
++  } finally { disableHost(); }
++});
++
++test('비밀번호 경쟁: 저장이 겹치면 어느 비밀번호가 파일에 쓰였는지 몰라 복구본을 막는 쪽으로 실패하고, 다음 성공 저장이 복구한다', () => {
++  enableHost();
++  try {
++    const { bridge } = openEncrypted(synthPassword());
++    const one = synthPassword(), two = synthPassword();
++    bridge.stageAndroidPassword(one);
++    bridge.stageAndroidPassword(two);
++    bridge.requiresPasswordForSave = true;
++    bridge.commitAndroidPassword(true);
++    assert.equal(bridge.canExportAndroidRecovery(), false, '겹친 저장 → 기준을 알 수 없다 → 복구본 차단');
++    bridge.commitAndroidPassword(true);
++    assert.equal(bridge.canExportAndroidRecovery(), false);
++    const next = synthPassword();
++    bridge.stageAndroidPassword(next);
++    bridge.commitAndroidPassword(true);
++    assert.equal(opensWith(bridge.exportAndroidRecoveryBytes(), next), true, '겹침이 끝난 뒤 새 저장이 기준을 세운다');
++  } finally { disableHost(); }
++});
++
++test('비밀번호 경쟁: 진행 중인 저장의 시작 기록이 다른 호출의 취소로 사라지면 복구본을 막는 쪽으로 실패한다(틀린 비밀번호로 암호화하지 않는다)', () => {
++  enableHost();
++  try {
++    const { bridge } = openEncrypted(synthPassword());
++    bridge.stageAndroidPassword(synthPassword()); // 저장 1 진행 중
++    bridge.discardStagedAndroidPassword();        // 저장 2 가 시작 전에 취소되며 finally 가 부른다
++    bridge.requiresPasswordForSave = true;
++    bridge.commitAndroidPassword(true);           // 저장 1 의 완료
++    assert.equal(bridge.canExportAndroidRecovery(), false);
++    assert.throws(() => bridge.exportAndroidRecoveryBytes(), /비밀번호를 알 때만/);
++  } finally { disableHost(); }
++});
++
++test('비밀번호: 셸이 없는(데스크톱) 모드는 비밀번호를 보관하지 않고 저장 상태 변경도 그대로다', () => {
++  disableHost();
++  const password = synthPassword();
++  const bridge = new WasmBridge();
++  bridge.loadDocumentWithPassword(encryptedBytes(password), password, '암호.hwp');
++  assert.equal(bridge.requiresPasswordForSave, true);
++  assert.equal(bridge.canExportAndroidRecovery(), false, '보관된 비밀번호가 없다 → 데스크톱 복구 차단 규칙 유지');
++  bridge.stageAndroidPassword(password);
++  bridge.commitAndroidPassword(true);
++  assert.equal(bridge.canExportAndroidRecovery(), false);
++  bridge.requiresPasswordForSave = false; // 데스크톱 저장 흐름은 이전처럼 바로 반영된다
++  assert.equal(bridge.requiresPasswordForSave, false);
++  assert.equal(bridge.verifyAndroidSave(new Uint8Array(), 'hwp'), null, 'Android 전용 검증은 데스크톱에서 아무것도 하지 않는다');
++});
++
++test('저장 검증(WasmBridge): 암호 저장은 같은 비밀번호로 다시 열고, 암호가 안 걸린 결과·틀린 비밀번호·비밀번호 누락을 막으며 오류에 비밀번호를 싣지 않는다', () => {
++  enableHost();
++  try {
++    const password = synthPassword();
++    const { bridge } = openEncrypted(password);
++    const artifact = bridge.exportHwpWithPasswordAndReport(password);
++    const coverage = bridge.verifyAndroidSave(artifact.bytes, 'hwp', password);
++    assert.ok(coverage && coverage.bodyParagraphs > 0);
++    const messages: string[] = [];
++    const rejects = (fn: () => unknown, pattern: RegExp) => assert.throws(fn, (e: Error) => { messages.push(e.message); return pattern.test(e.message); });
++    rejects(() => bridge.verifyAndroidSave(artifact.bytes, 'hwp', synthPassword()), /다시 열 수 없어/);
++    rejects(() => bridge.verifyAndroidSave(artifact.bytes, 'hwp'), /다시 열 수 없어/);
++    const plain = bridge.exportHwpWithReport().bytes; // 암호가 적용되지 않은 바이트에 비밀번호를 붙여 검증하려는 경우
++    rejects(() => bridge.verifyAndroidSave(plain, 'hwp', password), /암호가 적용되지 않은/);
++    for (const message of messages) assert.ok(!message.includes(password), '오류 메시지에 비밀번호가 없다');
++    const hwpx = bridge.exportHwpxWithPasswordAndReport(password);
++    assert.ok(bridge.verifyAndroidSave(hwpx.bytes, 'hwpx', password));
++  } finally { disableHost(); }
++});
++
++test('저장 검증(WasmBridge): 편집 중 문서의 한가운데 서식이 내보낸 바이트에 없으면 막고, 같으면 통과한다', () => {
++  enableHost();
++  try {
++    const bridge = new WasmBridge();
++    bridge.createNewDocument();
++    bridge.doc.insertText(0, 0, 0, LONG);
++    const ok = bridge.exportHwpWithReport().bytes;
++    assert.ok(bridge.verifyAndroidSave(ok, 'hwp'));
++    bridge.doc.applyCharFormat(0, 0, 5, 8, JSON.stringify({ bold: true }));
++    assert.throws(() => bridge.verifyAndroidSave(ok, 'hwp'), /글자 서식/);
++    assert.ok(bridge.verifyAndroidSave(bridge.exportHwpWithReport().bytes, 'hwp'));
++    assert.ok(bridge.verifyAndroidSave(bridge.exportHwpxWithReport().bytes, 'hwpx'), '변환 저장도 통과');
++  } finally { disableHost(); }
++});
++
++// ───────────────────────────── 자동 복구(AutosaveManager)·저장소 ─────────────────────────────
++function managerFixture(overrides: Record<string, unknown> = {}) {
++  const saved: any[] = [];
++  const deleted: string[] = [];
++  const statuses: any[] = [];
++  const state = { encrypted: false, blocked: false, bytes: new Uint8Array([1, 2, 3]) };
++  const gate: { release?: () => void; promise?: Promise<void> } = {};
++  const manager = new AutosaveManager({
++    exportBytes: () => state.bytes,
++    isEncrypted: () => state.encrypted,
++    isRecoveryBlocked: () => state.blocked,
++    store: {
++      saveDraft: async (draft: any) => { if (gate.promise) await gate.promise; saved.push(draft); },
++      deleteDraft: async (id: string) => { deleted.push(id); },
++    } as never,
++    logger: { warn() {}, debug() {} } as never,
++    onStatus: (status: unknown) => statuses.push(status),
++    ...overrides,
++  } as never);
++  return { manager, saved, deleted, statuses, state, gate };
++}
++
++test('자동 복구: 암호 복구본은 encrypted:true 만 표시하고 비밀번호·그 밖의 메타데이터는 싣지 않는다', async () => {
++  const f = managerFixture();
++  await f.manager.beginDocument({ fileName: '문서.hwp', sourceFormat: 'hwpx' });
++  f.state.encrypted = true;
++  await f.manager.flushNow('typing');
++  f.state.encrypted = false;
++  await f.manager.flushNow('typing-2');
++  assert.equal(f.saved.length, 2);
++  assert.equal(f.saved[0].encrypted, true);
++  assert.equal('encrypted' in f.saved[1], false, '평문 복구본에는 표시가 없다');
++  assert.deepEqual(Object.keys(f.saved[0]).sort(), ['byteLength', 'data', 'dirtyReason', 'encrypted', 'fileName', 'id', 'savedAt', 'sourceFormat']);
++  assert.equal(f.saved[0].sourceFormat, 'hwpx', '원래 형식은 메타데이터에 남는다');
++});
++
++test('자동 복구: 복구를 막은 상태(비밀번호 모름·저장소 없음)에서는 바이트를 만들지도 저장하지도 않고 남은 복구본을 지운다', async () => {
++  let exported = 0;
++  const f = managerFixture({ exportBytes: () => { exported += 1; return new Uint8Array([1]); } });
++  await f.manager.beginDocument({ fileName: 'a.hwp', sourceFormat: 'hwp' });
++  f.state.blocked = true;
++  await f.manager.flushNow('typing');
++  assert.equal(exported, 0);
++  assert.equal(f.saved.length, 0);
++  assert.equal(f.deleted.length, 1);
++  assert.equal(f.statuses.at(-1).state, 'blocked');
++});
++
++test('자동 복구: 바이트를 만드는 사이 보호 표시가 바뀌면 저장하지 않는다', async () => {
++  let calls = 0;
++  const f = managerFixture({ isEncrypted: () => { calls += 1; return calls > 1; } });
++  await f.manager.beginDocument({ fileName: 'a.hwp', sourceFormat: 'hwp' });
++  await f.manager.flushNow('typing');
++  assert.equal(f.saved.length, 0);
++  assert.equal(f.statuses.at(-1).state, 'error');
++});
++
++test('자동 복구: 이전 문서의 복구본을 지우는 교체 도중 끝난 저장은 되살아나지 않는다', async () => {
++  const f = managerFixture();
++  const firstId = await f.manager.beginDocument({ fileName: '이전.hwp', sourceFormat: 'hwp' });
++  f.state.encrypted = true;
++  let release!: () => void;
++  f.gate.promise = new Promise<void>((resolve) => { release = resolve; });
++  const flushing = f.manager.flushNow('typing');           // 저장 진행 중(저장소 응답 대기)
++  const secondId = await f.manager.beginDocument({ fileName: '새.hwp', sourceFormat: 'hwp' }, { discardPreviousDraft: true });
++  assert.notEqual(firstId, secondId);
++  release();
++  await flushing;
++  assert.ok(f.deleted.filter((id) => id === firstId).length >= 2, '교체 때 한 번, 늦게 끝난 저장 뒤 다시 한 번 지운다');
++  assert.notEqual(f.statuses.at(-1).state, 'saved');
++});
++
++test('복구 저장소(Android): 알려진 필드만 보내고 encrypted 는 정확히 true 일 때만 남기며, IndexedDB·메모리에는 아무것도 두지 않는다', async () => {
++  const sent: any[] = [];
++  const store = {
++    saveDraft: async (d: any) => { sent.push(d); },
++    getDraft: async () => null,
++    listDrafts: async () => [{ id: 'x', fileName: 'x.hwp', sourceFormat: 'hwp', savedAt: 1, byteLength: 9, data: new Uint8Array([1]), password: 'leak', secret: 1, encrypted: 'yes' }],
++    deleteDraft: async () => {},
++    clearDrafts: async () => {},
++  };
++  g.AndroidStudioHost = { recovery: store };
++  try {
++    await saveAutosaveDraft({ id: 'd', fileName: 'a.hwp', sourceFormat: 'hwp', savedAt: 5, byteLength: 0, data: new Uint8Array([9, 9]), dirtyReason: 't', encrypted: true, password: 'leak' } as never);
++    await saveAutosaveDraft({ id: 'e', fileName: 'a.hwp', sourceFormat: 'hwp', savedAt: 6, byteLength: 0, data: new Uint8Array([9]), encrypted: 'truthy' } as never);
++    assert.deepEqual(Object.keys(sent[0]).sort(), ['byteLength', 'data', 'dirtyReason', 'encrypted', 'fileName', 'id', 'savedAt', 'sourceFormat']);
++    assert.equal(sent[0].byteLength, 2);
++    assert.equal('encrypted' in sent[1], false);
++    const listed = await listAutosaveDrafts();
++    assert.equal('password' in listed[0], false);
++    assert.equal('secret' in listed[0], false);
++    assert.equal('encrypted' in listed[0], false);
++  } finally { disableHost(); }
++  assert.deepEqual(await listAutosaveDrafts(), [], 'Android 저장은 메모리/IndexedDB 에 남지 않는다');
++});
++
++test('복구 저장소: 셸이 있는데 비공개 저장소가 없거나 셸이 없을 때 암호 복구본은 어디에도 저장되지 않는다', async () => {
++  await clearAutosaveDrafts();
++  g.AndroidStudioHost = {};
++  try {
++    await assert.rejects(saveAutosaveDraft({ id: 'n', fileName: 'a.hwp', sourceFormat: 'hwp', savedAt: 1, byteLength: 1, data: new Uint8Array([1]), encrypted: true }), /비공개 복구 저장소가 없어/);
++  } finally { disableHost(); }
++  await assert.rejects(saveAutosaveDraft({ id: 'm', fileName: 'a.hwp', sourceFormat: 'hwp', savedAt: 1, byteLength: 1, data: new Uint8Array([1]), encrypted: true }), /비공개 복구 저장소에만/);
++  assert.deepEqual(await listAutosaveDrafts(), []);
++});
++
++test('종단 시험: 암호 문서 편집 → 실제 AutosaveManager → 네이티브 비공개 저장소 모의 → 복구(비밀번호 재입력) 왕복', async () => {
++  const password = synthPassword();
++  const recorded: any[] = [];
++  g.AndroidStudioHost = {
++    recovery: {
++      saveDraft: async (d: any) => { recorded.push(structuredClone(d)); },
++      getDraft: async () => null, listDrafts: async () => recorded, deleteDraft: async () => {}, clearDrafts: async () => {},
++    },
++  };
++  try {
++    const { bridge } = openEncrypted(password);
++    bridge.doc.insertText(0, 0, 0, '복구 시험 문장');
++    const manager = new AutosaveManager({
++      exportBytes: () => bridge.exportAndroidRecoveryBytes(),
++      isEncrypted: () => bridge.requiresPasswordForSave,
++      isRecoveryBlocked: () => !bridge.canExportAndroidRecovery(),
++      logger: { warn() {}, debug() {} } as never,
++    });
++    await manager.beginDocument({ fileName: '암호.hwp', sourceFormat: 'hwp' });
++    await manager.flushNow('android-lifecycle');
++    assert.equal(recorded.length, 1);
++    const draft = recorded[0];
++    assert.equal(draft.encrypted, true);
++    assert.equal(needsPassword(draft.data), true, '네이티브로 가는 바이트는 암호화돼 있다');
++    assert.ok(!JSON.stringify({ ...draft, data: undefined }).includes(password), '메타데이터에 비밀번호가 없다');
++    assert.ok(!Buffer.from(draft.data).includes(Buffer.from(password)), '바이트에 비밀번호 평문이 없다');
++    const restored = new WasmBridge();
++    restored.loadDocumentWithPassword(draft.data, password, '복구.hwp');
++    assert.ok(restored.doc.getTextFileUnicode().includes('복구 시험 문장'));
++  } finally { disableHost(); }
++});
++
++test('file.ts 호출 순서 보호: 내보내기 직후 검증 → 저장 시작, 성공 때만 보호 상태·기준 반영, 종료 때 대기 기록 폐기', () => {
++  const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
++  const create = file.slice(file.indexOf('async function createSavePayload'), file.indexOf('function showExportContentLoss'));
++  assert.ok(create.indexOf('verifyAndroidSave(') > 0 && create.indexOf('verifyAndroidSave(') < create.indexOf('stageAndroidPassword('), '검증이 끝난 뒤에만 저장을 시작한다');
++  assert.ok(create.indexOf('stageAndroidPassword(') < create.indexOf('runAndroidSaveGuard('), '호스트 훅보다 앞에서 시작 기록');
++  const complete = file.slice(file.indexOf('function completeHandleSave'), file.indexOf('function exportHtmlBasedFile'));
++  assert.ok(complete.indexOf('requiresPasswordForSave = passwordProtected') < complete.indexOf('commitAndroidPassword(passwordProtected)'));
++  assert.equal((file.match(/discardStagedAndroidPassword\(\)/g) ?? []).length, 2, '두 저장 흐름의 finally 가 대기 기록을 버린다');
++});
++
++// ───────────────────────────── 복구본의 내용 손실 표시(옛 Android 작업기의 lossy) ─────────────────────────────
++const LOSS_REPORT = { schemaVersion: 1, outputFormat: 'hwp', count: 1, losses: [{ path: 'section[0]/para[1]/ctrl[0]', kind: 'test' }] };
++/** 코어 보고서를 쓰는 내보내기를 그대로 두고 내용 손실 보고만 덧씌운다(실제 샘플에는 손실 보고가 없다). */
++function withInjectedLoss(bridge: any, method: 'exportHwpWithReport' | 'exportHwpWithPasswordAndReport') {
++  const original = bridge[method].bind(bridge);
++  bridge[method] = (...args: unknown[]) => ({ ...original(...args), contentLoss: LOSS_REPORT });
++}
++
++test('복구본 손실: 엔진이 내용 손실을 보고하면 바이트는 그대로 두고 lossy 로 표시하며, 손실이 없으면 표시하지 않는다(평문·암호 모두)', () => {
++  enableHost();
++  try {
++    const plain = new WasmBridge();
++    plain.loadDocument(sample('biz_plan.hwp'), 'a.hwp');
++    assert.equal(plain.exportAndroidRecoveryBytes().lossy, undefined);
++    withInjectedLoss(plain, 'exportHwpWithReport');
++    const lossyPlain = plain.exportAndroidRecoveryBytes();
++    assert.equal(lossyPlain.lossy, true);
++    assert.equal(needsPassword(lossyPlain), false);
++    new Doc(lossyPlain).free(); // 손실 표시와 무관하게 유효한 HWP 다
++
++    const password = synthPassword();
++    const { bridge } = openEncrypted(password);
++    assert.equal(bridge.exportAndroidRecoveryBytes().lossy, undefined);
++    withInjectedLoss(bridge, 'exportHwpWithPasswordAndReport');
++    const lossyEncrypted = bridge.exportAndroidRecoveryBytes();
++    assert.equal(lossyEncrypted.lossy, true);
++    assert.equal(needsPassword(lossyEncrypted), true, '손실이 있어도 평문 복구본으로 돌지 않는다');
++    assert.equal(opensWith(lossyEncrypted, password), true);
++  } finally { disableHost(); }
++});
++
++test('복구본 손실: AutosaveManager 는 lossy 를 초안 메타데이터로 넘기고, 저장소는 표시를 저장할 수 있다고 알린 셸에만 맡긴다', async () => {
++  const f = managerFixture({ exportBytes: () => Object.assign(new Uint8Array([1, 2, 3]), { lossy: true }) });
++  await f.manager.beginDocument({ fileName: 'a.hwp', sourceFormat: 'hwpx' });
++  await f.manager.flushNow('typing');
++  assert.equal(f.saved[0].lossy, true);
++  const clean = managerFixture();
++  await clean.manager.beginDocument({ fileName: 'a.hwp', sourceFormat: 'hwp' });
++  await clean.manager.flushNow('typing');
++  assert.equal('lossy' in clean.saved[0], false);
++
++  const sent: any[] = [];
++  const store = { saveDraft: async (d: any) => { sent.push(d); }, getDraft: async () => null, listDrafts: async () => [{ id: 'x', fileName: 'x.hwp', sourceFormat: 'hwp', savedAt: 1, byteLength: 1, data: new Uint8Array([1]), lossy: true }, { id: 'y', fileName: 'y.hwp', sourceFormat: 'hwp', savedAt: 2, byteLength: 1, data: new Uint8Array([1]), lossy: 'maybe' }], deleteDraft: async () => {}, clearDrafts: async () => {} };
++  const lossyDraft = { id: 'd', fileName: 'a.hwp', sourceFormat: 'hwp', savedAt: 5, byteLength: 1, data: new Uint8Array([9]), lossy: true };
++  g.AndroidStudioHost = { recovery: store }; // 표시 저장을 지원한다고 알리지 않은 셸
++  try {
++    await assert.rejects(saveAutosaveDraft(lossyDraft as never), /표시할 수 없어/);
++    assert.equal(sent.length, 0, '표시 없이 저장하지 않는다');
++    await saveAutosaveDraft({ ...lossyDraft, lossy: undefined } as never);
++    assert.equal(sent.length, 1, '손실 보고가 없는 복구본은 그대로 저장된다');
++  } finally { disableHost(); }
++  g.AndroidStudioHost = { recovery: { ...store, supportsLossyDrafts: true } };
++  try {
++    await saveAutosaveDraft(lossyDraft as never);
++    assert.equal(sent.at(-1).lossy, true);
++    const listed = await listAutosaveDrafts();
++    assert.equal(listed.find((d) => d.id === 'x')?.lossy, true);
++    assert.equal('lossy' in (listed.find((d) => d.id === 'y') ?? {}), false, 'true 가 아닌 값은 표시로 인정하지 않는다');
++  } finally { disableHost(); }
++});
+diff --git a/rhwp-studio/tests/support/studio-alias-hooks.mjs b/rhwp-studio/tests/support/studio-alias-hooks.mjs
+new file mode 100644
+index 0000000..cd705a3
+--- /dev/null
++++ b/rhwp-studio/tests/support/studio-alias-hooks.mjs
+@@ -0,0 +1,36 @@
++// 시험용 모듈 해석 훅: Vite 처럼 별칭(`@/` → src/, `@wasm/` → ../pkg/)과 확장자 없는 상대 경로를 Node 가 따라가게 한다. 시험 전용이다.
++import { fileURLToPath, pathToFileURL } from 'node:url';
++import { existsSync, statSync } from 'node:fs';
++import path from 'node:path';
++const src = fileURLToPath(new URL('../../src/', import.meta.url));
++const pkg = fileURLToPath(new URL('../../../pkg/', import.meta.url));
++const isFile = (p) => existsSync(p) && statSync(p).isFile();
++function withExtension(base) {
++  for (const candidate of [base, `${base}.ts`, path.join(base, 'index.ts')]) if (isFile(candidate)) return candidate;
++  return null;
++}
++export async function resolve(specifier, context, next) {
++  let base = null;
++  if (specifier.startsWith('@wasm/')) base = pkg + specifier.slice(6);
++  else if (specifier.startsWith('@/')) base = src + specifier.slice(2);
++  else if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:') && !path.extname(specifier)) {
++    base = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier);
++  }
++  if (base) {
++    const found = withExtension(base);
++    if (found) return next(pathToFileURL(found).href, context);
++  }
++  return next(specifier, context);
++}
++
++// Vite 가 채우는 `import.meta.env` 를 프로덕션 값으로 대신한다(DEV 아님).
++export async function load(url, context, next) {
++  const result = await next(url, context);
++  if (url.includes('/rhwp-studio/src/') && result.source != null) {
++    const text = result.source.toString();
++    if (text.includes('import.meta.env')) {
++      return { ...result, source: text.replaceAll('import.meta.env', '({ DEV: false, PROD: true, MODE: "production", BASE_URL: "/studio/" })') };
++    }
++  }
++  return result;
++}
