@@ -1,0 +1,390 @@
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index d53def7..6b80a36 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -67,7 +67,7 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
+ import { openRecentEntry } from '@/recent/recent-open';
+ 
+ import { t } from '../../i18n/index.ts';
+-import { androidExportBlob, androidPrintDocument, isAndroidHost, runAndroidSaveGuard } from '@/hwpxxx/android-host';
++import { androidExportBlob, androidPrintDocument, androidWorkspaceRouting, handleAndroidWorkspaceAction, isAndroidHost, runAndroidSaveGuard, type AndroidWorkspaceAction } from '@/hwpxxx/android-host';
+ import { prepareAndroidPrintJob } from '@/hwpxxx/android-print';
+ /**
+  * 파일 열기 대화상자(File System Access picker, 미지원 시 숨김 input 폴백)를 열어
+@@ -84,6 +84,15 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
+   });
+ }
+ 
++/**
++ * [hwpxxx-android] 작업 공간(탭) 호스트가 켜져 있으면 열기·새 문서·최근 문서는 현재 문서를 건드리지 않고 새 탭으로 간다
++ * (저장/버리기 확인이 필요 없다). 호출자는 `androidWorkspaceRouting()` 을 명령 시작 시점에 동기적으로 읽어야 한다.
++ * 호스트가 처리하지 않겠다고 하면(false) 옛 제자리 동작으로 돌아간다. 오류가 나도 현재 문서를 바꾸지 않는다.
++ */
++function androidWorkspaceHandled(action: AndroidWorkspaceAction, id?: string): Promise<boolean> {
++  return handleAndroidWorkspaceAction(action, id, (message) => showToast({ message, durationMs: 4500 }));
++}
++
+ /** 최근 문서 핸들의 읽기 권한을 확인/요청한다. 최종 'granted' 여부 반환. */
+ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<boolean> {
+   try {
+@@ -897,14 +906,25 @@ export const fileCommands: CommandDef[] = [
+     icon: 'icon-new-doc',
+     shortcutLabel: 'Alt+N',
+     canExecute: () => true,
+-    execute(services) {
++    execute(services, params) {
++      // [hwpxxx-android] 작업 공간이 켜져 있으면 새 탭의 빈 문서. 꺼져 있으면 아래 옛 경로가 그대로(동기) 실행된다.
++      if (androidWorkspaceRouting(params)) {
++        void androidWorkspaceHandled('new').then((handled) => { if (!handled) services.eventBus.emit('create-new-document'); });
++        return;
++      }
+       services.eventBus.emit('create-new-document');
+     },
+   },
+   {
+     id: 'file:open',
+     label: t('command.file.open.label'),
+-    execute: openFileViaPicker,
++    execute(services, params) {
++      // [hwpxxx-android] 작업 공간이 켜져 있으면 새 탭에서 연다(현재 문서·실행 취소·저장 상태는 그대로).
++      if (androidWorkspaceRouting(params)) {
++        return androidWorkspaceHandled('open').then((handled) => (handled ? undefined : openFileViaPicker(services)));
++      }
++      return openFileViaPicker(services);
++    },
+   },
+   {
+     // 최근 문서 재열기 — 저장된 핸들 권한 재확인 후 라이브 파일 로드. params.id로 레코드 지정.
+@@ -914,6 +934,8 @@ export const fileCommands: CommandDef[] = [
+     id: 'file:open-recent',
+     label: t('command.file.openRecent.registryLabel'),
+     async execute(services, params) {
++      // [hwpxxx-android] 제자리 표식은 명령 params 에 실려 오므로 await 이후에도 같은 판단이다(첫 줄에서 읽는다).
++      const routeToWorkspace = androidWorkspaceRouting(params);
+       const id = typeof params?.id === 'string' ? params.id : undefined;
+       if (!id) return;
+       const recents = await listRecentDocs();
+@@ -922,6 +944,8 @@ export const fileCommands: CommandDef[] = [
+         showToast({ message: t('command.file.execute.message'), durationMs: 2500 });
+         return;
+       }
++      // [hwpxxx-android] 셸이 관리하는 항목은 불투명 ID 만 새 탭으로 넘긴다(핸들·FSA 객체는 다른 문서 영역으로 가지 않는다).
++      if (routeToWorkspace && entry.hostManaged && await androidWorkspaceHandled('recent', id)) return;
+ 
+       await openRecentEntry(entry, {
+         ensurePermission: ensureReadPermission,
+diff --git a/rhwp-studio/src/hwpxxx/android-host.ts b/rhwp-studio/src/hwpxxx/android-host.ts
+index 7fb1e4b..06ee707 100644
+--- a/rhwp-studio/src/hwpxxx/android-host.ts
++++ b/rhwp-studio/src/hwpxxx/android-host.ts
+@@ -65,8 +65,25 @@ export interface AndroidPrintRequest {
+   signal?: AbortSignal;
+ }
+ 
++/**
++ * [hwpxxx-android] 문서 작업 공간(탭) 호스트 API. 셸 `studio-host.js` 가 `AndroidStudioHost.workspace` 로 건넨다.
++ * 없거나 `enabled !== true` 이면 옛 단일 문서 동작(현재 문서를 제자리에서 바꾸는 열기/새 문서)이 그대로다.
++ * `enabled` 는 네이티브가 동기로 알려 준 고정 능력이라 핸드셰이크 전에도 켜져 있다(그 사이에도 현재 문서를 바꾸지 않는다).
++ * 셸은 다른 문서의 핸들·바이트를 이쪽으로 넘기지 않는다: 새 탭은 자기 WebView 에서 자기 핸들로 연다.
++ */
++export interface AndroidWorkspaceHost {
++  version?: number;
++  /** 네이티브 작업 공간이 준비됐을 때만 true. */
++  enabled?: boolean;
++  /** true: 새 탭으로 처리했다(오류 안내 포함). false: 작업 공간이 없어 옛 동작으로. */
++  newDocument?: () => Promise<boolean>;
++  openDocument?: () => Promise<boolean>;
++  openRecent?: (id: string) => Promise<boolean>;
++}
++
+ interface AndroidHostGlobal {
+   version?: number;
++  workspace?: AndroidWorkspaceHost;
+   /** 계약 이름은 `recovery`, 별칭 `recoveryStore`. */
+   recovery?: AndroidRecoveryStore;
+   recoveryStore?: AndroidRecoveryStore;
+@@ -92,6 +109,46 @@ export function getAndroidRecoveryStore(): AndroidRecoveryStore | null | undefin
+   return host.recovery ?? host.recoveryStore ?? null;
+ }
+ 
++export type AndroidWorkspaceAction = 'new' | 'open' | 'recent';
++
++/** 호스트가 자식 탭의 첫 동작을 제자리(옛 경로)로 실행시키는 명령별 표식. 전역 플래그가 아니라 명령과 함께 다닌다. */
++export const ANDROID_WORKSPACE_IN_PLACE = 'androidWorkspaceInPlace';
++
++/**
++ * 열기/새 문서를 새 탭으로 보내야 하는가. 호스트가 없거나 작업 공간이 꺼졌거나, 명령이 제자리 표식을 달고 왔으면 false(옛 동작).
++ * 표식은 명령 params 에만 있다 — 자동화가 준비/미들웨어를 기다린 뒤 늦게 실행해도 같은 명령이 같은 판단을 한다.
++ */
++export function androidWorkspaceRouting(params?: Record<string, unknown>): boolean {
++  const workspace = getAndroidHost()?.workspace;
++  return !!workspace && workspace.enabled === true && params?.[ANDROID_WORKSPACE_IN_PLACE] !== true;
++}
++
++/** 새 탭으로 처리했으면 true. 작업 공간이 처리하지 않겠다고 하면 false(호출자가 옛 동작으로). 오류는 그대로 던진다. */
++export async function routeAndroidWorkspaceAction(action: AndroidWorkspaceAction, recentId?: string): Promise<boolean> {
++  const workspace = getAndroidHost()?.workspace;
++  if (!workspace || workspace.enabled !== true) return false;
++  if (action === 'new') return typeof workspace.newDocument === 'function' ? await workspace.newDocument() : false;
++  if (action === 'open') return typeof workspace.openDocument === 'function' ? await workspace.openDocument() : false;
++  return typeof workspace.openRecent === 'function' && typeof recentId === 'string' && recentId !== '' ? await workspace.openRecent(recentId) : false;
++}
++
++/**
++ * 새 탭 라우팅 + 오류 처리. true: 처리했다(실패해도 현재 문서를 대신 바꾸지 않는다). false: 호스트가 처리하지 않겠다 → 호출자가 옛 동작.
++ * `reportError` 는 사용자에게 보이는 안내(토스트)다.
++ */
++export async function handleAndroidWorkspaceAction(
++  action: AndroidWorkspaceAction,
++  recentId: string | undefined,
++  reportError: (message: string) => void,
++): Promise<boolean> {
++  try {
++    return await routeAndroidWorkspaceAction(action, recentId);
++  } catch (error) {
++    reportError(`새 탭을 열지 못했어요: ${error instanceof Error ? error.message : String(error)}`);
++    return true;
++  }
++}
++
+ export function isAndroidHost(): boolean {
+   return getAndroidHost() !== null;
+ }
+diff --git a/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts b/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts
+new file mode 100644
+index 0000000..77b57ea
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts
+@@ -0,0 +1,91 @@
++// [hwpxxx-android] 작업 공간(탭) 라우팅 시험 — 실제 file.ts 명령과 android-host.ts 라우팅 헬퍼를 합성 호스트로 실행한다.
++// 문서·핸들은 모두 합성 값이다(사용자 문서 없음).
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { register } from 'node:module';
++import { spawnSync } from 'node:child_process';
++import { fileURLToPath } from 'node:url';
++
++register(new URL('./support/studio-alias-hooks.mjs', import.meta.url), import.meta.url);
++const g = globalThis as Record<string, any>;
++g.window ??= new EventTarget();
++import { readFileSync } from 'node:fs';
++const { androidWorkspaceRouting, ANDROID_WORKSPACE_IN_PLACE, routeAndroidWorkspaceAction, handleAndroidWorkspaceAction } = await import('../src/hwpxxx/android-host.ts');
++function setup(workspace: Record<string, unknown> | undefined, recents: Array<Record<string, unknown>> = []) {
++  const calls: string[] = [];
++  const emitted: string[] = [];
++  g.AndroidStudioHost = {
++    ...(workspace ? { workspace: {
++      version: 1,
++      newDocument: async () => { calls.push('new'); return true; },
++      openDocument: async () => { calls.push('open'); return true; },
++      openRecent: async (id: string) => { calls.push('recent:' + id); return true; },
++      ...workspace,
++    } } : {}),
++    recent: { list: async () => recents, open: async () => { throw new Error('legacy recent must not be used here'); } },
++  };
++  const services = { eventBus: { emit: (name: string) => { emitted.push(name); } } } as never;
++  return { calls, emitted, services };
++}
++const cleanup = () => { delete g.AndroidStudioHost; delete g.rhwpAndroidHost; };
++
++test('제자리 표식은 정확한 값(true)일 때만, 명령 params 에서만 우회한다', () => {
++  setup({ enabled: true });
++  assert.equal(ANDROID_WORKSPACE_IN_PLACE, 'androidWorkspaceInPlace');
++  assert.equal(androidWorkspaceRouting(), true);
++  assert.equal(androidWorkspaceRouting({}), true);
++  assert.equal(androidWorkspaceRouting({ androidWorkspaceInPlace: true }), false);
++  for (const value of ['true', 1, {}, null]) assert.equal(androidWorkspaceRouting({ androidWorkspaceInPlace: value }), true, String(value));
++  cleanup();
++});
++
++test('작업 공간이 없거나 꺼져 있으면 라우팅하지 않는다(옛 동작)', async () => {
++  cleanup();
++  assert.equal(androidWorkspaceRouting(), false);
++  setup(undefined);
++  assert.equal(androidWorkspaceRouting(), false);
++  const off = setup({ enabled: false });
++  assert.equal(androidWorkspaceRouting(), false);
++  assert.deepEqual(off.calls, []);
++  assert.equal(await routeAndroidWorkspaceAction('new'), false, '꺼진 작업 공간은 호스트 함수를 부르지 않고 false');
++  cleanup();
++});
++
++test('순수 헬퍼: 처리됨/처리 안 함/오류(사용자 안내 + 현재 문서 유지)', async () => {
++  let r = setup({ enabled: true });
++  const messages: string[] = [];
++  assert.equal(await handleAndroidWorkspaceAction('open', undefined, (m) => messages.push(m)), true);
++  assert.equal(await handleAndroidWorkspaceAction('recent', 'id_1', (m) => messages.push(m)), true);
++  assert.deepEqual(r.calls, ['open', 'recent:id_1']);
++  assert.equal(await routeAndroidWorkspaceAction('recent', ''), false, '빈 ID 는 보내지 않는다');
++  assert.equal(await routeAndroidWorkspaceAction('recent', undefined), false);
++  r = setup({ enabled: true, openDocument: async () => { throw new Error('탭은 최대 8개까지 열 수 있어요.'); } });
++  assert.equal(await handleAndroidWorkspaceAction('open', undefined, (m) => messages.push(m)), true, '오류여도 true: 옛 제자리 열기로 폴백하지 않는다');
++  assert.deepEqual(messages, ['새 탭을 열지 못했어요: 탭은 최대 8개까지 열 수 있어요.']);
++  r = setup({ enabled: true, newDocument: async () => false });
++  assert.equal(await handleAndroidWorkspaceAction('new', undefined, () => assert.fail('안내 없음')), false);
++  cleanup();
++});
++
++test('소스 배선: 세 명령 모두 시작 시점에 라우팅을 동기로 읽고, 옛 경로는 그대로 남아 있다', () => {
++  const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
++  const strip = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
++  const code = strip(file);
++  const block = (id: string) => { const i = code.indexOf(`id: '${id}'`); return code.slice(i, code.indexOf('\n  },', i)); };
++  assert.match(block('file:new-doc'), /androidWorkspaceRouting\(params\)[\s\S]*androidWorkspaceHandled\('new'\)[\s\S]*services\.eventBus\.emit\('create-new-document'\)/);
++  assert.match(block('file:open'), /androidWorkspaceRouting\(params\)[\s\S]*androidWorkspaceHandled\('open'\)[\s\S]*openFileViaPicker\(services\)/);
++  const recent = block('file:open-recent');
++  assert.ok(recent.indexOf('androidWorkspaceRouting(params)') < recent.indexOf('await listRecentDocs()'), '제자리 표식은 첫 await 전에 읽는다');
++  assert.match(recent, /routeToWorkspace && entry\.hostManaged && await androidWorkspaceHandled\('recent', id\)/);
++  assert.match(code, /requestReopen: \(\) => \{ void openFileViaPicker\(services\); \}/, '최근 문서 재선택은 제자리 열기(새 탭을 또 만들지 않음)');
++});
++
++// 실제 file.ts 명령(새 문서·열기·최근 문서)을 합성 호스트로 실행하는 러너. file.ts 가 끌어오는 UI 모듈의 매개변수 속성 때문에
++// 기존 시험들처럼 --experimental-transform-types 자식 프로세스로 띄우고, 못 띄우면 실패로 드러낸다.
++test('명령 실행(file:new-doc / file:open / file:open-recent)이 작업 공간으로 라우팅된다 (자식 프로세스)', () => {
++  const runner = fileURLToPath(new URL('./support/android-workspace-routing.runner.mjs', import.meta.url));
++  const res = spawnSync(process.execPath, ['--experimental-transform-types', '--no-warnings', runner], { encoding: 'utf8' });
++  assert.ifError(res.error);
++  assert.equal(res.status, 0, `러너가 비정상 종료했습니다.\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}`);
++  assert.match(res.stdout, /ANDROID_WORKSPACE_ROUTING_OK 11/, '11개 행위 검증 성공 마커');
++});
+diff --git a/rhwp-studio/tests/support/android-workspace-routing.runner.mjs b/rhwp-studio/tests/support/android-workspace-routing.runner.mjs
+new file mode 100644
+index 0000000..3f1039d
+--- /dev/null
++++ b/rhwp-studio/tests/support/android-workspace-routing.runner.mjs
+@@ -0,0 +1,135 @@
++// [hwpxxx-android] 작업 공간 라우팅 러너: 실제 file.ts 명령을 합성 호스트(AndroidStudioHost.workspace)로 실행한다.
++// file.ts 가 끌어오는 UI 모듈의 매개변수 속성 때문에 부모 시험이 --experimental-transform-types 로 띄운다.
++// 문서·핸들은 모두 합성 값이다.
++import { registerHooks } from 'node:module';
++import { pathToFileURL, fileURLToPath } from 'node:url';
++import { dirname, join } from 'node:path';
++import assert from 'node:assert/strict';
++
++const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
++const WASM_ENTRY_STUB = 'data:text/javascript,export default async function init() {}'
++  + ' export class HwpDocument {} export function version() { return "0"; }';
++registerHooks({
++  resolve(specifier, context, nextResolve) {
++    if (specifier === '@wasm/rhwp.js') return { url: WASM_ENTRY_STUB, shortCircuit: true };
++    if (specifier.startsWith('@/')) {
++      const abs = join(srcDir, specifier.slice(2));
++      return { url: pathToFileURL(abs.endsWith('.ts') ? abs : abs + '.ts').href, shortCircuit: true };
++    }
++    if ((specifier.startsWith('./') || specifier.startsWith('../')) && !/\.[cm]?[tj]s$/.test(specifier)) {
++      const parent = context.parentURL ? dirname(fileURLToPath(context.parentURL)) : srcDir;
++      return { url: pathToFileURL(join(parent, specifier + '.ts')).href, shortCircuit: true };
++    }
++    return nextResolve(specifier, context);
++  },
++});
++
++// 토스트가 쓰는 최소 DOM: 안내 문구를 모은다.
++const toasts = [];
++const node = () => {
++  const el = { style: {}, children: [], setAttribute() {}, appendChild(child) { this.children.push(child); }, addEventListener() {}, remove() {}, classList: { add() {}, remove() {} } };
++  Object.defineProperty(el, 'textContent', { set(value) { toasts.push(String(value)); }, get() { return ''; } });
++  return el;
++};
++globalThis.document = { getElementById: () => null, createElement: () => node(), body: node() };
++globalThis.requestAnimationFrame = (callback) => setTimeout(callback, 0);
++globalThis.window = globalThis;
++const { fileCommands } = await import(pathToFileURL(join(srcDir, 'command', 'commands', 'file.ts')).href);
++const command = (id) => fileCommands.find((c) => c.id === id);
++const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); await new Promise((r) => setTimeout(r, 0)); };
++
++function setup(workspace, recents = []) {
++  const calls = [], emitted = [];
++  globalThis.AndroidStudioHost = {
++    ...(workspace ? { workspace: { version: 1,
++      newDocument: async () => { calls.push('new'); return true; },
++      openDocument: async () => { calls.push('open'); return true; },
++      openRecent: async (id) => { calls.push('recent:' + id); return true; },
++      ...workspace } } : {}),
++    recent: { list: async () => recents, open: async () => { throw new DOMException('gone', 'NotFoundError'); }, remove: async () => {} },
++  };
++  toasts.length = 0;
++  return { calls, emitted, services: { eventBus: { emit: (name) => { emitted.push(name); } }, getContext: () => ({ hasDocument: false, isDirty: false }) } };
++}
++let pickerCalls = 0;
++globalThis.showOpenFilePicker = async () => { pickerCalls++; throw new DOMException('cancel', 'AbortError'); };
++let verified = 0;
++const ok = (name, fn) => Promise.resolve(fn()).then(() => { verified++; }, (error) => { console.error('FAIL:', name); throw error; });
++
++await ok('new: workspace tab only', async () => {
++  const r = setup({ enabled: true });
++  command('file:new-doc').execute(r.services); await flush();
++  assert.deepEqual(r.calls, ['new']); assert.deepEqual(r.emitted, []);
++});
++await ok('new: disabled/absent => legacy event synchronously', async () => {
++  for (const workspace of [{ enabled: false }, undefined]) {
++    const r = setup(workspace);
++    command('file:new-doc').execute(r.services);
++    assert.deepEqual(r.emitted, ['create-new-document']); assert.deepEqual(r.calls, []);
++  }
++});
++await ok('new: host false => legacy; host error => toast, no in-place replace', async () => {
++  let r = setup({ enabled: true, newDocument: async () => false });
++  command('file:new-doc').execute(r.services); await flush();
++  assert.deepEqual(r.emitted, ['create-new-document']);
++  r = setup({ enabled: true, newDocument: async () => { throw new Error('탭은 최대 8개까지 열 수 있어요.'); } });
++  command('file:new-doc').execute(r.services); await flush();
++  assert.deepEqual(r.emitted, []); assert.ok(toasts.includes('새 탭을 열지 못했어요: 탭은 최대 8개까지 열 수 있어요.'), JSON.stringify(toasts));
++});
++const IN_PLACE = { androidWorkspaceInPlace: true };
++const SHA = (n) => String(n).repeat(64).slice(0, 64); // real HostState recent ids are SHA-256 hex
++await ok('in-place marker: core in-place new-doc, no recursive tab', async () => {
++  const r = setup({ enabled: true });
++  command('file:new-doc').execute(r.services, IN_PLACE);
++  assert.deepEqual(r.emitted, ['create-new-document']); assert.deepEqual(r.calls, []);
++});
++await ok('open: new tab, no picker/unsaved path in the current document', async () => {
++  const r = setup({ enabled: true }); pickerCalls = 0;
++  await command('file:open').execute(r.services);
++  assert.deepEqual(r.calls, ['open']); assert.equal(pickerCalls, 0);
++});
++await ok('open: in-place marker runs the legacy in-place picker once (old unsaved guard path)', async () => {
++  const r = setup({ enabled: true }); pickerCalls = 0;
++  globalThis.confirm = () => true;
++  await command('file:open').execute(r.services, IN_PLACE);
++  assert.deepEqual(r.calls, []); assert.equal(pickerCalls, 1);
++});
++await ok('recent: opaque SHA64 id to workspace, host recent.open never called in the current document', async () => {
++  const id = SHA('a');
++  const r = setup({ enabled: true }, [{ id, fileName: 'a.hwp', sourceFormat: 'hwp', openedAt: 1, reopenable: true }]);
++  let hostOpens = 0; globalThis.AndroidStudioHost.recent.open = async () => { hostOpens++; throw new Error('must not run'); };
++  await command('file:open-recent').execute(r.services, { id });
++  assert.deepEqual(r.calls, ['recent:' + id]); assert.equal(hostOpens, 0);
++});
++await ok('recent: stale id => legacy toast only, no tab', async () => {
++  const r = setup({ enabled: true }, []);
++  await command('file:open-recent').execute(r.services, { id: SHA('f') });
++  assert.deepEqual(r.calls, []); assert.ok(toasts.length >= 1, 'legacy not-found toast');
++});
++await ok('recent: in-place marker => core recent.open exactly once, no workspace call', async () => {
++  const id = SHA('b');
++  const r = setup({ enabled: true }, [{ id, fileName: 'a.hwp', sourceFormat: 'hwp', openedAt: 1, reopenable: true }]);
++  let hostOpens = 0; globalThis.AndroidStudioHost.recent.open = async () => { hostOpens++; throw new DOMException('gone', 'NotFoundError'); };
++  await command('file:open-recent').execute(r.services, { id, ...IN_PLACE });
++  assert.deepEqual(r.calls, []); assert.equal(hostOpens, 1);
++});
++// automation.execute may await readiness/middleware BEFORE it dispatches: the marker must survive that delay (a flag cleared on return would not).
++await ok('deferred automation: marker still bypasses routing after an async gap; unmarked deferred commands still route', async () => {
++  const id = SHA('c');
++  const r = setup({ enabled: true }, [{ id, fileName: 'a.hwp', sourceFormat: 'hwp', openedAt: 1, reopenable: true }]);
++  const deferredExecute = async (commandId, params) => { await new Promise((resolve) => setTimeout(resolve, 30)); await Promise.resolve(); return command(commandId).execute(r.services, params); };
++  let hostOpens = 0; globalThis.AndroidStudioHost.recent.open = async () => { hostOpens++; throw new DOMException('gone', 'NotFoundError'); };
++  pickerCalls = 0; globalThis.confirm = () => true;
++  const pending = [deferredExecute('file:new-doc', IN_PLACE), deferredExecute('file:open', IN_PLACE), deferredExecute('file:open-recent', { id, ...IN_PLACE })];
++  await Promise.all(pending); await flush();
++  assert.deepEqual(r.calls, [], 'no recursive workspaceNew/Recent from an in-place initial action');
++  assert.deepEqual(r.emitted, ['create-new-document']); assert.equal(pickerCalls, 1); assert.equal(hostOpens, 1);
++  await Promise.all([deferredExecute('file:new-doc'), deferredExecute('file:open')]); await flush();
++  assert.deepEqual(r.calls, ['new', 'open'], 'user-initiated commands still go to new tabs');
++});
++await ok('only the exact marker value bypasses (truthy strings do not)', async () => {
++  const r = setup({ enabled: true });
++  command('file:new-doc').execute(r.services, { androidWorkspaceInPlace: 'true' }); await flush();
++  assert.deepEqual(r.calls, ['new']);
++});
++console.log('ANDROID_WORKSPACE_ROUTING_OK', verified);

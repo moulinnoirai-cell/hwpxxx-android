@@ -14,8 +14,14 @@ import java.util.*;
 final class DraftStore {
     static final int MAX_DRAFTS=8;
     static final long MAX_TOTAL=128L*1024*1024,MAX_AGE_MS=30L*24*60*60*1000;
+    interface Budget {
+        Object lock();
+        void admit(File directory,String key,long documentBytes,long metadataBytes)throws IOException;
+    }
     private final File dir;
-    DraftStore(File dir)throws IOException{this.dir=dir.getCanonicalFile();if(!this.dir.isDirectory()&&!this.dir.mkdirs())throw new IOException("복구 폴더를 만들 수 없어요.");}
+    private final Budget budget;
+    DraftStore(File dir)throws IOException{this(dir,null);}
+    DraftStore(File dir,Budget budget)throws IOException{this.dir=dir.getCanonicalFile();this.budget=budget;if(!this.dir.isDirectory()&&!this.dir.mkdirs())throw new IOException("복구 폴더를 만들 수 없어요.");}
     static String key(String documentId)throws IOException{return FileStore.sha(documentId.getBytes(StandardCharsets.UTF_8)).substring(0,32);}
     static boolean validKey(String key){return key!=null&&key.matches("[0-9a-f]{32}");}
     private File bytes(String key){return new File(dir,key+".draft");}
@@ -24,14 +30,23 @@ final class DraftStore {
 
     /** Atomically stores a draft; older drafts are evicted so the count and total size stay bounded. */
     synchronized void write(String key,Map<String,String> info,byte[] data)throws IOException {
+        if(budget==null){writeLocked(key,info,data);return;}
+        // Only app-private draft commits share this lock. Never serializes SAF or document reads.
+        synchronized(budget.lock()){writeLocked(key,info,data);}
+    }
+    private void writeLocked(String key,Map<String,String> info,byte[] data)throws IOException {
         need(key);String format=info.get("format");if(format==null)throw new IOException("형식을 알 수 없어요.");
         FileStore.validate(data,format);
         long free=dir.getUsableSpace();if(free<data.length+4L*1024*1024)throw new IOException("복구 자료를 저장할 공간이 부족해요.");
+        Properties p=new Properties();p.putAll(info);p.setProperty("size",String.valueOf(data.length));p.setProperty("sha",FileStore.sha(data));p.setProperty("savedAt",String.valueOf(System.currentTimeMillis()));
+        ByteArrayOutputStream metadata=new ByteArrayOutputStream();
+        try(Writer w=new OutputStreamWriter(metadata,StandardCharsets.UTF_8)){p.store(w,null);}
+        byte[] metadataBytes=metadata.toByteArray();
+        if(budget!=null)budget.admit(dir,key,data.length,metadataBytes.length);
         File tempBytes=File.createTempFile(".draft-",".tmp",dir),tempMeta=File.createTempFile(".draft-",".tmp",dir);
         try {
             try(FileOutputStream out=new FileOutputStream(tempBytes)){out.write(data);out.getFD().sync();}
-            Properties p=new Properties();p.putAll(info);p.setProperty("size",String.valueOf(data.length));p.setProperty("sha",FileStore.sha(data));p.setProperty("savedAt",String.valueOf(System.currentTimeMillis()));
-            try(Writer w=new OutputStreamWriter(new FileOutputStream(tempMeta),StandardCharsets.UTF_8)){p.store(w,null);}
+            try(FileOutputStream out=new FileOutputStream(tempMeta)){out.write(metadataBytes);out.getFD().sync();}
             Files.move(tempBytes.toPath(),bytes(key).toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
             Files.move(tempMeta.toPath(),meta(key).toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
         } finally {tempBytes.delete();tempMeta.delete();}

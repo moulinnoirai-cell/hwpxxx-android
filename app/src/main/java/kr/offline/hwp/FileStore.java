@@ -14,10 +14,15 @@ import org.xml.sax.helpers.DefaultHandler;
 public final class FileStore {
     public static final int MAX_BYTES = 32 * 1024 * 1024;
     public static final long MAX_EXPANDED = 128L * 1024 * 1024;
-    private final List<File> roots;
+    private volatile List<File> roots;
     public FileStore(List<File> roots) throws IOException {
-        this.roots = new ArrayList<>();
-        for (File f : roots) this.roots.add(f.getCanonicalFile());
+        refreshRoots(roots);
+    }
+    /** Refresh volume roots without replacing the repository shared by editor sessions. */
+    public void refreshRoots(List<File> roots) throws IOException {
+        List<File> next = new ArrayList<>();
+        for (File f : roots) next.add(f.getCanonicalFile());
+        this.roots = Collections.unmodifiableList(next);
     }
     public File resolve(String path) throws IOException {
         File raw = new File(path).getAbsoluteFile();
@@ -171,12 +176,15 @@ public final class FileStore {
         } catch(Exception e){throw new IOException("HWPX XML을 안전하게 읽을 수 없어요. 외부 참조 또는 문서 구조를 확인해 주세요.",e);}
     }
     public File createFolder(String parent,String child)throws IOException {
+        synchronized (FileStore.class) {
         name(child);File dir=resolve(parent),f=resolve(new File(dir,child).getPath());
         if(!dir.isDirectory())throw new IOException("폴더를 찾을 수 없어요.");
         if(f.exists())throw new IOException("같은 이름의 항목이 있어요.");
         if(!f.mkdir())throw new IOException("폴더를 만들 수 없어요. 접근 권한과 남은 공간을 확인해 주세요.");return f;
+        }
     }
     public File write(String target,byte[] bytes,String expectedSha,boolean replace)throws IOException {
+        synchronized (FileStore.class) {
         File dest=resolve(target);name(dest.getName());validate(bytes,ext(dest));
         File parent=dest.getParentFile();if(!parent.isDirectory()||!parent.canWrite())throw new IOException("저장할 폴더에 쓸 수 없어요.");
         if(parent.getUsableSpace()<bytes.length+1024*1024L)throw new IOException("저장공간이 부족해요.");
@@ -206,6 +214,7 @@ public final class FileStore {
             }
             return dest;
         } finally {temp.delete();}
+        }
     }
     /** A killed process can leave its own temp file behind; remove only our exact name pattern once it is clearly abandoned. */
     static final long STALE_TEMP_MS=6L*60*60*1000;
@@ -215,6 +224,7 @@ public final class FileStore {
     }
     /** Copies the current HWP next to itself before its first in-place save; HWPX returns null. */
     public File backup(String target,String expectedSha,String stamp)throws IOException {
+        synchronized (FileStore.class) {
         File f=resolve(target);if(!ext(f).equals("hwp"))return null;
         byte[] bytes=read(f.getPath());
         if(expectedSha==null||!sha(bytes).equals(expectedSha))throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");
@@ -223,8 +233,10 @@ public final class FileStore {
         File dest=new File(dir,base+suffix+".hwp");
         for(int i=2;dest.exists();i++){if(i>99)throw new IOException("백업 파일 이름을 정하지 못했어요.");dest=new File(dir,base+suffix+"-"+i+".hwp");}
         return write(dest.getPath(),bytes,null,false);
+        }
     }
     public File move(String source,String parent,String newName)throws IOException {
+        synchronized (FileStore.class) {
         File src=resolve(source),dir=resolve(parent);name(newName);
         File dest=resolve(new File(dir,newName).getPath());
         if(src.equals(dest))throw new IOException("현재 폴더와 같은 위치예요.");
@@ -235,5 +247,13 @@ public final class FileStore {
         if(!sha(read(source)).equals(hash)) {dest.delete();throw new IOException("이동 중 원본이 바뀌어 이동을 중지했어요.");}
         if(!src.delete())throw new IOException("새 위치에 복사했지만 원본을 지우지 못했어요. 두 파일이 보존되어 있어요.");
         return dest;
+        }
+    }
+    /** Serialize deletion with baseline checks and replacement in other sessions. */
+    public void delete(String path)throws IOException {
+        synchronized (FileStore.class) {
+            File file=resolve(path);
+            if(!file.isFile()||!file.delete())throw new IOException("문서를 삭제하지 못했어요.");
+        }
     }
 }

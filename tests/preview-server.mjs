@@ -9,6 +9,7 @@ import nodePath from 'node:path';
 const path=nodePath.posix;
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { WorkspaceOracle } from './workspace-oracle.mjs';
 
 const port = Number(process.argv[2] || 8765);
 const assets = new URL('../app/src/main/assets/', import.meta.url);
@@ -30,8 +31,8 @@ let termux = false;
 const termuxFile = path.join(sandbox, 'termux-home/hwpxxx-project/termux-nested.hwpx');
 fs.mkdirSync(path.dirname(termuxFile), { recursive: true });
 fs.copyFileSync(new URL('문서.hwpx', fixtures), termuxFile);
-const docs = new Map(), blobs = new Map();
-const newDocuments = new Map();
+let docs = new Map(), blobs = new Map();
+let newDocuments = new Map();
 let upload = null, pdf = null, draftUpload = null;
 const printed = [];
 const delays = {};
@@ -44,16 +45,17 @@ const delays = {};
 const cfg = { strict: false };
 let opLog = [];
 const failures = new Map(), holds = new Set(), held = [];
-const pickQueue = [], fontQueue = [], selected = new Map(), fonts = new Map();
+let pickQueue = [], selected = new Map();
+const fontQueue = [], fonts = new Map();
 let clipboard = { text: '', html: '', image: null };
-const openQueue = [];
+let openQueue = [];
 // Private persisted state (native: PrivateStateStore, AES-GCM at rest). The mock keeps records in memory and models ONLY the protocol and its
 // failure codes; it proves nothing about native encryption. Records survive /__restart, native ephemeral ids do not.
 const history = new Map(), recents = new Map();
 let stateUpload = null, historyUnreadable = 0, recentPersistable = true;
 const revokedGrants = new Set();
 // Recovery drafts survive a page reload, like the app's private storage survives a process kill.
-const drafts = new Map();
+let drafts = new Map();
 const draftKey = id => crypto.createHash('sha256').update(id).digest('hex').slice(0, 32);
 const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const ext = f => /\.hwpx$/i.test(f) ? 'hwpx' : /\.hwp$/i.test(f) ? 'hwp' : /\.hml$/i.test(f) ? 'hml' : /\.pdf$/i.test(f) ? 'pdf' : '';
@@ -76,6 +78,74 @@ function record(f) { const id = sha(Buffer.from(f)); docs.set(id, f); const st =
 function termuxRecord() { const id = sha(Buffer.from('termux:' + termuxFile)); docs.set(id, termuxFile); const st = fs.statSync(termuxFile); return { id, name: path.basename(termuxFile), path: 'content://com.termux.documents/mock', folder: 'Termux · hwpxxx-project/nested', size: st.size, modified: st.mtimeMs, format: 'hwpx', external: true }; }
 function doc(id) { const f = docs.get(id); if (!f || !fs.existsSync(f)) throw new Error('문서 목록을 새로고침한 뒤 다시 선택해 주세요.'); return f; }
 function name(n) { if (!n || !n.trim()) throw new Error('이름을 입력해 주세요.'); if (n !== n.trim() || /[\\/\x00-\x1f\x7f]/.test(n)) throw new Error('이름의 앞뒤 공백, /, \\ 또는 제어 문자를 지우고 240바이트 이내로 입력해 주세요.'); }
+
+// ---- Workspace multi-session overlay (tests/workspace-*.py). ONE Android process hosts one EditorSession per tab; the browser tests model
+// that with a *view tag* (header x-view, from the page URL ?view=<id>). The empty tag is the exact old single-session state above, so every
+// legacy page/test is unchanged. A tagged request runs operation() with that session's PRIVATE state swapped in (operation() is synchronous):
+// upload/draft/state/pdf slots, blobs, picked/open-request handles, source-handle ids, new-document ids, pick/open queues and the private
+// per-tab recovery drafts (= DraftStore for the tab UUID). Shared by every session like WorkspaceServices: the file volume + hash-checked
+// finishSave, fonts, private history/recents, permission, clipboard. This is a protocol mock: it proves nothing about native code/crypto.
+const sessions = new Map();
+const TAG = /^[A-Za-z0-9-]{1,64}$/;
+const blankSession = () => ({ docs: new Map(), blobs: new Map(), newDocuments: new Map(), upload: null, pdf: null, draftUpload: null, stateUpload: null, pickQueue: [], openQueue: [], selected: new Map(), drafts: new Map() });
+const capture = () => ({ docs, blobs, newDocuments, upload, pdf, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts });
+function restore(v) { ({ docs, blobs, newDocuments, upload, pdf, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts } = v); }
+function inSession(tag, fn) {
+  if (!tag) return fn();
+  if (!sessions.has(tag)) sessions.set(tag, blankSession());
+  const outer = capture(), mine = sessions.get(tag);
+  restore(mine);
+  try { return fn(); } finally { sessions.set(tag, capture()); restore(outer); }
+}
+const tagUrls = (value, tag) => { if (!tag || value == null || typeof value !== 'object') return value; for (const [k, v] of Object.entries(value)) { if (k === 'url' && typeof v === 'string' && v.startsWith('/document/')) value[k] = v + '?view=' + tag; else tagUrls(v, tag); } return value; };
+// Event channel (SSE) of tagged pages: native -> JS pushes that are not replies (workspaceChanged, fontsChanged to the other sessions, close requests).
+const listeners = new Map();
+function push(tag, frame) { for (const res of listeners.get(tag) || []) res.write('data: ' + JSON.stringify(frame) + '\n\n'); }
+const pushAll = (frame, except) => { for (const tag of listeners.keys()) if (tag !== except) push(tag, frame); };
+// Workspace controller MOCK (workspace-oracle.mjs): CONTRACT.md ops with the implicit origin = the request's session. Off unless /__workspace?enable=1.
+let workspace = null, closeTokens = new Map(), rejected = [];
+const initialActions = new Map(), openCreated = new Set();
+const sessionReads = tag => opLog.some(o => o.view === tag && o.op === 'read' && o.ok);
+const broadcastWorkspace = () => { if (workspace) for (const tag of listeners.keys()) push(tag, { kind: 'event', name: 'workspaceChanged', data: workspace.snapshot(tag) }); };
+function workspaceOperation(op, a, origin) {
+  if (!workspace || !origin) throw new Error('지원하지 않는 작업이에요.');
+  const w = workspace, snap = () => w.snapshot(origin);
+  const changed = result => { const problems = w.checkInvariants(); if (problems.length) throw new Error('workspace oracle invariant: ' + problems.join(',')); broadcastWorkspace(); return result; };
+  switch (op) {
+    case 'workspaceState': return snap();
+    // Canonical initialAction is an OBJECT: {kind:'blank'} | {kind:'open'} | {kind:'recent',recentId}; a non-blank action is returned ONCE per tab.
+    case 'workspaceReady': { const action = initialActions.get(origin) || { kind: 'blank' }; initialActions.delete(origin); return { ...snap(), initialAction: action }; }
+    case 'workspaceInitialDone': {
+      // Mock of the native rule: a cancelled open may drop ONLY the origin tab, and only while it was created for that action, is clean and never read a document.
+      if (a.cancelled === true && openCreated.has(origin) && w.has(origin) && !w.meta.get(origin).dirty && !sessionReads(origin)) { openCreated.delete(origin); w.removeConfirmed(origin); }
+      return changed(snap());
+    }
+    case 'workspaceNew': { const id = crypto.randomUUID(); w.newTab(id, origin); if (a.open === true) { initialActions.set(id, { kind: 'open' }); openCreated.add(id); } return changed(snap()); }
+    case 'workspaceOpenRecent': {
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(a.recentId ?? ''))) throw new Error('최근 문서 정보가 올바르지 않아요.');  // native validates shape/length only; the child resolves it itself
+      const id = crypto.randomUUID(); w.newTab(id, origin); initialActions.set(id, { kind: 'recent', recentId: String(a.recentId) }); return changed(snap());
+    }
+    case 'workspaceSelect': w.select(String(a.id), origin); return changed(snap());
+    case 'workspaceFocus': if (w.visible().includes(origin)) w.setActive(origin); return changed(snap());
+    case 'workspaceSplit': w.setSplit(a.enabled === true, origin); return changed(snap());
+    case 'workspaceMove': w.moveBefore(String(a.id), a.beforeId == null ? null : String(a.beforeId)); return changed(snap());
+    case 'workspaceUpdate': w.update(origin, a); return changed(snap());
+    case 'workspaceClose': {
+      const target = String(a.id); if (!w.has(target)) throw new Error('unknown tab');
+      w.select(target, origin);  // a hidden target is activated before it is asked
+      const token = crypto.randomUUID(); closeTokens.set(token, target); broadcastWorkspace();
+      push(target, { kind: 'call', fn: 'AndroidWorkspaceCloseRequest', args: [token] }); return snap();
+    }
+    case 'workspaceCloseResult': {
+      const target = closeTokens.get(String(a.token));
+      if (!target || target !== origin) { rejected.push({ op, origin, token: String(a.token), reason: target ? 'wrong origin' : 'unknown token' }); return snap(); }
+      closeTokens.delete(String(a.token));
+      if (a.allow === true) { w.removeConfirmed(target); return changed(snap()); }
+      return snap();
+    }
+  }
+  throw new Error('지원하지 않는 작업이에요.');
+}
 
 function operation(op, a, events) {
   // Same ungated set as MainActivity.UNGATED; read/scan re-check the permission for shared-storage documents below.
@@ -255,46 +325,62 @@ function operation(op, a, events) {
 }
 
 const shim = `(()=>{const q=[];
-window.OfflineNative={postMessage(m){const {id,op,args}=JSON.parse(m);fetch('/__native',{method:'POST',body:m}).then(r=>r.json()).then(r=>{for(const [n,d] of r.events)window.NativeEvent&&window.NativeEvent(n,d);window.NativeReply(id,r.reply);if(op==='permission')setTimeout(()=>window.NativeEvent&&window.NativeEvent('resume',true),400);});}};
+window.OfflineNative={workspaceEnabled(){return false;},postMessage(m){const {id,op,args}=JSON.parse(m);fetch('/__native',{method:'POST',body:m}).then(r=>r.json()).then(r=>{for(const [n,d] of r.events)window.NativeEvent&&window.NativeEvent(n,d);window.NativeReply(id,r.reply);if(op==='permission')setTimeout(()=>window.NativeEvent&&window.NativeEvent('resume',true),400);});}};
 window.__mock={grant:v=>fetch('/__grant?'+(v?1:0)).then(()=>window.NativeEvent('resume',true)),resume:()=>window.NativeEvent('resume',true)};})();`;
+// Tagged (workspace) pages: same shim + x-view header on every native call + an SSE channel for native pushes. Untagged pages never get this.
+const taggedShim = (tag, enabled) => `(()=>{const tag=${JSON.stringify(tag)};
+// Synchronous capability like EditorSession.Bridge.workspaceEnabled(): true only when this page is tagged AND the workspace controller mock was enabled when the page was served.
+window.OfflineNative={workspaceEnabled(){return ${enabled ? 'true' : 'false'};},postMessage(m){const {id,op}=JSON.parse(m);fetch('/__native',{method:'POST',headers:{'x-view':tag},body:m}).then(r=>r.json()).then(r=>{for(const [n,d] of r.events)window.NativeEvent&&window.NativeEvent(n,d);window.NativeReply(id,r.reply);if(op==='permission')setTimeout(()=>window.NativeEvent&&window.NativeEvent('resume',true),400);});}};
+window.__mock={grant:v=>fetch('/__grant?'+(v?1:0)).then(()=>window.NativeEvent('resume',true)),resume:()=>window.NativeEvent('resume',true),view:tag};
+const deliver=(frame,n=0)=>{try{if(frame.kind==='event'&&window.NativeEvent)return window.NativeEvent(frame.name,frame.data);if(frame.kind==='call'&&typeof window[frame.fn]==='function')return window[frame.fn](...frame.args);}catch(e){setTimeout(()=>{throw e});return;}if(n<100)setTimeout(()=>deliver(frame,n+1),100);};
+const source=new EventSource('/__events?view='+encodeURIComponent(tag));source.onmessage=e=>deliver(JSON.parse(e.data));})();`;
 
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs':'text/javascript', '.css': 'text/css', '.wasm': 'application/wasm', '.svg':'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8' };
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   // /__delay?op=finishSave&ms=7000 makes the bridge take that long to START an operation, like a save that is slow to finish (0 = off).
-  if (url.pathname === '/__delay') { delays[url.searchParams.get('op')] = Number(url.searchParams.get('ms')) || 0; return res.end('ok'); }
+  const view = url.searchParams.get('view') || '';
+  if (view && !TAG.test(view)) { res.statusCode = 400; return res.end('bad view'); }
+  const viewTag = () => view;
+  const scopeKey = () => (url.searchParams.get('view') ? url.searchParams.get('view') + '|' : '') + url.searchParams.get('op');  // optional view= scopes a control to one session
+  if (url.pathname === '/__delay') { delays[scopeKey()] = Number(url.searchParams.get('ms')) || 0; return res.end('ok'); }
   if (url.pathname === '/__native') {
     let body = ''; req.on('data', c => body += c);
     req.on('end', () => {
-      const m = JSON.parse(body), events = [];
+      const tag = String(req.headers['x-view'] || '');
+      if (tag && !TAG.test(tag)) { res.statusCode = 400; return res.end('bad view'); }
+      const m = JSON.parse(body), events = [], scoped = k => (tag && k.has?.(tag + '|' + m.op)) ? tag + '|' + m.op : k.has?.(m.op) ? m.op : null;
       setTimeout(() => {
         let reply;
         try {
-          const f = failures.get(m.op);
+          const f = (tag && failures.get(tag + '|' + m.op)) || failures.get(m.op);
           if (f && f.times > 0) { f.times--; throw new Error(f.message); }
-          reply = { ok: true, data: operation(m.op, m.args || {}, events) };
+          const data = String(m.op).startsWith('workspace') ? workspaceOperation(m.op, m.args || {}, tag) : inSession(tag, () => tagUrls(operation(m.op, m.args || {}, events), tag));
+          reply = { ok: true, data };
+          if (tag && events.some(e => e[0] === 'fontsChanged')) pushAll({ kind: 'event', name: 'fontsChanged', data: true }, tag);
         } catch (e) { reply = { ok: false, error: e.message }; }
         const args = Object.fromEntries(Object.entries(m.args || {}).map(([k, v]) => [k, k === 'base64' ? `<${String(v).length} chars>` : v]));
-        opLog.push({ op: m.op, args, ok: reply.ok, error: reply.error });
+        opLog.push({ op: m.op, args, ok: reply.ok, error: reply.error, ...(tag ? { view: tag } : {}) });
         const send = () => res.end(JSON.stringify({ reply, events }));
-        if (holds.has(m.op)) held.push({ op: m.op, send }); else send();
-      }, delays[m.op] || 0);
+        const key = scoped(holds);
+        if (key) held.push({ op: m.op, key, send }); else send();
+      }, (tag && delays[tag + '|' + m.op]) || delays[m.op] || 0);
     });
     return;
   }
   if (url.pathname === '/__config') { cfg.strict = url.searchParams.get('strict') === '1'; return res.end('ok'); }
-  if (url.pathname === '/__fail') { failures.set(url.searchParams.get('op'), { message: url.searchParams.get('message') || '시험용 실패', times: Number(url.searchParams.get('times') || 1) }); return res.end('ok'); }
-  if (url.pathname === '/__hold') { holds.add(url.searchParams.get('op')); return res.end('ok'); }
-  if (url.pathname === '/__release') { const op = url.searchParams.get('op'); holds.delete(op); for (const h of held.splice(0).filter(h => { if (h.op === op) return true; held.push(h); return false; })) h.send(); return res.end('ok'); }
+  if (url.pathname === '/__fail') { failures.set(scopeKey(), { message: url.searchParams.get('message') || '시험용 실패', times: Number(url.searchParams.get('times') || 1) }); return res.end('ok'); }
+  if (url.pathname === '/__hold') { holds.add(scopeKey()); return res.end('ok'); }
+  if (url.pathname === '/__release') { const key = scopeKey(); holds.delete(key); for (const h of held.splice(0).filter(h => { if (h.key === key) return true; held.push(h); return false; })) h.send(); return res.end('ok'); }
   if (url.pathname === '/__pick') {
-    if (url.searchParams.get('cancel') === '1') { pickQueue.push({ cancel: true }); return res.end('ok'); }
-    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => { const nameValue = url.searchParams.get('name'), e = ext(nameValue), image = /\.(png|jpe?g)$/i.test(nameValue); pickQueue.push({ name: nameValue, kind: url.searchParams.get('kind') || (image ? 'image' : 'document'), bytes: Buffer.concat(chunks), format: image ? 'image' : e, mime: image ? (/png$/i.test(nameValue) ? 'image/png' : 'image/jpeg') : '' }); res.end('ok'); }); return;
+    if (url.searchParams.get('cancel') === '1') { inSession(viewTag(), () => pickQueue.push({ cancel: true })); return res.end('ok'); }
+    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => inSession(viewTag(), () => { const nameValue = url.searchParams.get('name'), e = ext(nameValue), image = /\.(png|jpe?g)$/i.test(nameValue); pickQueue.push({ name: nameValue, kind: url.searchParams.get('kind') || (image ? 'image' : 'document'), bytes: Buffer.concat(chunks), format: image ? 'image' : e, mime: image ? (/png$/i.test(nameValue) ? 'image/png' : 'image/jpeg') : '' }); res.end('ok'); })); return;
   }
   if (url.pathname === '/__pickfont') {
     const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => { fontQueue.push({ bytes: Buffer.concat(chunks), family: url.searchParams.get('family') || 'QA Font', style: url.searchParams.get('style') || 'Regular', weight: Number(url.searchParams.get('weight') || 400) }); res.end('ok'); }); return;
   }
   // Native process restart: transient in-memory state (upload/draft/pdf slots, blobs, issued new-document ids, picks) is lost; drafts, fonts and files persist.
-  if (url.pathname === '/__restart') { upload = pdf = draftUpload = stateUpload = null; blobs.clear(); newDocuments.clear(); selected.clear(); docs.clear(); held.splice(0); holds.clear(); pickQueue.length = 0; openQueue.length = 0; return res.end('ok'); }
+  if (url.pathname === '/__restart') { for (const [tag, v] of sessions) sessions.set(tag, { ...blankSession(), drafts: v.drafts }); closeTokens.clear(); upload = pdf = draftUpload = stateUpload = null; blobs.clear(); newDocuments.clear(); selected.clear(); docs.clear(); held.splice(0); holds.clear(); pickQueue.length = 0; openQueue.length = 0; return res.end('ok'); }
   if (url.pathname === '/__state') {  // /__state?unreadableHistory=N  /__state?persistable=0|1  /__state?revoke=1 (revoke every kept document grant)
     const q = url.searchParams;
     if (q.has('unreadableHistory')) historyUnreadable = Number(q.get('unreadableHistory'));
@@ -303,22 +389,43 @@ http.createServer((req, res) => {
     return res.end('ok');
   }
   if (url.pathname === '/__openrequest') {  // POST bytes + ?name= : a file another app opened with / shared to the app (content:// handed over by Android)
-    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => { const nameValue = url.searchParams.get('name'), bytes = Buffer.concat(chunks), id = 'saf:' + crypto.randomUUID(); selected.set(id, { name: nameValue, kind: 'document', bytes, format: ext(nameValue), mime: '' }); openQueue.push({ id, name: nameValue, folder: '선택한 파일', size: bytes.length, modified: 0, format: ext(nameValue), mime: '', external: true }); res.end('ok'); }); return;
+    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => inSession(viewTag(), () => { const nameValue = url.searchParams.get('name'), bytes = Buffer.concat(chunks), id = 'saf:' + crypto.randomUUID(); selected.set(id, { name: nameValue, kind: 'document', bytes, format: ext(nameValue), mime: '' }); openQueue.push({ id, name: nameValue, folder: '선택한 파일', size: bytes.length, modified: 0, format: ext(nameValue), mime: '', external: true }); res.end('ok'); })); return;
   }
-  if (url.pathname === '/__log') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ops: opLog, printed, clipboard: { text: clipboard.text, html: clipboard.html, imageBytes: clipboard.image ? clipboard.image.length : 0 }, historyIds: [...history.keys()], recentCount: recents.size, pendingHeld: held.length })); }
+  if (url.pathname === '/__log') { res.setHeader('content-type', 'application/json'); const only = url.searchParams.get('view'); return res.end(JSON.stringify({ ops: only == null ? opLog : opLog.filter(o => (o.view || '') === only), printed, clipboard: { text: clipboard.text, html: clipboard.html, imageBytes: clipboard.image ? clipboard.image.length : 0 }, historyIds: [...history.keys()], recentCount: recents.size, pendingHeld: held.length, ...(sessions.size ? { sessions: Object.fromEntries([...sessions].map(([t, v]) => [t, { drafts: [...v.drafts.values()].map(({ bytes, ...d }) => d), blobs: v.blobs.size, uploadOpen: !!v.upload, draftUploadOpen: !!v.draftUpload }])) } : {}) })); }
   if (url.pathname === '/__logclear') { opLog = []; printed.length = 0; return res.end('ok'); }
-  if (url.pathname === '/__reset') { opLog = []; printed.length = 0; failures.clear(); holds.clear(); held.splice(0); pickQueue.length = 0; fontQueue.length = 0; selected.clear(); fonts.clear(); blobs.clear(); newDocuments.clear(); drafts.clear(); upload = pdf = draftUpload = null; clipboard = { text: '', html: '', image: null }; openQueue.length = 0; history.clear(); recents.clear(); stateUpload = null; historyUnreadable = 0; recentPersistable = true; revokedGrants.clear(); cfg.strict = false; return res.end('ok'); }
+  if (url.pathname === '/__reset') { sessions.clear(); workspace = null; initialActions.clear(); openCreated.clear(); closeTokens.clear(); rejected = []; opLog = []; printed.length = 0; failures.clear(); holds.clear(); held.splice(0); pickQueue.length = 0; fontQueue.length = 0; selected.clear(); fonts.clear(); blobs.clear(); newDocuments.clear(); drafts.clear(); upload = pdf = draftUpload = null; clipboard = { text: '', html: '', image: null }; openQueue.length = 0; history.clear(); recents.clear(); stateUpload = null; historyUnreadable = 0; recentPersistable = true; revokedGrants.clear(); cfg.strict = false; return res.end('ok'); }
   if (url.pathname === '/__termux') { termux = url.search === '?1'; return res.end('ok'); }
   if (url.pathname === '/__grant') { permission = url.search === '?1'; return res.end('ok'); }
-  if (url.pathname === '/__mock.js') { res.setHeader('content-type', 'text/javascript'); return res.end(shim); }
-  if (url.pathname.startsWith('/document/')) { const b = blobs.get(url.pathname.slice(10)); if (!b) { res.statusCode = 403; return res.end(); } return res.end(b); }
+  if (url.pathname === '/__mock.js') { res.setHeader('content-type', 'text/javascript'); res.setHeader('cache-control', 'no-store'); return res.end(view ? taggedShim(view, !!workspace) : shim); }
+  if (url.pathname.startsWith('/document/')) { const b = inSession(viewTag(), () => blobs.get(url.pathname.slice(10))); if (!b) { res.statusCode = 403; return res.end(); } return res.end(b); }
+  if (url.pathname === '/__events') {  // SSE for a tagged page
+    const tag = viewTag(); if (!tag) { res.statusCode = 400; return res.end(); }
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' }); res.write(': open\n\n');
+    if (!listeners.has(tag)) listeners.set(tag, new Set()); listeners.get(tag).add(res);
+    req.on('close', () => { listeners.get(tag)?.delete(res); if (!listeners.get(tag)?.size) listeners.delete(tag); });
+    if (workspace) push(tag, { kind: 'event', name: 'workspaceChanged', data: workspace.snapshot(tag) });
+    return;
+  }
+  // /__workspace?enable=1&tabs=A,B,C[&split=1]  configure the oracle controller (explicit MOCK; tab ids = view tags) | ?disable=1 | no query = JSON state
+  if (url.pathname === '/__workspace') {
+    const q = url.searchParams;
+    if (q.get('disable') === '1') { workspace = null; closeTokens.clear(); }
+    if (q.get('enable') === '1') {
+      workspace = new WorkspaceOracle(Number(q.get('max') || 8)); closeTokens.clear(); rejected = []; initialActions.clear(); openCreated.clear();
+      for (const id of (q.get('tabs') || '').split(',').filter(Boolean)) workspace.createTab(id);
+      if (q.get('split') === '1') workspace.setSplit(true, workspace.primaryId);
+      broadcastWorkspace();
+    }
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify(workspace ? { enabled: true, ...workspace.snapshot(''), mock: 'workspace-oracle', visible: workspace.visible(), mru: workspace.mru, pendingCloseTokens: closeTokens.size, pendingInitial: Object.fromEntries(initialActions), rejected, connected: [...listeners.keys()], problems: workspace.checkInvariants() } : { enabled: false, connected: [...listeners.keys()] }));
+  }
   if (url.pathname === '/__harness.html') { res.setHeader('content-type', 'text/html; charset=utf-8'); return res.end(fs.readFileSync(new URL('studio-host-harness.html', import.meta.url))); }
   const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
   const file = new URL(rel, assets);
   if (!file.href.startsWith(assets.href) || !fs.existsSync(file)) { res.statusCode = 404; return res.end(); }
   let body = fs.readFileSync(file);
-  if (rel === 'index.html') body = Buffer.from(body.toString().replace('<script src="icons.js" defer></script>', '<script src="__mock.js"></script><script src="icons.js" defer></script>'));
-  if (rel === 'studio/index.html') body = Buffer.from(body.toString().replace('<head>', '<head><script src="/__mock.js"></script>'));
+  if (rel === 'index.html') body = Buffer.from(body.toString().replace('<script src="icons.js" defer></script>', '<script src="__mock.js' + (view ? '?view=' + view : '') + '"></script><script src="icons.js" defer></script>'));
+  if (rel === 'studio/index.html') body = Buffer.from(body.toString().replace('<head>', '<head><script src="/__mock.js' + (view ? '?view=' + view : '') + '"></script>'));
   res.setHeader('content-type', types[path.extname(rel)] || 'application/octet-stream');
   res.end(body);
 }).listen(port, () => console.log(`preview http://localhost:${port}  sandbox ${volume}`));

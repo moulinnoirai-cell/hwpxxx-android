@@ -16,6 +16,29 @@
   installWindowApi('showOpenFilePicker', unavailable);
   installWindowApi('showSaveFilePicker', unavailable);
   const MAX_BYTES = 32 * 1024 * 1024;
+  // Document-tab workspace (bridge-contract.md). Capability is SYNCHRONOUS and fixed: native's OfflineNative.workspaceEnabled() === true.
+  // A host without that method (old fakes, the legacy harness) is a single-document host: no workspace ops are ever sent.
+  // Patch 0115 routes file:new-doc / file:open / file:open-recent here whenever `enabled` is true — from the first instant, not after the
+  // handshake — and never falls back to replacing the current document. The in-place bypass is a per-command param (androidWorkspaceInPlace).
+  const workspaceCapable = (() => { try { return typeof OfflineNative.workspaceEnabled === 'function' && OfflineNative.workspaceEnabled() === true; } catch { return false; } })();
+  let workspaceController = null;
+  async function workspaceAction(op, args) {
+    if (!workspace.enabled) return false;
+    try { const reply = await request(op, args); workspaceController?.apply(reply); }
+    catch (error) { announce(String(error?.message || error)); } // handled with an error: the current document is never replaced
+    return true;
+  }
+  const workspace = {
+    version: 1, enabled: workspaceCapable,
+    newDocument: () => workspaceAction('workspaceNew', {open: false}),
+    openDocument: () => workspaceAction('workspaceNew', {open: true}),
+    async openRecent(id) {
+      if (!workspace.enabled) return false;
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(id))) throw new Error('최근 문서를 확인하지 못했어요.');
+      return workspaceAction('workspaceOpenRecent', {recentId: String(id)});
+    },
+  };
+  host.workspace = workspace;
   let sequence = 0, currentDialog = null, readyStudio = null, fontIntegration = null;
   const pending = new Map(), events = new Map(), handles = new WeakMap();
   const abort = () => new DOMException('취소했습니다.', 'AbortError');
@@ -240,7 +263,13 @@
     };
     handles.set(handle, record); return handle;
   }
-  installWindowApi('showOpenFilePicker', async () => [await pickOpen()]);
+  // The document picker's outcome is observable by the workspace so a new "open" tab whose picker was cancelled can say so natively.
+  const pickerWatchers = new Set();
+  const pickerOutcome = outcome => { for (const watcher of [...pickerWatchers]) { pickerWatchers.delete(watcher); try { watcher(outcome); } catch { /* observer failure must not affect opening */ } } };
+  installWindowApi('showOpenFilePicker', async () => {
+    try { const handle = await pickOpen(); pickerOutcome('picked'); return [handle]; }
+    catch (error) { pickerOutcome(error?.name === 'AbortError' ? 'cancelled' : 'failed'); throw error; }
+  });
   installWindowApi('showSaveFilePicker', async (options = {}) => {
     const types = (options.types || []).flatMap(type => Object.values(type.accept || {}).flat());
     const picked = await pickDestination(options.suggestedName, types.length ? types : null);
@@ -487,6 +516,7 @@
   }
   async function onReady(studio) {
     if (readyStudio) return; readyStudio = studio;
+    void startWorkspace(studio); // before the font awaits below: the tab UI and this tab's first action need only the ready Studio
     if (typeof studio.android?.setSaveGuard === 'function') studio.android.setSaveGuard(({bytes, format, contentLoss}) => {
       if (!bytes?.length || bytes.length > MAX_BYTES) throw new Error('저장 결과의 크기를 확인하지 못했어요.');
       if (!['hwp', 'hwpx', 'hml'].includes(format)) throw new Error('저장 형식을 확인하지 못했어요.');
@@ -501,6 +531,21 @@
     config.addEventListener('mousedown', event => { if (event.button === 0) event.preventDefault(); });
     document.body.append(config);
     void drainOpenRequests();
+  }
+  // Capable native + failed handshake = fail closed with a notice (routing stays on; nothing replaces the current document).
+  async function startWorkspace(studio) {
+    if (!workspace.enabled) return;
+    try {
+      const module = await import('/workspace-tabs.mjs');
+      workspaceController = await module.installWorkspace({
+        request, subscribe, studio, announce, hasDialog: () => !!currentDialog,
+        onOpenPicker: callback => { pickerWatchers.add(callback); return () => pickerWatchers.delete(callback); },
+      });
+    } catch (error) {
+      workspaceController = null;
+      console.warn('Workspace tabs unavailable:', error?.message || error);
+      void showError(new Error('문서 탭을 시작하지 못했어요. 새 문서와 열기는 현재 문서를 바꾸지 않아요. 앱을 다시 열어 주세요.'));
+    }
   }
   Object.assign(host, {request, recovery, recoveryStore: recovery, history, recent, onReady, printPages, exportFile, launch});
   // Android Back first closes whatever the desktop Studio itself has open (dialog, context menu, menu-bar or split-button menu),
@@ -522,6 +567,12 @@
   window.AppBack = async () => {
     if (currentDialog) { currentDialog.cancel(); return; }
     if (await dismissStudioSurface()) return;
+    // Native owns the workspace close token and asks Core once. The legacy path
+    // below already asks Core before exit, which would otherwise double-prompt.
+    if (workspace.enabled) {
+      try { await request('exit'); } catch (error) { await showError(error); }
+      return;
+    }
     const android = readyStudio?.android;
     if (!android) { await showError(new Error('편집기를 준비하고 있어요.')); return; }
     try { if (await (android.close || android.confirmClose).call(android)) await request('exit'); }
@@ -541,7 +592,7 @@
     host.startupState = 'failed';
     window.AppBack = () => OfflineNative.postMessage(JSON.stringify({id: 0, op: 'exit', args: {}}));
     // No partially installed adapter can write a document or leave a recovery copy.
-    delete host.recoveryStore; delete host.recovery; delete host.history; delete host.recent;
+    delete host.recoveryStore; delete host.recovery; delete host.history; delete host.recent; delete host.workspace;
     for (const name of ['showOpenFilePicker', 'showSaveFilePicker']) {
       try { installWindowApi(name, unavailable); } catch { /* The blocking screen below also prevents editor use. */ }
     }

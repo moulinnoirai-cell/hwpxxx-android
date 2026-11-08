@@ -37,6 +37,8 @@ PC 1.6.1의 메모·형광펜 모드·모양 복사·문단 간격·자간/장�
 
 현재 개발 브랜치는 **데스크톱의 실제 편집기 코드**를 기본 화면으로 사용합니다. 단축키·마우스 선택·툴팁·서식·표·쪽·개체 명령을 공유하고, Android 파일 저장과 내려받은 글꼴 등록을 연결합니다. 사용법과 검증 구분은 [DeX 데스크톱 편집기](docs/DEX-DESKTOP-PARITY.md), 글꼴의 형식·보관 방식은 [글꼴 안내](docs/ANDROID-FONTS.md)를 참고하세요. 실행한 검사와 기기 확인 범위는 [검증 기록](docs/DEX-VALIDATION.md)에 정리했습니다.
 
+최상단 **도구 오른쪽의 문서 탭**, 마우스 드래그 순서 변경과 **두 문서 좌우 분할**을 지원합니다. 최대 8개 탭의 사용법·저장 및 복구 동작·기기 확인 범위는 [여러 문서 작업공간](docs/DEX-WORKSPACE.md)에 있습니다.
+
 ## 빌드
 
 먼저 `config/android-engine.json`의 커밋을 별도 rhwp 작업 사본에 체크아웃하고 Rust nightly-2026-02-01(rust-src 및 wasm32-unknown-unknown 타깃), wasm-bindgen-cli 0.2.127로 `bash scripts/build-engine.sh <rhwp 작업 사본>`을 실행하세요. 새 엔진은 GitHub Actions에서도 빌드합니다.

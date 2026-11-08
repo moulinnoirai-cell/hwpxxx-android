@@ -96,6 +96,7 @@ final class ExportStore {
         return decoded;
     }
     File write(String target,byte[] bytes,String expectedSha,boolean replace)throws IOException {
+        synchronized (FileStore.class) {
         File destination=files.resolve(target);FileStore.name(destination.getName());validateExport(bytes,destination.getName());
         File parent=destination.getParentFile();if(!parent.isDirectory()||!parent.canWrite())throw new IOException("저장할 폴더에 쓸 수 없어요.");
         if(parent.getUsableSpace()<bytes.length+1024*1024L)throw new IOException("저장공간이 부족해요.");
@@ -119,9 +120,11 @@ final class ExportStore {
             }
             return destination;
         }finally{temporary.delete();}
+        }
     }
     /** Studio originals of every supported format retain a hash-checked, durable backup. */
     File backup(String target,String expectedSha,String stamp)throws IOException {
+        synchronized (FileStore.class) {
         File original=files.resolve(target);String format=documentFormat(original);if(!format.matches("hwp|hwpx|hml"))throw new IOException("백업할 문서 형식을 알 수 없어요.");
         byte[] bytes=files.read(target);if(expectedSha==null||!FileStore.sha(bytes).equals(expectedSha))throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");validateDocument(bytes,format);
         String base=original.getName().substring(0,original.getName().length()-format.length()-1),suffix="_백업_"+stamp;
@@ -130,5 +133,6 @@ final class ExportStore {
         for(int index=2;destination.exists();index++){if(index>99)throw new IOException("백업 파일 이름을 정하지 못했어요.");destination=new File(original.getParentFile(),base+suffix+"-"+index+"."+format);}
         if(format.equals("hml"))return write(destination.getPath(),bytes,null,false);
         return files.write(destination.getPath(),bytes,null,false);
+        }
     }
 }

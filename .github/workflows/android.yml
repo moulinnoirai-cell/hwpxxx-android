@@ -119,7 +119,7 @@ jobs:
           # ClipboardImageProvider extends android.content.ContentProvider: compile (and run its pure pruning test) with the SDK 35 android.jar installed by the sdkmanager step; no Android runtime is started.
           ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
           test -f "$ANDROID_JAR" || { echo "missing $ANDROID_JAR"; exit 1; }
-          javac -encoding UTF-8 -cp "$ANDROID_JAR" -d build/fs-test $H/FileStore.java $H/TimedCall.java $H/TermuxWalker.java $H/DraftStore.java $H/ExportStore.java $H/FontStore.java $H/PrivateStateStore.java $H/ClipboardImageProvider.java $H/HostIntents.java $H/HostState.java $H/ProviderRead.java $H/NativeSessions.java $H/NativeHandleRegistry.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java tests/ExportStoreTest.java tests/FontStoreTest.java tests/PrivateStateStoreTest.java tests/ClipboardImageProviderTest.java tests/HostIntentsTest.java tests/HostStateTest.java tests/NativeAvailabilityTest.java
+          javac -encoding UTF-8 -cp "$ANDROID_JAR" -d build/fs-test $H/FileStore.java $H/TimedCall.java $H/TermuxWalker.java $H/DraftStore.java $H/ExportStore.java $H/FontStore.java $H/PrivateStateStore.java $H/ClipboardImageProvider.java $H/HostIntents.java $H/HostState.java $H/ProviderRead.java $H/NativeSessions.java $H/NativeHandleRegistry.java tests/FileStoreTest.java tests/TermuxWalkerTest.java tests/DraftStoreTest.java tests/ExportStoreTest.java tests/FontStoreTest.java tests/PrivateStateStoreTest.java tests/ClipboardImageProviderTest.java tests/HostIntentsTest.java tests/HostStateTest.java tests/NativeAvailabilityTest.java $H/WorkspaceModel.java $H/WorkspaceStateStore.java $H/WorkspaceRequests.java $H/WorkspaceServices.java tests/WorkspaceModelTest.java tests/WorkspaceStateStoreTest.java tests/WorkspaceServicesTest.java tests/WorkspaceConcurrencyTest.java tests/WorkspaceIsolationTest.java
           java -cp build/fs-test kr.offline.hwp.FileStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
           java -cp build/fs-test kr.offline.hwp.TermuxWalkerTest
           java -cp build/fs-test kr.offline.hwp.DraftStoreTest tests/fixtures/문서.hwp tests/fixtures/문서.hwpx
@@ -128,6 +128,11 @@ jobs:
           java -cp build/fs-test kr.offline.hwp.HostIntentsTest
           java -cp build/fs-test kr.offline.hwp.HostStateTest
           java -cp build/fs-test kr.offline.hwp.NativeAvailabilityTest
+          java -cp build/fs-test kr.offline.hwp.WorkspaceModelTest
+          java -cp build/fs-test kr.offline.hwp.WorkspaceStateStoreTest
+          java -cp "build/fs-test:$ANDROID_JAR" kr.offline.hwp.WorkspaceServicesTest tests/fixtures/문서.hwp "$(find /usr/share/fonts -name LiberationSans-Regular.ttf | head -n 1)"
+          java -cp build/fs-test kr.offline.hwp.WorkspaceConcurrencyTest tests/fixtures/문서.hwp
+          java -cp "build/fs-test:$ANDROID_JAR" kr.offline.hwp.WorkspaceIsolationTest tests/fixtures "$H/FileStore.java" "$H/ExportStore.java" "$H/MainActivity.java"
           java -cp "build/fs-test:$ANDROID_JAR" kr.offline.hwp.ClipboardImageProviderTest
           fonts() { find /usr/share/fonts -name "$1" | head -n 1; }
           java -cp build/fs-test kr.offline.hwp.FontStoreTest "$(fonts LiberationSans-Regular.ttf)" "$(fonts LiberationSans-Bold.ttf)" "$(fonts NimbusSans-Regular.otf)" app/src/main/assets/fonts/NotoSansKR-Regular.ttf
@@ -141,10 +146,11 @@ jobs:
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$CHROME" >> "$GITHUB_ENV"
           echo "PLAYWRIGHT_NODE_MODULES=$PWD/node_modules" >> "$GITHUB_ENV"
           export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$CHROME" PLAYWRIGHT_NODE_MODULES="$PWD/node_modules"
-          node --test tests/android-fonts.test.mjs tests/studio-host.test.mjs
+          STUDIO_WORKSPACE_SRC="$PWD/.build/studio-src" node --test tests/android-fonts.test.mjs tests/studio-host.test.mjs tests/studio-workspace-host.test.mjs tests/workspace-oracle.test.mjs tests/workspace-server.test.mjs
       - name: Production desktop Studio browser tests (real patched Studio + WASM in Chromium; native bridge is a MOCK — not WebView, not DeX)
         run: |
           python tests/studio-ui.py
+          python tests/studio-workspace.py --root-announced-build --workspace
       - name: Android integration tests on the patched Studio source tree (real WasmBridge, real fonts provider and save lifecycle in Chromium; native bridge is a MOCK)
         run: |
           S="$PWD/.build/studio-src/rhwp-studio"
