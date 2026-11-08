@@ -42,7 +42,8 @@
     "0109-android-private-history-recent.patch": "fad2019e9281788489348392b263cc56e7b8a829ada82bfb13248db9dfb6a975",
     "0111-android-recovery-ui-state.patch": "8ae5012a6a01a8a761b0d322c551be61a20858c38083a8df49c6d18f8d8f9ba1",
     "0112-android-field-save-verification.patch": "5a0cbfbdf548e5d4995fda0980dbfee3cabdd58b2fb3be628fad71d1459a24c1",
-    "0113-android-imported-font-picker.patch": "0c15d5f93f4e314669d89dcc8337cd2c165f3da74c09ac5e33fa42bc10a2267e"
+    "0113-android-imported-font-picker.patch": "0c15d5f93f4e314669d89dcc8337cd2c165f3da74c09ac5e33fa42bc10a2267e",
+    "0114-android-field-evidence-compatibility.patch": "ec18b1b232da8d7049b0c39267f8e2213ea787940c08778fc7226aa9e43e58d6"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",
