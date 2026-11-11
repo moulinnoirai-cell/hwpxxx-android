@@ -145,7 +145,7 @@ jobs:
       - name: Font provider and host protocol tests (Node; real studio-host.js against a mock OfflineNative, no WebView)
         run: |
           npm install --no-save --package-lock=false playwright@1.48.2
-          python -m pip install playwright
+          python -m pip install playwright numpy pillow
           python -m playwright install --with-deps chromium
           # The tests default to /usr/bin/chromium (local sandbox); on the runner use the browser Playwright just installed.
           CHROME="$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"

@@ -513,7 +513,7 @@ public class MainActivity extends Activity {
             else {String n=path.substring(1);if(!n.matches("[A-Za-z0-9_./-]+")||n.isEmpty())return blocked();input=getAssets().open(n);
                 mime=n.endsWith(".svg")?"image/svg+xml":n.endsWith(".png")?"image/png":n.endsWith(".ico")?"image/x-icon":n.endsWith(".html")?"text/html":(n.endsWith(".js")||n.endsWith(".mjs"))?"text/javascript":n.endsWith(".css")?"text/css":n.endsWith(".wasm")?"application/wasm":n.endsWith(".ttf")?"font/ttf":n.endsWith(".otf")?"font/otf":n.endsWith(".woff2")?"font/woff2":n.endsWith(".woff")?"font/woff":n.endsWith(".json")?"application/json":n.endsWith(".webmanifest")?"application/manifest+json":"text/plain";}
             Map<String,String> headers=new HashMap<>();headers.put("Cache-Control","no-store");headers.put("X-Content-Type-Options","nosniff");
-            headers.put("Content-Security-Policy","default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
+            headers.put("Content-Security-Policy","default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' blob:; connect-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
             return new WebResourceResponse(mime,"UTF-8",200,"OK",headers,input);
         } catch(IOException e){return blocked();}
     }
