@@ -497,10 +497,28 @@ index c28ff9b9a..1c4fad6a7 100644
  
    installBeforeUnload(windowLike: Window): () => void {
 diff --git a/rhwp-studio/src/core/local-fonts.ts b/rhwp-studio/src/core/local-fonts.ts
-index a4d6fd2df..9bc1c7e31 100644
+index a4d6fd2df..953fad4bc 100644
 --- a/rhwp-studio/src/core/local-fonts.ts
 +++ b/rhwp-studio/src/core/local-fonts.ts
-@@ -1048,6 +1048,51 @@ export function getLocalFonts(options: GetLocalFontsOptions = {}): string[] {
+@@ -149,6 +149,9 @@ const automaticallyCheckedProgramNames = new Set<string>();
+ let grantedCatalogRefresh: Promise<void> | null = null;
+ // 초기화 전에 시작한 비동기 조회가 나중에 감지 결과를 되살리지 못하게 한다.
+ let catalogGeneration = 0;
++/** [hwpxxx] 로컬·호스트 글꼴 목록이 바뀔 때마다 올라간다 — 글꼴 해석 메모의 서명(`hwpxxx/signature-memo`)에 쓴다. */
++let fontEnvironmentRevision = 0;
++export function getLocalFontEnvironmentRevision(): number { return fontEnvironmentRevision; }
+ 
+ /** Local Font Access API 지원 여부 */
+ export function isLocalFontAccessSupported(): boolean {
+@@ -556,6 +559,7 @@ function snapshotRecords(snapshot: LocalFontSnapshot | null): LocalFontRecord[]
+ }
+ 
+ function cacheLocalFontSnapshot(snapshot: LocalFontSnapshot | null): void {
++  fontEnvironmentRevision++;
+   cachedSnapshot = snapshot;
+   cachedFontRecords = snapshotRecords(snapshot);
+   cachedFontLookup = buildLocalFontLookup(cachedFontRecords);
+@@ -1048,6 +1052,51 @@ export function getLocalFonts(options: GetLocalFontsOptions = {}): string[] {
    return normalizeFamilies(getLocalFontRecords(options).map(record => record.displayName));
  }
  
@@ -552,11 +570,34 @@ index a4d6fd2df..9bc1c7e31 100644
  /** 캐시된 전체 로컬 글꼴 목록을 반환한다. */
  export function getDetectedLocalFonts(): string[] {
    return cachedSnapshot ? [...cachedSnapshot.families] : [];
+@@ -1286,6 +1335,7 @@ let hostLookupReferences: readonly HostFontReference[] = [];
+ let hostRecords: LocalFontRecord[] = [];
+ let hostLookup = emptyLocalFontLookup();
+ hostFontSource.subscribe(() => {
++  fontEnvironmentRevision++;
+   hostLookupGeneration = -1;
+   hostLookupReferences = [];
+   hostRecords = [];
+@@ -1312,6 +1362,7 @@ function currentHostRecords(): LocalFontRecord[] {
+   // The catalog can finish loading without changing the invalidation generation.
+   if (hostLookupGeneration !== hostFontSource.generation
+     || references[0]?.face !== hostLookupReferences[0]?.face || references.length !== hostLookupReferences.length) {
++    fontEnvironmentRevision++;
+     hostLookupGeneration = hostFontSource.generation;
+     hostLookupReferences = references;
+     hostRecords = references.map(reference => {
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index cebf9b402..7bfc327b3 100644
+index cebf9b402..d09ac812d 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
-@@ -13,7 +13,7 @@ import type { CanvasMetricDocument } from './canvas-metric-session';
+@@ -7,13 +7,13 @@ import { ordinaryTextFontFaceData, type OrdinaryTextFontSource } from './ordinar
+ import { NativePuaFontSession, type NativePuaFontDocument } from './native-pua-font-session';
+ import { CanvasFontResolutionScope } from './canvas-font-resolution-scope';
+ import { MetafileFontSession, type MetafileFontDocument } from './metafile-font-session';
+-import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, localFontFaceKey, type LocalFontRecord } from './local-fonts';
++import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, type LocalFontRecord } from './local-fonts';
+ import { collectHostFontRequests } from './host-font-requests';
+ import type { CanvasMetricDocument } from './canvas-metric-session';
  import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
  import type { CharShapeRun } from './types';
  import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
@@ -565,18 +606,39 @@ index cebf9b402..7bfc327b3 100644
  import * as wasmExports from '@wasm/rhwp.js';
  import { inspectFontSymbols } from './wasm-font-symbol-coverage';
  import { hasPdfImportCapability } from './pdf-import-capability';
-@@ -234,6 +234,10 @@ import {
+@@ -231,9 +231,15 @@ import {
+   formatCssFontFamilyList,
+   parseCssFontFamilyList,
+   completeFontFamilyList,
++  getDocumentFontSubstitutionRevision,
  } from './font-substitution';
  import { rememberRawCanvasFontDescriptor } from './canvas-font-raw';
  import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 +import { isAndroidHost } from '@/hwpxxx/android-host';
 +import { verifyReopenedDocument, type VerifiableDocument, type VerifyCoverage } from '@/hwpxxx/android-save-verify';
 +import { hasBlockingContentLoss } from '@/hwpxxx/content-loss';
++import { memoizeBySignature } from '@/hwpxxx/signature-memo';
 +import type { RecoveryBytes } from '@/recovery/autosave-store';
  
  /**
   * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
-@@ -327,6 +331,21 @@ function installCanvasFontSubstitution(): void {
+@@ -297,8 +303,14 @@ function substituteCssFontFamily(cssFont: string): string {
+ 
+ let canvasFontSubstitutionInstalled = false;
+ 
++// [hwpxxx] 글꼴 환경(문서 선언 치환·로컬/호스트 글꼴 목록)이 같은 동안 같은 입력은 한 번만 푼다 — 키 입력마다 다시 그릴 때 글꼴 체인을
++// 처음부터 만들던 비용이 입력 지연의 대부분이었다.
++const memoizedSubstituteCssFontFamily = memoizeBySignature(
++  substituteCssFontFamily,
++  () => `${getDocumentFontSubstitutionRevision()}:${getLocalFontEnvironmentRevision()}`,
++);
+ const canvasFontResolution = new CanvasFontResolutionScope(
+-  font => scopedHostCanvasFont(font) ?? substituteCssFontFamily(font),
++  font => scopedHostCanvasFont(font) ?? memoizedSubstituteCssFontFamily(font),
+ );
+ 
+ function withCanvasFontResolution<T>(session: HostCanvasFontSession | null, operation: () => T): T {
+@@ -327,6 +339,21 @@ function installCanvasFontSubstitution(): void {
    canvasFontSubstitutionInstalled = true;
  }
  
@@ -598,7 +660,7 @@ index cebf9b402..7bfc327b3 100644
  import { declaredOpenTypeProgram, prepareDeclaredFontPrograms, type DocumentFontSelectionPlan } from './declared-font-environment';
  import { documentFontPreferences, applyDocumentFontPreferences } from './document-font-preferences.ts';
  
-@@ -343,7 +362,6 @@ export class WasmBridge {
+@@ -343,7 +370,6 @@ export class WasmBridge {
    private readonly nativePuaFonts = new NativePuaFontSession();
    private readonly metafileFonts = new MetafileFontSession();
    private canvasFontGeneration = 0;
@@ -606,7 +668,16 @@ index cebf9b402..7bfc327b3 100644
    private canvasMetricDocument(): CanvasMetricDocument | null {
      const doc = this.doc as unknown as Partial<CanvasMetricDocument> | null;
      return doc && ['collectCanvasMetricRequests', 'registerCanvasMetricReplies', 'selectCanvasMetrics', 'canvasMetricsActive', 'getCanvasPageLayerTree']
-@@ -776,6 +794,47 @@ export class WasmBridge {
+@@ -494,7 +520,7 @@ export class WasmBridge {
+       if (!ctx) {
+         ctx = document.createElement('canvas').getContext('2d');
+       }
+-      const resolved = scopedHostCanvasFont(font) ?? (canvasFontSubstitutionInstalled ? font : substituteCssFontFamily(font));
++      const resolved = scopedHostCanvasFont(font) ?? (canvasFontSubstitutionInstalled ? font : memoizedSubstituteCssFontFamily(font));
+       if (resolved !== lastFont) {
+         ctx!.font = resolved;
+         lastFont = resolved;
+@@ -776,6 +802,47 @@ export class WasmBridge {
      this.onRecoveryProtectionChanged?.();
    }
  
@@ -654,7 +725,7 @@ index cebf9b402..7bfc327b3 100644
  
    get isNewDocument(): boolean {
      return this._fileName === '새 문서.hwp';
-@@ -3899,6 +3958,37 @@ export class WasmBridge {
+@@ -3899,6 +3966,37 @@ export class WasmBridge {
      return JSON.parse(this.doc.getMemoList());
    }
  

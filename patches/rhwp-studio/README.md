@@ -38,6 +38,13 @@ node scripts/verify-studio.mjs                                  # Gradle verifyD
 - `--run-tests`: 패치가 더하는 단위 시험 전부(`rhwp-studio/tests/hwpxxx-*.test.ts`, 실제 코어 사용). 업스트림 전체 시험은 일부러 돌리지 않음(희소 소스에서 알려진 기준 실패)
 - `--write-pins`: 패치를 고친 뒤 새 해시를 락에 기록(차이를 꼭 검토)
 
+## 입력 지연 (측정으로 찾은 원인과 고침)
+
+`tests/studio-hwpxxx-features.mjs --profile` 이 CDP CPU 프로파일을 떠서 키 입력 중 메인 스레드가 어디에 쓰이는지 보여 줍니다.
+이 기기(태블릿)의 Chromium에서 본문 약 2000자 문서에 글자 하나를 입력·삭제하는 데 각각 약 **0.53초**가 걸렸고, 시간의 대부분이
+쪽을 다시 그릴 때 글자 덩어리마다 글꼴 이름 해석(`ordinaryTextFontFamilies` → `selectTextFaces`)을 처음부터 되풀이하는 데 쓰였습니다.
+순수 함수 결과의 메모, 쪽 안 같은 글꼴의 한 번 해석, 환경 서명 기반 메모(`hwpxxx/signature-memo`)로 **입력 약 0.12초·삭제 약 0.11초**가 되었습니다.
+
 ## 성능 계측 (기기·에뮬레이터에서 읽기)
 
 `window.rhwpPerfSnapshot()` 이 이름별 횟수·합계·최대·p95(ms)와 최근 항목을 돌려줍니다(`window.rhwpPerfReset()` 으로 비움).

@@ -163,6 +163,7 @@ jobs:
           python tests/android-font-renderer.py --studio-root "$S"
           python tests/studio-save-lifecycle.py --studio-root "$S"
           python tests/studio-interaction.py --studio-root "$S"
+          node tests/studio-hwpxxx-features.mjs --studio-root "$S" --throttle 4
       - name: Studio smoke with a minimal STUB host (contract/CSP/offline; stub is not the real studio-host.js)
         run: python tests/studio-smoke.py
       - name: Legacy bespoke-editor fallback browser tests (the original limited UI kept as fallback; NOT the desktop Studio)

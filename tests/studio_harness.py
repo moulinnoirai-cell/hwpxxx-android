@@ -30,7 +30,7 @@ import {{createServer}} from {json.dumps(vite)};
 const root={json.dumps(str(studio))};
 const stubPlugin={{name:'hwpctrl-stub',resolveId(id){{return id==='@rhwp/hwpctrl/studio-plugin'?'\\0hwpctrl-stub':null}},load(id){{return id==='\\0hwpctrl-stub'?'export const hwpctrlStudioPlugin=null':null}}}};
 const server=await createServer({{configFile:false,plugins:[stubPlugin],root,cacheDir:{json.dumps(cache.name)},
- define:{{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false'}},
+ define:{{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false',__RHWP_AI__:'false'}},
  resolve:{{alias:{{'@':root+'/src','@wasm':root+'/../pkg'}}}},
  optimizeDeps:{{noDiscovery:true,entries:[],include:['canvaskit-wasm']}},
  server:{{host:'127.0.0.1',port:{port},strictPort:true,fs:{{allow:[root,root+'/../pkg']}}}}}});

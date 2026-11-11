@@ -107,7 +107,7 @@ import {createServer} from ${JSON.stringify(viteEntry)};
 const root=${JSON.stringify(studioSrc)};
 const stub={name:'hwpctrl-stub',resolveId(id){return id==='@rhwp/hwpctrl/studio-plugin'?'\\0hwpctrl-stub':null},load(id){return id==='\\0hwpctrl-stub'?'export const hwpctrlStudioPlugin=null':null}};
 const server=await createServer({configFile:false,plugins:[stub],root,cacheDir:${JSON.stringify(cache)},
- define:{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false'},
+ define:{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false',__RHWP_AI__:'false'},
  resolve:{alias:{'@':root+'/src','@wasm':root+'/../pkg'}},
  optimizeDeps:{noDiscovery:true,entries:[],include:['canvaskit-wasm']},
  server:{host:'127.0.0.1',port:${port},strictPort:true,fs:{allow:[root,root+'/../pkg']}}});
@@ -385,10 +385,10 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) {
       try {
         const {page} = world.views[0];
         // many long-titled tabs: only the strip may scroll
-        for (let i = 0; i < 7; i++) world.native.add(null);
+        for (let i = 0; i < 4; i++) world.native.add(null); // five tabs: the current limit
         world.native.tabs.forEach((tab, i) => { tab.title = '아주 긴 문서 이름 ' + i + ' '.padEnd(60, '가'); });
         await world.native.broadcast();
-        await until(async () => (await world.views[0].order()).length === 8, '8 tabs rendered');
+        await until(async () => (await world.views[0].order()).length === 5, '5 tabs rendered');
         const geometry = await page.evaluate(() => {
           const bar = document.getElementById('menu-bar'), strip = bar.querySelector('.ws-tabs'), list = bar.querySelector('.ws-tablist'), tool = bar.querySelector('.menu-item[data-menu="tool"]');
           const rect = node => { const r = node.getBoundingClientRect(); return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height}; };
@@ -396,7 +396,7 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) {
             prev: strip.previousElementSibling === tool, next: strip.nextElementSibling?.id, barScroll: [bar.scrollWidth, bar.clientWidth, bar.scrollHeight, bar.clientHeight],
             listOverflows: list.scrollWidth > list.clientWidth, tabs: [...bar.querySelectorAll('.ws-tabwrap, .ws-btn')].map(rect), actions: [...bar.querySelectorAll('.ws-btn')].map(rect), children: bar.children.length};
         });
-        t.diagnostic(`${target}@${width}: strip ${Math.round(geometry.strip.width)}px (tablist ${Math.round(geometry.list.width)}px, 8 tabs), row ${geometry.bar.height}px`);
+        t.diagnostic(`${target}@${width}: strip ${Math.round(geometry.strip.width)}px (tablist ${Math.round(geometry.list.width)}px, 5 tabs), row ${geometry.bar.height}px`);
         assert.ok(geometry.prev, 'immediately after the Tools menu'); assert.equal(geometry.next, 'toolbox-basic-toggle');
         assert.equal(geometry.bar.height, barHeight, 'menu row height unchanged');
         assert.deepEqual([geometry.barScroll[2], geometry.barScroll[3]], [barScrollBaseline[2], barScrollBaseline[3]], 'menu row scroll/client height identical to the legacy row ' + JSON.stringify(geometry));
