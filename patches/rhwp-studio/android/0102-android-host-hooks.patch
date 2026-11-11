@@ -889,7 +889,7 @@ index 9f2c81509..2a8340069 100644
      async (db) =>
        new Promise<void>((resolve, reject) => {
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index 7049ad669..4231fc50e 100644
+index 7049ad669..95ea4ce4f 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
 @@ -33,6 +33,7 @@ import type { ChromeVisibility } from '@/automation/types';
@@ -1039,7 +1039,17 @@ index 7049ad669..4231fc50e 100644
      await updateLoadProgress(75, '문서 상태 적용 중...');
      totalSections = docInfo.sectionCount ?? 1;
      sbSection().textContent = t('ui.sbSection.text', { p1: 1, p2: totalSections });
-@@ -1982,10 +2031,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+@@ -1584,6 +1633,9 @@ async function initializeDocument(
+ }
+ 
+ async function promptLocalFontsIfNeeded(displayName: string): Promise<void> {
++  // [hwpxxx-android] 셸은 글꼴을 호스트 제공자(가져온 글꼴·기기 글꼴)로 다루고 브라우저의 로컬 글꼴 접근 권한을 쓰지 않는다.
++  // 문서에 기본 지원 밖 글꼴이 있어도 허가 창을 띄우지 않는다(띄우면 문서 초기화가 이 창의 답을 기다리며 그리기가 멈춘다).
++  if (isAndroidHost()) return;
+   try {
+     if (!getLocalFontState().loaded) await loadStoredLocalFonts();
+     if (getLocalFontState().stored) return;
+@@ -1982,10 +2034,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
    finally { if (draft.protection) data.fill(0); }
    await deleteAutosaveDraft(draft.id);
    documentState.markDirty('autosave-recovered');

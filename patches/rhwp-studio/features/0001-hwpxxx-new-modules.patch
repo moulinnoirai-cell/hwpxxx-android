@@ -1907,6 +1907,45 @@ index 000000000..6c39eb5e2
 +  assert.equal(onlyEmptyLinesegWarnings({ count: 3 }), false);
 +  assert.equal(onlyEmptyLinesegWarnings(null), false);
 +});
+diff --git a/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts b/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts
+new file mode 100644
+index 000000000..662415c09
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts
+@@ -0,0 +1,33 @@
++// [hwpxxx] 문서 로드 중 들어온 갱신(글꼴 로드 완료의 `document-view-changed`, 호스트 글꼴 목록 변경)이 렌더러 선택 세대를 올려
++// 로드를 조용히 중단시키지 않는다 — 로드 뒤로 미룬다. (중단되면 문서가 빈 쪽 placeholder 로 남았다.)
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++const view = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
++const body = (name: string) => {
++  const start = view.indexOf(name);
++  assert.ok(start > 0, name);
++  return view.slice(start, start + 900);
++};
++
++test('loadDocument 는 진행 표시를 켜고, 끝날 때(예외 포함) 보류한 갱신을 한 번 수행한다', () => {
++  const fn = body('async loadDocument(): Promise<void> {');
++  assert.match(fn, /this\.documentLoadInFlight = true;\s+try \{\s+await this\.loadDocumentNow\(\);\s+\} finally \{\s+this\.documentLoadInFlight = false;/);
++  assert.match(fn, /this\.fontRefreshAfterLoad \|\| this\.viewRefreshAfterLoad/);
++  assert.match(fn, /this\.refreshFontResources\(\) : this\.refreshPagesForRevision\(\)/);
++});
++
++test('두 갱신 경로는 로드 중이면 세대를 올리지 않고 보류만 한다', () => {
++  const fonts = body('async refreshFontResources(): Promise<void> {');
++  assert.ok(fonts.indexOf('this.documentLoadInFlight || this.documentLoadPrepared') < fonts.indexOf('selectNextDocumentRevision(true)'));
++  assert.match(fonts, /this\.fontRefreshAfterLoad = true;\s+return;/);
++  const revision = body('private async refreshPagesForRevision(): Promise<void> {');
++  assert.ok(revision.indexOf('this.documentLoadInFlight || this.documentLoadPrepared') < revision.indexOf('selectNextDocumentRevision(false)'));
++  assert.match(revision, /this\.viewRefreshAfterLoad = true;\s+return;/);
++});
++
++test('로드 본문은 그대로 loadDocumentNow 에 있다(렌더러 선택·쪽 배치)', () => {
++  const now = body('private async loadDocumentNow(): Promise<void> {');
++  assert.match(now, /prepareRendererRevision\(epoch/);
++});
 diff --git a/rhwp-studio/tests/hwpxxx-pdf-capability-guard.test.ts b/rhwp-studio/tests/hwpxxx-pdf-capability-guard.test.ts
 new file mode 100644
 index 000000000..d8725d210

@@ -2007,6 +2007,24 @@ index 000000000..ae9a1001b
 +  assert.throws(() => verifyReopenedDocument(live, reopened, bytes.length), /서식/);
 +  verifyReopenedDocument(live, reopened, bytes.length, { crossFormat: true });
 +});
+diff --git a/rhwp-studio/tests/hwpxxx-android-no-local-font-prompt.test.ts b/rhwp-studio/tests/hwpxxx-android-no-local-font-prompt.test.ts
+new file mode 100644
+index 000000000..bcef9232f
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-no-local-font-prompt.test.ts
+@@ -0,0 +1,12 @@
++// [hwpxxx-android] 셸에서는 로컬 글꼴 접근 허가 창을 띄우지 않는다: 문서 초기화가 그 창의 답을 기다리며 그리기가 멈추기 때문이다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++test('promptLocalFontsIfNeeded 는 Android 셸에서 가장 먼저 빠져나온다(글꼴 분석·허가 창 이전)', () => {
++  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
++  const fn = main.slice(main.indexOf('async function promptLocalFontsIfNeeded'), main.indexOf('class DocumentOpenCancelledError'));
++  assert.ok(fn.includes('if (isAndroidHost()) return;'));
++  assert.ok(fn.indexOf('if (isAndroidHost()) return;') < fn.indexOf('loadStoredLocalFonts'), '저장된 글꼴 로드·분석보다 앞');
++  assert.ok(fn.indexOf('if (isAndroidHost()) return;') < fn.indexOf('showLocalFontsModalIfNeeded'), '허가 창보다 앞');
++});
 diff --git a/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts b/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts
 new file mode 100644
 index 000000000..a7010b801
