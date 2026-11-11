@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Use the main Ubuntu archive for apt (the runner's Azure mirror is sometimes unresolvable and fails every apt step)
+        run: |
+          sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt || true
+          cat /etc/apt/apt-mirrors.txt || true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -111,8 +115,11 @@ jobs:
           for f in tests/android-emulator.cjs tests/android-termux.cjs tests/android-suites.cjs tests/android-system.cjs tests/android-anr-parse.cjs tests/legacy-webview-driver.cjs; do node --check "$f"; done
       - name: Install fonts for the FontStore JVM test (real TTF regular/bold + CFF OTF come from distro packages; the Korean face is the bundled Noto Sans KR)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fonts-liberation fonts-urw-base35
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation fonts-urw-base35; then break; fi
+            if [ "$attempt" = 3 ]; then echo "apt failed in all 3 attempts"; exit 1; fi
+            echo "apt failed (attempt $attempt); retrying"; sleep 20
+          done
           for f in LiberationSans-Regular.ttf LiberationSans-Bold.ttf NimbusSans-Regular.otf; do
             p="$(find /usr/share/fonts -name "$f" | head -n 1)"
             test -n "$p" || { echo "font fixture $f not installed"; exit 1; }
@@ -212,6 +219,10 @@ jobs:
         api: [33]
     steps:
       - uses: actions/checkout@v4
+      - name: Use the main Ubuntu archive for apt (the runner's Azure mirror is sometimes unresolvable and fails every apt step)
+        run: |
+          sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt || true
+          cat /etc/apt/apt-mirrors.txt || true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
