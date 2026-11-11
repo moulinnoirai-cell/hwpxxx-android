@@ -416,6 +416,25 @@ index 5b2bb303c..4518d6ea0 100755
    'setFieldValue', 'setFieldValueByName', 'removeFieldAt', 'insertClickHereField',
    'updateClickHereProps', 'setFormValue', 'setFormValueInCell', 'applyFormActionUpdates',
    'replaceText', 'replaceOne', 'replaceAll',
+diff --git a/rhwp-studio/src/core/pdf-import-capability.ts b/rhwp-studio/src/core/pdf-import-capability.ts
+index a4a2bea07..d29c0c544 100644
+--- a/rhwp-studio/src/core/pdf-import-capability.ts
++++ b/rhwp-studio/src/core/pdf-import-capability.ts
+@@ -1,6 +1,12 @@
+ /** An older bundle can expose importPdf while PDF support is compiled out. */
+ export function hasPdfImportCapability(api: unknown): boolean {
+   const candidate = api as { supportsPdfImport?: () => unknown } | null;
+-  return typeof candidate?.supportsPdfImport === 'function'
+-    && candidate.supportsPdfImport() === true;
++  if (typeof candidate?.supportsPdfImport !== 'function') return false;
++  // [hwpxxx] 엔진(wasm)이 아직 초기화되지 않았으면 이 호출이 던진다(`wasm.hwpdocument_supportsPdfImport` 읽기 실패). 새 탭의 첫 동작
++  // (`file:open`)이 엔진 준비보다 먼저 불릴 수 있어서, 알 수 없으면 '지원 안 함'으로 보고 계속한다(파일 선택창은 그대로 열린다).
++  try {
++    return candidate.supportsPdfImport() === true;
++  } catch {
++    return false;
++  }
+ }
 diff --git a/rhwp-studio/src/engine/caret-renderer.ts b/rhwp-studio/src/engine/caret-renderer.ts
 index 1e2a69864..3e33504ef 100644
 --- a/rhwp-studio/src/engine/caret-renderer.ts
