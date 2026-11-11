@@ -12,7 +12,8 @@ const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).tr
 const sh=(...args)=>adb('shell',...args);
 const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run',backInputDismissals=0;let page,browser;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
-async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
+// Waits were 20 s; the legacy editor now boots the larger rhwp v0.9.0 engine (27 MB WASM) on a 2-core CI emulator, so scenarios were timing out one at a time.
+async function until(fn,ms=45000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
 let anrGuard=null,textZoomProbe=null;
 // After every scenario (also the ones driven only over CDP, which keep passing while an ANR dialog covers the screen) the focused window and the system log are checked.
 async function record(name,fn){const started=Date.now();try{await fn();anrCheck();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);screenshot(`${qa}/${String(checks.length).padStart(2,'0')}.png`);}
@@ -22,7 +23,7 @@ async function connect(){
  const deadline=Date.now()+60000;let error;
  while(Date.now()<deadline)try{
   await disconnect();const pid=sh('pidof',pkg).split(/\s+/)[0];assert(pid,'App process is unavailable');adb('forward','tcp:9222','localabstract:webview_devtools_remote_'+pid);
-  browser=await chromium.connectOverCDP('http://127.0.0.1:9222',{timeout:10000});page=browser.contexts()[0]?.pages()[0];if(!page)throw new Error('WebView target is not ready');page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();return;
+  browser=await chromium.connectOverCDP('http://127.0.0.1:9222',{timeout:10000});page=browser.contexts()[0]?.pages()[0];if(!page)throw new Error('WebView target is not ready');page.setDefaultTimeout(45000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();return;
  }catch(e){error=e;await disconnect();await pause(500);}
  throw error||new Error('Unable to connect to installed WebView');
 }
