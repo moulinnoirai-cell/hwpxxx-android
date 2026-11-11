@@ -524,9 +524,11 @@ if MODULE and ARGS.workspace:
         wait_tabs(a, 2)
         wait_tabs(b, 2)
         a.page.keyboard.press('Control+Tab')
+        a.sleep(0.6)  # the key reaches native asynchronously: read the log only after it had time to arrive (loaded CI runners)
         sel = [o for o in world.log()['ops'] if o['op'] == 'workspaceSelect']
         assert [(o['view'], o['args']) for o in sel] == [(a.tag, {'id': TABS['B']})], sel
         a.page.keyboard.press('Control+Shift+Tab')
+        a.sleep(0.6)
         sel = [o for o in world.log()['ops'] if o['op'] == 'workspaceSelect']
         assert (sel[-1]['view'], sel[-1]['args']) == (a.tag, {'id': TABS['B']}), 'two tabs: previous is the other one'
         a.page.keyboard.press('Control+t')
