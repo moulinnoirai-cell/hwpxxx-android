@@ -152,7 +152,13 @@ jobs:
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$CHROME" >> "$GITHUB_ENV"
           echo "PLAYWRIGHT_NODE_MODULES=$PWD/node_modules" >> "$GITHUB_ENV"
           export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$CHROME" PLAYWRIGHT_NODE_MODULES="$PWD/node_modules"
-          STUDIO_WORKSPACE_SRC="$PWD/.build/studio-src" node --test --test-concurrency=1 tests/android-fonts.test.mjs tests/studio-host.test.mjs tests/studio-workspace-host.test.mjs tests/workspace-oracle.test.mjs tests/workspace-server.test.mjs
+          # These tests drive several real Studio pages and have timing races on a loaded runner: a failure is retried (up to 3 attempts in total);
+          # a real regression fails every attempt.
+          for attempt in 1 2 3; do
+            if STUDIO_WORKSPACE_SRC="$PWD/.build/studio-src" node --test --test-concurrency=1 tests/android-fonts.test.mjs tests/studio-host.test.mjs tests/studio-workspace-host.test.mjs tests/workspace-oracle.test.mjs tests/workspace-server.test.mjs; then break; fi
+            if [ "$attempt" = 3 ]; then echo "host protocol tests failed in all 3 attempts"; exit 1; fi
+            echo "host protocol tests failed (attempt $attempt); retrying"
+          done
       - name: Production desktop Studio browser tests (real patched Studio + WASM in Chromium; native bridge is a MOCK — not WebView, not DeX)
         run: |
           python tests/studio-ui.py

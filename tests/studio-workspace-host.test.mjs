@@ -313,7 +313,7 @@ async function openView(native, tabId, {target = 'fake', width = 1280, height = 
   const view = {
     tabId, page, errors, consoleErrors, context,
     emit: (name, data) => page.evaluate(([n, d]) => window.NativeEvent(n, d), [name, data]),
-    callClose: token => page.evaluate(token => { void window.AndroidWorkspaceCloseRequest(token); }, token),
+    callClose: async token => { await page.waitForFunction(() => typeof window.AndroidWorkspaceCloseRequest === 'function', null, {timeout: 30000}); return page.evaluate(token => { void window.AndroidWorkspaceCloseRequest(token); }, token); },
     strip: () => page.locator('#menu-bar .ws-tabs'),
     tab: id => page.locator(`#menu-bar .ws-tabwrap[data-tab-id="${id}"]`),
     order: () => page.$$eval('#menu-bar .ws-tabwrap', nodes => nodes.map(node => node.dataset.tabId)),
