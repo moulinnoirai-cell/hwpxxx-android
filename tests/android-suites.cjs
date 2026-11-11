@@ -4,7 +4,7 @@ let failed=false;
 // One journal and one evidence directory for the whole run: both suites add to it (the suites do not clear it themselves when this flag is set).
 system.reset();
 const child={...process.env,ANDROID_ANR_KEEP:'1'};
-for(const file of ['android-studio-suite.cjs','android-emulator.cjs','android-termux.cjs']){
+for(const file of ['android-emulator.cjs','android-termux.cjs']){
  const result=spawnSync(process.execPath,['tests/'+file],{stdio:'inherit',timeout:12*60*1000,env:child});
  if(result.status!==0){failed=true;console.error('Android suite failed:',file,result.error?.message||result.signal||result.status);}
  spawnSync('python',['tests/print-qa-evidence.py'],{stdio:'inherit',timeout:60000});

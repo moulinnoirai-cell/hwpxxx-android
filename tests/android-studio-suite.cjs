@@ -28,8 +28,22 @@ async function studioPage(timeout=90000){
  }
  throw new Error('Studio page did not become ready');
 }
+let cdp=null;
+// The shell replaces the editor WebView right after start (workspace startup), which closes the first CDP target: re-attach and wait for a document before every scenario.
+async function ensureStudio(){
+ for(let attempt=0;attempt<3;attempt++){
+  try{
+   await studioPage(60000);
+   await page.waitForFunction(()=>window.rhwpStudio?.android?.getState?.().hasDocument===true,null,{timeout:60000});
+   try{cdp=await page.context().newCDPSession(page);}catch(e){cdp=null;console.log('CDP session unavailable:',e.message);}
+   return;
+  }catch(e){console.log('re-attaching to Studio:',String(e.message).slice(0,120));try{await browser?.close();}catch{};browser=null;page=null;await pause(2000);}
+ }
+ throw new Error('Studio page with a document is not available');
+}
 async function scenario(name,fn){
  const t0=Date.now();
+ try{await ensureStudio();}catch(e){results.push({name,passed:false,error:String(e.message||e).slice(0,300)});console.log('FAIL',name,e.message);return;}
  try{const r=await fn();if(r&&r.skipped){results.push({name,skipped:true,detail:r.skipped});console.log('SKIP',name,r.skipped);}
   else{results.push({name,passed:true,ms:Date.now()-t0,detail:r&&r.detail});console.log('PASS',name,r&&r.detail?JSON.stringify(r.detail):'');}}
  catch(e){results.push({name,passed:false,error:String(e.message||e).slice(0,500)});console.log('FAIL',name,String(e.message||e).slice(0,500));shot('fail-'+name.replace(/\W+/g,'-').slice(0,40));}
@@ -44,8 +58,6 @@ async function selectWord(fromEnd){await page.keyboard.press('Control+End');for(
  sh('am','start','-W','-n',`${pkg}/kr.offline.hwp.MainActivity`);
  await studioPage();await pause(2000);shot('start');
  await scenario('Studio is the default UI and reports a document state',async()=>{const s=await page.evaluate(()=>window.rhwpStudio.android.getState());assert(s&&typeof s.hasDocument==='boolean');return {detail:{hasDocument:s.hasDocument}};});
- await page.evaluate(()=>window.rhwpPerfReset&&window.rhwpPerfReset());
- let cdp=null;try{cdp=await page.context().newCDPSession(page);}catch(e){console.log('CDP session unavailable:',e.message);}
  await scenario('IME composition overlay follows the pending bold and uses the resolved font stack',async()=>{
   if(!cdp)return {skipped:'no CDP session in this WebView mode'};
   await focusDoc();await page.keyboard.type('시작 ');await page.keyboard.press('Control+b');

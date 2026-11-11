@@ -254,7 +254,7 @@ jobs:
           disable-animations: true
           enable-hw-keyboard: true
           emulator-options: -no-window -no-snapshot -gpu swiftshader -noaudio -no-boot-anim -no-metrics -camera-back none -camera-front none -feature -Vulkan
-          script: node tests/legacy-webview-driver.cjs && node tests/android-suites.cjs
+          script: sh tests/run-emulator-suites.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
