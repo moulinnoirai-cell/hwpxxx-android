@@ -28,13 +28,15 @@ async function studioPage(timeout=90000){
  }
  throw new Error('Studio page did not become ready');
 }
+// Playwright's waitForFunction evaluates in the page's main world, which the strict production CSP (no unsafe-eval) refuses: poll with page.evaluate instead.
+const waitFn=async(fn,arg,timeout=20000)=>{const end=Date.now()+timeout;let last;while(Date.now()<end){try{if(await page.evaluate(fn,arg))return true;}catch(e){last=e;}await pause(250);}throw new Error('timed out waiting for a page condition'+(last?': '+String(last.message).slice(0,120):''));};
 let cdp=null;
 // The shell replaces the editor WebView right after start (workspace startup), which closes the first CDP target: re-attach and wait for a document before every scenario.
 async function ensureStudio(){
  for(let attempt=0;attempt<3;attempt++){
   try{
    await studioPage(60000);
-   await page.waitForFunction(()=>window.rhwpStudio?.android?.getState?.().hasDocument===true,null,{timeout:60000});
+   await waitFn(()=>window.rhwpStudio?.android?.getState?.().hasDocument===true,null,60000);
    try{cdp=await page.context().newCDPSession(page);}catch(e){cdp=null;console.log('CDP session unavailable:',e.message);}
    return;
   }catch(e){console.log('re-attaching to Studio:',String(e.message).slice(0,120));try{await browser?.close();}catch{};browser=null;page=null;await pause(2000);}
@@ -62,10 +64,10 @@ async function selectWord(fromEnd){await page.keyboard.press('Control+End');for(
   if(!cdp)return {skipped:'no CDP session in this WebView mode'};
   await focusDoc();await page.keyboard.type('시작 ');await page.keyboard.press('Control+b');
   await cdp.send('Input.imeSetComposition',{text:'한',selectionStart:1,selectionEnd:1});
-  await page.waitForFunction(()=>{const e=document.querySelector('.caret-composition');return !!e&&getComputedStyle(e).display!=='none'&&e.textContent.length>0;},null,{timeout:8000});
+  await waitFn(()=>{const e=document.querySelector('.caret-composition');return !!e&&getComputedStyle(e).display!=='none'&&e.textContent.length>0;},null,8000);
   const o=await page.evaluate(()=>{const e=document.querySelector('.caret-composition'),c=getComputedStyle(e);return {family:c.fontFamily,size:parseFloat(c.fontSize),weight:Number(c.fontWeight)};});
   shot('composition');await page.keyboard.insertText('한');await pause(300);
-  assert(o.family.toLowerCase().includes('sans-serif'),'font stack from the canvas-resolved path: '+o.family);
+  assert(o.family.includes(',')&&/(sans-)?serif\s*$/i.test(o.family),'font stack from the canvas-resolved path (document font first, generic fallback last): '+o.family);
   assert(o.weight>=600,'bold from the pending shape: '+o.weight);
   assert(o.size>1,'size '+o.size);
   const hidden=await page.evaluate(()=>{const e=document.querySelector('.caret-composition');return !e||getComputedStyle(e).display==='none';});assert(hidden,'overlay hides after commit');
@@ -83,7 +85,7 @@ async function selectWord(fromEnd){await page.keyboard.press('Control+End');for(
   return {detail:{plain:true,composing:true}};});
  await scenario('Alt+C: Enter confirms the dialog, the format can be pasted repeatedly, Esc releases it',async()=>{
   await focusDoc();await page.keyboard.press('Control+End');await page.keyboard.type(' alpha beta gamma');
-  await selectWord(2);await page.keyboard.press('Control+b');await pause(200);
+  await selectWord(2);if(!await boldActive())await page.click('#btn-bold');await pause(300);assert(await boldActive(),'the first word is bold before Alt+C copies its format');
   await page.keyboard.press('Alt+c');await page.waitForSelector('.modal-overlay',{timeout:8000});
   assert(await page.evaluate(()=>!!document.querySelector('input[name=format-copy-continuous]')?.checked),'continuous is on by default');
   await page.evaluate(()=>document.querySelector('input[name=format-copy-body][value=char]')?.focus());
@@ -110,11 +112,17 @@ async function selectWord(fromEnd){await page.keyboard.press('Control+End');for(
   assert(snap.summary['input.afterEdit'],'input path recorded');
   return {detail:Object.fromEntries(Object.entries(snap.summary).map(([k,v])=>[k,{n:v.count,max:v.maxMs,p95:v.p95Ms}]))};});
  await scenario('tab limit is five (new tab control disables at five)',async()=>{
-  const countTabs=async()=>{let max=0,disabled=false;for(const ctx of browser.contexts())for(const p of ctx.pages()){if(p.isClosed())continue;try{const r=await p.evaluate(()=>({n:document.querySelectorAll('.ws-tab').length,d:document.querySelector('[data-ws-action="new"]')?.getAttribute('aria-disabled')==='true'}));max=Math.max(max,r.n);disabled=disabled||r.d;}catch{}}return {max,disabled};};
-  let state=await countTabs();
-  for(let i=0;i<6&&state.max<5;i++){
-   try{await page.locator('[data-ws-action="new"]').click({timeout:5000});}catch{}
-   await pause(2500);try{await studioPage(20000);}catch{}state=await countTabs();}
+  const snapshot=async()=>{let max=0,disabled=false;for(const ctx of browser.contexts())for(const p of ctx.pages()){if(p.isClosed())continue;try{const r=await p.evaluate(()=>({n:document.querySelectorAll('.ws-tab').length,d:document.querySelector('[data-ws-action="new"]')?.getAttribute('aria-disabled')==='true'}));max=Math.max(max,r.n);disabled=disabled||r.d;}catch{}}return {max,disabled};};
+  // Click the new-tab control of any WebView that shows an enabled one; each new tab brings up another WebView + WASM, so wait for the count to rise.
+  const clickNew=async()=>{for(const ctx of browser.contexts())for(const p of ctx.pages()){if(p.isClosed())continue;try{const ok=await p.evaluate(()=>{const b=document.querySelector('[data-ws-action="new"]');if(!b||b.getAttribute('aria-disabled')==='true')return false;const r=b.getBoundingClientRect();return r.width>0&&r.height>0;});if(ok){await p.locator('[data-ws-action="new"]').click({timeout:5000});return true;}}catch{}}return false;};
+  let state=await snapshot();
+  for(let i=0;i<8&&state.max<5;i++){
+   const before=state.max;
+   if(!await clickNew()){await pause(3000);state=await snapshot();continue;}
+   const end=Date.now()+45000;
+   while(Date.now()<end){await pause(1500);state=await snapshot();if(state.max>before)break;}
+   console.log('tabs after click',i+1,JSON.stringify(state));
+  }
   shot('tabs');
   assert(state.max<=5,'never more than five tabs: '+state.max);
   assert(state.max===5&&state.disabled,'five tabs reached and the new-tab control is disabled: '+JSON.stringify(state));
