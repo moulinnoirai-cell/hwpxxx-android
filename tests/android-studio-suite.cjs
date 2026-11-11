@@ -123,9 +123,12 @@ async function selectWord(fromEnd){await page.keyboard.press('Control+End');for(
    while(Date.now()<end){await pause(1500);state=await snapshot();if(state.max>before)break;}
    console.log('tabs after click',i+1,JSON.stringify(state));
   }
+  // every WebView's strip is updated by a native broadcast after the fifth tab exists: wait for the disabled control
+  for(let i=0;i<20&&state.max>=5&&!state.disabled;i++){await pause(1500);state=await snapshot();}
   shot('tabs');
   assert(state.max<=5,'never more than five tabs: '+state.max);
   assert(state.max===5&&state.disabled,'five tabs reached and the new-tab control is disabled: '+JSON.stringify(state));
+  assert(!await clickNew(),'no enabled new-tab control is left once five tabs are open');
   return {detail:state};});
  const real=results.filter(r=>!r.skipped);
  fs.writeFileSync(path.join(qa,'studio-suite.json'),JSON.stringify({results,pageErrors:errors.slice(0,10)},null,2));

@@ -7,6 +7,9 @@ legacy=1
 for attempt in 1 2; do
   node tests/android-suites.cjs && { legacy=0; break; }
   echo "EMULATOR_LEGACY_ATTEMPT_FAILED attempt=$attempt"
+  # The suites assume a fresh device (permission denied, no Termux): give the retry one.
+  adb uninstall kr.offline.hwp.preview >/dev/null 2>&1
+  adb uninstall com.termux >/dev/null 2>&1
 done
 node tests/android-studio-suite.cjs
 studio=$?
