@@ -566,7 +566,7 @@ withWorkspace('keyboard: roving tabindex/ARIA, Enter selects, Ctrl+Tab cycles, C
   await until(() => native.ops('workspaceClose', a.tabId).length === 1 && native.ops('workspaceCloseResult', a.tabId).length === 1, 'Ctrl+W round trip');
   assert.deepEqual(native.ops('workspaceClose', a.tabId)[0].args, {id: a.tabId});
   assert.equal(native.ops('workspaceCloseResult', a.tabId)[0].args.allow, true);
-  assert.equal(native.tabs.some(tab => tab.id === a.tabId), false, 'closed after allow');
+  await until(() => !native.tabs.some(tab => tab.id === a.tabId), 'closed after allow'); // the native model drops the tab after it records the close result
   void b;
 });
 
