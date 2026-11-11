@@ -198,6 +198,38 @@ index 000000000..bef76a678
 +  const style = `${input.italic ? 'italic ' : ''}${input.bold ? 'bold ' : ''}`;
 +  return resolve(`${style}${Math.round(px * 100) / 100}px ${family}`);
 +}
+diff --git a/rhwp-studio/src/hwpxxx/content-loss.ts b/rhwp-studio/src/hwpxxx/content-loss.ts
+new file mode 100644
+index 000000000..b9420e991
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/content-loss.ts
+@@ -0,0 +1,26 @@
++/**
++ * [hwpxxx] 내보내기 내용 손실 보고에서 '저장을 막아야 하는 손실'만 가려낸다.
++ *
++ * rhwp v0.9.0 은 `metadataReduced` 도 보고한다(예: 병합한 표의 잠재 행 격자 — "rhwp 왕복 보존, 한컴에는 실제 셀 경계만 투영").
++ * 이는 문서의 글·개체를 잃는 것이 아니라 편집 메타데이터가 줄어드는 안내라서, 이것만으로 Android 의 안전 저장(손실이 있으면
++ * 저장하지 않음)을 막으면 병합한 표가 있는 문서를 HWPX 로 저장할 수 없다. 반대로 `binaryContentEmptied`(자원 내용이 빔)·
++ * `controlOmitted`(컨트롤이 빠짐)와 처음 보는 코드는 사용자 내용을 잃을 수 있으므로 그대로 막는다(알 수 없으면 막는 쪽).
++ */
++export interface ContentLossLike {
++  count?: number;
++  losses?: ReadonlyArray<{ code?: unknown; path?: unknown }>;
++}
++
++/** 이 코드만 저장을 막지 않는다. */
++export const NON_BLOCKING_LOSS_CODES: ReadonlySet<string> = new Set(['metadataReduced']);
++
++export function blockingContentLosses<T extends { code?: unknown }>(losses: ReadonlyArray<T> | undefined): T[] {
++  return (losses ?? []).filter((loss) => !(typeof loss?.code === 'string' && NON_BLOCKING_LOSS_CODES.has(loss.code)));
++}
++
++export function hasBlockingContentLoss(report: ContentLossLike | null | undefined): boolean {
++  if (!report) return false;
++  if (blockingContentLosses(report.losses).length > 0) return true;
++  // 항목 없이 개수만 있는 보고는 무엇을 잃는지 알 수 없어 막는다.
++  return (report.count ?? 0) > (report.losses?.length ?? 0);
++}
 diff --git a/rhwp-studio/src/hwpxxx/memo-context.ts b/rhwp-studio/src/hwpxxx/memo-context.ts
 new file mode 100644
 index 000000000..cd6016acf
@@ -1431,6 +1463,52 @@ index 000000000..a0cce36a4
 +  const caret = source('engine/caret-renderer.ts');
 +  assert.match(caret, /if \(font\) \{\s+this\.compEl\.style\.font = font;/);
 +  assert.match(caret, /this\.compEl\.style\.lineHeight = `\$\{h\}px`;/, '줄 높이는 shorthand 뒤에 다시 정한다');
++});
+diff --git a/rhwp-studio/tests/hwpxxx-content-loss.test.ts b/rhwp-studio/tests/hwpxxx-content-loss.test.ts
+new file mode 100644
+index 000000000..ce35e9e1a
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-content-loss.test.ts
+@@ -0,0 +1,40 @@
++// [hwpxxx] 내용 손실 보고: 메타데이터 축소만으로는 저장을 막지 않고, 내용을 잃는 손실·알 수 없는 코드·개수만 있는 보고는 막는다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { hasBlockingContentLoss, blockingContentLosses } from '../src/hwpxxx/content-loss.ts';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++const loss = (code: string, path = 'p') => ({ code, subject: 'control', path, reason: 'unsupportedByOutputFormat' });
++
++test('손실 없음·null 은 막지 않는다', () => {
++  assert.equal(hasBlockingContentLoss(null), false);
++  assert.equal(hasBlockingContentLoss(undefined), false);
++  assert.equal(hasBlockingContentLoss({ count: 0, losses: [] }), false);
++});
++
++test('메타데이터 축소(병합 표의 잠재 행 격자 등)만 있으면 막지 않는다', () => {
++  const report = { count: 1, losses: [loss('metadataReduced', '표의 잠재 행 격자')] };
++  assert.equal(hasBlockingContentLoss(report), false);
++  assert.deepEqual(blockingContentLosses(report.losses), []);
++});
++
++test('자원 내용이 빔·컨트롤이 빠짐·처음 보는 코드는 막고, 섞여 있으면 막는 항목만 고른다', () => {
++  assert.equal(hasBlockingContentLoss({ count: 1, losses: [loss('binaryContentEmptied')] }), true);
++  assert.equal(hasBlockingContentLoss({ count: 1, losses: [loss('controlOmitted')] }), true);
++  assert.equal(hasBlockingContentLoss({ count: 1, losses: [loss('somethingNew')] }), true);
++  assert.equal(hasBlockingContentLoss({ count: 1, losses: [{ path: 'x' }] }), true, '코드가 없으면 알 수 없으므로 막는다');
++  const mixed = [loss('metadataReduced', 'a'), loss('controlOmitted', 'b')];
++  assert.equal(hasBlockingContentLoss({ count: 2, losses: mixed }), true);
++  assert.deepEqual(blockingContentLosses(mixed).map((l) => l.path), ['b']);
++});
++
++test('항목 없이 개수만 있는 보고는 무엇을 잃는지 몰라 막는다', () => {
++  assert.equal(hasBlockingContentLoss({ count: 2 }), true);
++  assert.equal(hasBlockingContentLoss({ count: 1, losses: [] }), true);
++});
++
++test('연결: 저장 검사·복구본 손실 표시가 같은 기준을 쓴다', () => {
++  assert.match(source('command/commands/file.ts'), /if \(hasBlockingContentLoss\(artifact\.contentLoss\)\)/);
++  assert.match(source('core/wasm-bridge.ts'), /if \(hasBlockingContentLoss\(loss\)\) bytes\.lossy = true;/);
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
 new file mode 100644

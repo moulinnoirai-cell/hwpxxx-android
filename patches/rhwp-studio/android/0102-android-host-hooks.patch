@@ -1,17 +1,18 @@
 diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
-index 367e3451f..331c12935 100644
+index 367e3451f..3bc8eb720 100644
 --- a/rhwp-studio/src/command/commands/file.ts
 +++ b/rhwp-studio/src/command/commands/file.ts
-@@ -70,6 +70,8 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
+@@ -70,6 +70,9 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
  import { openRecentEntry } from '@/recent/recent-open';
  
  import { t } from '../../i18n/index.ts';
 +import { androidExportBlob, androidPrintDocument, androidWorkspaceRouting, handleAndroidWorkspaceAction, isAndroidHost, runAndroidSaveGuard, type AndroidWorkspaceAction } from '@/hwpxxx/android-host';
 +import { prepareAndroidPrintJob } from '@/hwpxxx/android-print';
++import { blockingContentLosses, hasBlockingContentLoss } from '@/hwpxxx/content-loss';
  /**
   * 파일 열기 대화상자(File System Access picker, 미지원 시 숨김 input 폴백)를 열어
   * 문서를 로드한다. `file:open` 커맨드와 "최근 문서" 메타-only 항목 재열기가 공유한다.
-@@ -86,6 +88,15 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
+@@ -86,6 +89,15 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
    });
  }
  
@@ -27,7 +28,7 @@ index 367e3451f..331c12935 100644
  /** 최근 문서 핸들의 읽기 권한을 확인/요청한다. 최종 'granted' 여부 반환. */
  async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<boolean> {
    try {
-@@ -109,8 +120,10 @@ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<b
+@@ -109,8 +121,10 @@ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<b
   * 두 케이스 모두 fallback download 우회 — 사용자가 명시적으로 취소했으므로
   * 의도하지 않은 Downloads 폴더 저장 + chrome-extension viewer 자동 연결 차단. */
  function isUserCancelError(e: unknown): boolean {
@@ -39,7 +40,7 @@ index 367e3451f..331c12935 100644
  }
  
  function saveBaseNameFor(fileName: string, format: SaveFormat): string {
-@@ -145,11 +158,12 @@ interface SavePayload {
+@@ -145,11 +159,12 @@ interface SavePayload {
    contentLoss: ContentLossReport | null;
  }
  
@@ -55,15 +56,16 @@ index 367e3451f..331c12935 100644
    const artifact: SaveExportArtifact = password === undefined
      ? exportDocumentWithReportForFormat(services.wasm, format)
      : exportPasswordProtectedDocumentWithReportForFormat(
-@@ -157,6 +171,24 @@ function createSavePayload(
+@@ -157,6 +172,25 @@ function createSavePayload(
        requirePasswordSaveFormat(format),
        password,
      );
 +  if (isAndroidHost()) {
 +    // [hwpxxx-android] 옛 Android 작업기와 같게: 내용 손실 보고가 있으면 저장하지 않고, 내보낸 바이트를 다시 열어
 +    // 글·쪽·서식·메모를 편집 중인 문서와 비교한다(비밀번호는 이 호출 범위에서만 쓴다). 하나라도 다르면 던진다.
-+    if (artifact.contentLoss && artifact.contentLoss.losses.length > 0) {
-+      const what = artifact.contentLoss.losses.slice(0, 3).map((item) => item.path).join(', ');
++    // (메타데이터 축소 안내는 막지 않는다 — 사용자 내용을 잃는 손실만 막는다)
++    if (hasBlockingContentLoss(artifact.contentLoss)) {
++      const what = blockingContentLosses(artifact.contentLoss?.losses).slice(0, 3).map((item) => item.path).join(', ');
 +      throw new Error(`저장하면 문서 일부(${what})가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.`);
 +    }
 +    services.wasm.verifyAndroidSave(artifact.bytes, format, password);
@@ -80,7 +82,7 @@ index 367e3451f..331c12935 100644
    return {
      blob: new Blob([artifact.bytes as unknown as BlobPart], {
        type: SAVE_FORMAT_DETAILS[format].mimeType,
-@@ -202,7 +234,7 @@ async function tryFileSystemSave(
+@@ -202,7 +236,7 @@ async function tryFileSystemSave(
    currentHandle: FileSystemFileHandleLike | null,
  ): Promise<SaveDocumentResult | 'cancelled'> {
    try {
@@ -89,7 +91,7 @@ index 367e3451f..331c12935 100644
        blob,
        suggestedName,
        currentHandle,
-@@ -210,13 +242,44 @@ async function tryFileSystemSave(
+@@ -210,13 +244,44 @@ async function tryFileSystemSave(
        forceSaveAs,
        saveFormat: format,
      });
@@ -134,7 +136,7 @@ index 367e3451f..331c12935 100644
  function publishSaveProtection(services: CommandServices, protectedFile: boolean,
    cipher: RecoveryCipher | null, generation: number): void {
    if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
-@@ -226,14 +289,22 @@ function publishSaveProtection(services: CommandServices, protectedFile: boolean
+@@ -226,14 +291,22 @@ function publishSaveProtection(services: CommandServices, protectedFile: boolean
  
  function completeHandleSave(
    services: CommandServices,
@@ -157,7 +159,7 @@ index 367e3451f..331c12935 100644
    publishSaveProtection(services, passwordProtected, cipher, generation);
    if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
    if (sourceFormat === 'pdf') markConvertedPdfSaveHandle(result.handle);
-@@ -246,14 +317,24 @@ function completeHandleSave(
+@@ -246,14 +319,24 @@ function completeHandleSave(
    }).catch(() => undefined);
    services.refreshDocumentStatus();
    services.wasm.requiresPasswordForSave = passwordProtected;
@@ -184,7 +186,7 @@ index 367e3451f..331c12935 100644
    } catch (error) {
      const message = error instanceof Error ? error.message : String(error);
      alert(t('command.file.exportHtmlBasedFile.message', { p1: label, p2: message }));
-@@ -261,6 +342,10 @@ function exportHtmlBasedFile(services: CommandServices, format: HtmlExportFormat
+@@ -261,6 +344,10 @@ function exportHtmlBasedFile(services: CommandServices, format: HtmlExportFormat
  }
  
  function downloadBlob(blob: Blob, fileName: string): void {
@@ -195,7 +197,7 @@ index 367e3451f..331c12935 100644
    const url = URL.createObjectURL(blob);
    const anchor = document.createElement('a');
    anchor.href = url;
-@@ -326,36 +411,49 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+@@ -326,36 +413,49 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
    let recoveryCipher: RecoveryCipher | null = null;
    const generation = services.wasm.documentGeneration;
    try {
@@ -257,7 +259,7 @@ index 367e3451f..331c12935 100644
        ),
        showExportContentLoss,
      );
-@@ -379,7 +477,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+@@ -379,7 +479,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
          }).catch(() => undefined);
          services.refreshDocumentStatus();
          services.wasm.requiresPasswordForSave = password !== null;
@@ -266,7 +268,7 @@ index 367e3451f..331c12935 100644
        },
        showExportContentLoss,
      );
-@@ -404,6 +502,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+@@ -404,6 +504,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
    let recoveryCipher: RecoveryCipher | null = null;
    const generation = services.wasm.documentGeneration;
    try {
@@ -274,7 +276,7 @@ index 367e3451f..331c12935 100644
      flushDeferredPaginationBeforeExplicitOutput(services, 'save');
      const sourceFormat = services.wasm.getSourceFormat();
      let target = resolveSaveTarget(
-@@ -415,6 +514,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+@@ -415,6 +516,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
      if (requiresSaveFormatChoice(target, hmlEnabled)) {
        const format = await chooseSaveAsFormat(services);
        if (format === null) return 'cancelled';
@@ -282,7 +284,7 @@ index 367e3451f..331c12935 100644
        target = {
          ...target,
          format,
-@@ -427,27 +527,39 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+@@ -427,27 +529,39 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
        password = await showHwpSavePasswordDialog(fileNameForFormat(services.wasm.fileName, passwordFormat));
        if (password === null) return 'cancelled';
      }
@@ -332,7 +334,7 @@ index 367e3451f..331c12935 100644
        ),
        showExportContentLoss,
      );
-@@ -463,7 +575,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+@@ -463,7 +577,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
        () => {
          publishSaveProtection(services, password !== null, recoveryCipher, generation);
          services.wasm.requiresPasswordForSave = password !== null;
@@ -341,7 +343,7 @@ index 367e3451f..331c12935 100644
        },
        showExportContentLoss,
      );
-@@ -623,6 +735,46 @@ async function preparePrintPages(
+@@ -623,6 +737,46 @@ async function preparePrintPages(
    return printPages;
  }
  
@@ -388,7 +390,7 @@ index 367e3451f..331c12935 100644
  let printJobActive = false;
  
  function beginPrintJob(): boolean {
-@@ -636,6 +788,10 @@ function beginPrintJob(): boolean {
+@@ -636,6 +790,10 @@ function beginPrintJob(): boolean {
  
  async function runPdfPrint(services: CommandServices): Promise<void> {
    if (!beginPrintJob()) return;
@@ -399,7 +401,7 @@ index 367e3451f..331c12935 100644
  
    const wasm = services.wasm;
    const statusEl = document.getElementById('sb-message');
-@@ -714,6 +870,10 @@ async function runPdfPrint(services: CommandServices): Promise<void> {
+@@ -714,6 +872,10 @@ async function runPdfPrint(services: CommandServices): Promise<void> {
  
  async function runPrintPreview(services: CommandServices): Promise<void> {
    if (!beginPrintJob()) return;
@@ -410,7 +412,7 @@ index 367e3451f..331c12935 100644
  
    const wasm = services.wasm;
    const statusEl = document.getElementById('sb-message');
-@@ -775,14 +935,25 @@ export const fileCommands: CommandDef[] = [
+@@ -775,14 +937,25 @@ export const fileCommands: CommandDef[] = [
      icon: 'icon-new-doc',
      shortcutLabel: 'Alt+N',
      canExecute: () => true,
@@ -438,7 +440,7 @@ index 367e3451f..331c12935 100644
    },
    {
      // 최근 문서 재열기 — 저장된 핸들 권한 재확인 후 라이브 파일 로드. params.id로 레코드 지정.
-@@ -792,6 +963,8 @@ export const fileCommands: CommandDef[] = [
+@@ -792,6 +965,8 @@ export const fileCommands: CommandDef[] = [
      id: 'file:open-recent',
      label: t('command.file.openRecent.registryLabel'),
      async execute(services, params) {
@@ -447,7 +449,7 @@ index 367e3451f..331c12935 100644
        const id = typeof params?.id === 'string' ? params.id : undefined;
        if (!id) return;
        const recents = await listRecentDocs();
-@@ -800,6 +973,8 @@ export const fileCommands: CommandDef[] = [
+@@ -800,6 +975,8 @@ export const fileCommands: CommandDef[] = [
          showToast({ message: t('command.file.execute.message'), durationMs: 2500 });
          return;
        }
@@ -551,7 +553,7 @@ index a4d6fd2df..9bc1c7e31 100644
  export function getDetectedLocalFonts(): string[] {
    return cachedSnapshot ? [...cachedSnapshot.families] : [];
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index cebf9b402..0e9bda15a 100644
+index cebf9b402..7bfc327b3 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
 @@ -13,7 +13,7 @@ import type { CanvasMetricDocument } from './canvas-metric-session';
@@ -563,17 +565,18 @@ index cebf9b402..0e9bda15a 100644
  import * as wasmExports from '@wasm/rhwp.js';
  import { inspectFontSymbols } from './wasm-font-symbol-coverage';
  import { hasPdfImportCapability } from './pdf-import-capability';
-@@ -234,6 +234,9 @@ import {
+@@ -234,6 +234,10 @@ import {
  } from './font-substitution';
  import { rememberRawCanvasFontDescriptor } from './canvas-font-raw';
  import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 +import { isAndroidHost } from '@/hwpxxx/android-host';
 +import { verifyReopenedDocument, type VerifiableDocument, type VerifyCoverage } from '@/hwpxxx/android-save-verify';
++import { hasBlockingContentLoss } from '@/hwpxxx/content-loss';
 +import type { RecoveryBytes } from '@/recovery/autosave-store';
  
  /**
   * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
-@@ -327,6 +330,21 @@ function installCanvasFontSubstitution(): void {
+@@ -327,6 +331,21 @@ function installCanvasFontSubstitution(): void {
    canvasFontSubstitutionInstalled = true;
  }
  
@@ -595,7 +598,7 @@ index cebf9b402..0e9bda15a 100644
  import { declaredOpenTypeProgram, prepareDeclaredFontPrograms, type DocumentFontSelectionPlan } from './declared-font-environment';
  import { documentFontPreferences, applyDocumentFontPreferences } from './document-font-preferences.ts';
  
-@@ -343,7 +361,6 @@ export class WasmBridge {
+@@ -343,7 +362,6 @@ export class WasmBridge {
    private readonly nativePuaFonts = new NativePuaFontSession();
    private readonly metafileFonts = new MetafileFontSession();
    private canvasFontGeneration = 0;
@@ -603,7 +606,7 @@ index cebf9b402..0e9bda15a 100644
    private canvasMetricDocument(): CanvasMetricDocument | null {
      const doc = this.doc as unknown as Partial<CanvasMetricDocument> | null;
      return doc && ['collectCanvasMetricRequests', 'registerCanvasMetricReplies', 'selectCanvasMetrics', 'canvasMetricsActive', 'getCanvasPageLayerTree']
-@@ -776,6 +793,47 @@ export class WasmBridge {
+@@ -776,6 +794,47 @@ export class WasmBridge {
      this.onRecoveryProtectionChanged?.();
    }
  
@@ -617,7 +620,7 @@ index cebf9b402..0e9bda15a 100644
 +    const artifact: DocumentExportArtifact = this.exportHwpWithReport();
 +    const bytes: RecoveryBytes = artifact.bytes;
 +    const loss = artifact.contentLoss;
-+    if (loss && (loss.count > 0 || loss.losses.length > 0)) bytes.lossy = true;
++    if (hasBlockingContentLoss(loss)) bytes.lossy = true;
 +    return bytes;
 +  }
 +
@@ -651,7 +654,7 @@ index cebf9b402..0e9bda15a 100644
  
    get isNewDocument(): boolean {
      return this._fileName === '새 문서.hwp';
-@@ -3899,6 +3957,37 @@ export class WasmBridge {
+@@ -3899,6 +3958,37 @@ export class WasmBridge {
      return JSON.parse(this.doc.getMemoList());
    }
  

@@ -19,12 +19,12 @@
   "featurePatchDir": "patches/rhwp-studio/features",
   "androidPatchDir": "patches/rhwp-studio/android",
   "featurePatches": {
-    "0001-hwpxxx-new-modules.patch": "95399935d202deeecbc9eb778e43214173f83775bef72fd3cd77accbfebd043a",
+    "0001-hwpxxx-new-modules.patch": "c44babc6556ce44d8fadab6c116b4be5fd94f302de04c5550265ea58f7dc7505",
     "0002-hwpxxx-editor-hooks.patch": "7a4fc1b13145c1e027791b5b06f0b51707842d11c4b1d09d40850529e7465094"
   },
   "androidPatches": {
     "0101-android-new-modules.patch": "ae4364484a3556bd3b8b3a76805b8531fef072ec5cc1f4d9a99546c5fa7a3d1d",
-    "0102-android-host-hooks.patch": "4fa5f88d7b87dbda40246780bba748070efab61c78e3be5859ae1c88c68ccc60"
+    "0102-android-host-hooks.patch": "cace090b0c726af3cb9b6a55db2890d363ce1a5244fd287e44f6b63e56b3507b"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",
