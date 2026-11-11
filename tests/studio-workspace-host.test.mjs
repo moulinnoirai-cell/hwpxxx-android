@@ -464,6 +464,8 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) wi
   await until(async () => (await a.order()).length === 4, 'four tabs');
   const [t0, t1, t2, t3] = native.tabs.map(tab => tab.id);
   const state = () => JSON.stringify([native.activeId, native.primaryId, native.secondaryId, native.split, native.tabs.map(tab => [tab.id, tab.title, tab.dirty])]);
+  // Titles settle asynchronously while each tab's real Studio opens its document ('여는 중…' -> real title); the drag must be compared against settled titles.
+  await until(() => native.tabs.every(tab => tab.title !== '여는 중…'), 'tab titles settled before the drag');
   const before = JSON.parse(state());
   await a.page.evaluate(() => { window.__drag = []; document.addEventListener('dragstart', event => { window.__drag.push({types: [...event.dataTransfer.types], plain: event.dataTransfer.getData('text/plain')}); }, false); });
   // indicator while hovering, then drop t3 before t1
