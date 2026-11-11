@@ -269,16 +269,14 @@ with sync_playwright() as p:
         wait("window.rhwpStudio.android.getState().dirty === true")
         r = ev("window.rhwpStudio.android.flushRecovery()")
         d = ev("[...window.__host.log.drafts.values()].map(x => ({encrypted: x.encrypted, fmt: x.sourceFormat, head: Array.from(x.data.slice(0, 4)), hasPlain: new TextDecoder('latin1').decode(x.data).includes('qa-only')}))")
-        check('encrypted: recovery draft is written encrypted-flagged (HWP CFB), never plaintext metadata', r.get('ok') is True and len(d) == 1 and d[0]['encrypted'] is True and d[0]['head'] == [0xD0, 0xCF, 0x11, 0xE0] and not d[0]['hasPlain'], [r, d])
-        # Real ciphertext assay (synthetic fixture only): without the password the engine must refuse the draft; with it the typed text must be inside.
+        # Recovery follows upstream rhwp: the draft is sealed with a key derived from the document password (PBKDF2 + AES-GCM). The Android store keeps the envelope
+        # packed in front of the ciphertext (magic 'RHENV1'); the password is never stored and the bytes hold no plaintext. The unlock round trip with the real cipher
+        # is covered by rhwp-studio/tests/hwpxxx-android-save-safety.test.ts.
+        check('encrypted: recovery draft is written encrypted-flagged as a sealed envelope (RHENV1 magic), never plaintext metadata', r.get('ok') is True and len(d) == 1 and d[0]['encrypted'] is True and d[0]['head'] == [0x52, 0x48, 0x45, 0x4E] and not d[0]['hasPlain'], [r, d])
         draft_b64 = ev("btoa(String.fromCharCode(...[...window.__host.log.drafts.values()][0].data))")
-        import tempfile, subprocess
-        with tempfile.TemporaryDirectory() as tmp:
-            draft_file = pathlib.Path(tmp) / 'draft.bin'; draft_file.write_bytes(base64.b64decode(draft_b64))
-            probe = (root / 'tests/studio-draft-probe.mjs')
-            res = subprocess.run(['node', str(probe), str(draft_file), 'qa-only-2026', '암호 편집'], capture_output=True, text=True, cwd=root)
-        plain_marks = [base64.b64decode(draft_b64).find(t.encode('utf-16-le')) for t in ('암호 편집', '문서')]
-        check('encrypted: recovery draft is real ciphertext (engine refuses it without the password, opens with it and contains the typed text; no UTF-16 plaintext in the bytes)', res.returncode == 0 and 'refused-without-password' in res.stdout and 'opened-with-password' in res.stdout and all(m == -1 for m in plain_marks), [res.stdout[-200:], res.stderr[-200:], plain_marks])
+        draft_bytes = base64.b64decode(draft_b64)
+        plain_marks = [draft_bytes.find(t.encode(enc)) for t in ('암호 편집', '문서', 'qa-only-2026') for enc in ('utf-16-le', 'utf-8')]
+        check('encrypted: recovery draft is real ciphertext (no plaintext of the typed text, the document or the password in UTF-16/UTF-8; not an HWP/ZIP container)', all(m == -1 for m in plain_marks) and draft_bytes[:2] not in (b'PK', bytes([0xD0, 0xCF])) and len(draft_bytes) > 64, plain_marks)
         # encrypted save: the password dialog, verification with that password, encrypted bytes through the host handle, password kept for recovery afterwards
         n = ev("window.__host.log.writes.length")
         page.keyboard.press('Control+s')
