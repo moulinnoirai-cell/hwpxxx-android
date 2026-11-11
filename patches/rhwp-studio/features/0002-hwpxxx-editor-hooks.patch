@@ -305,7 +305,7 @@ index 9b336e8c3..1d11ecb45 100644
 +  return physical ? physical[1].toLowerCase() : key;
 +}
 diff --git a/rhwp-studio/src/core/font-substitution.ts b/rhwp-studio/src/core/font-substitution.ts
-index 839549189..7d79a1605 100644
+index 839549189..ef463591a 100644
 --- a/rhwp-studio/src/core/font-substitution.ts
 +++ b/rhwp-studio/src/core/font-substitution.ts
 @@ -71,6 +71,9 @@ const GOVERNMENT_SUCCESSORS_BY_SOURCE = new Map(
@@ -326,7 +326,7 @@ index 839549189..7d79a1605 100644
  }
  
  /** 엔진이 준 언어별 체인과 대조할 선언 대체 후보를 반환한다. */
-@@ -356,15 +360,24 @@ function systemFallbackFamilies(fontName: string): string[] {
+@@ -356,15 +360,27 @@ function systemFallbackFamilies(fontName: string): string[] {
    return families;
  }
  
@@ -337,7 +337,8 @@ index 839549189..7d79a1605 100644
 +
  /** 원래 선언은 유지하고, 빠진 글리프를 공급할 일반 텍스트 후보를 같은 순서로 준비·소비한다. */
  export function ordinaryTextFontFamilies(family: string): string[] {
-+  const cached = ordinaryTextFontFamiliesMemo.get(family);
++  const memoOff = (globalThis as { __hwpxxxNoFontMemo?: boolean }).__hwpxxxNoFontMemo === true; // 진단용 스위치(hwpxxx/signature-memo)
++  const cached = memoOff ? undefined : ordinaryTextFontFamiliesMemo.get(family);
 +  if (cached) return [...cached];
    const declared = parseCssFontFamilyList(family);
    if (!declared.length) return [];
@@ -346,14 +347,16 @@ index 839549189..7d79a1605 100644
      pushUniqueFontFamily(families, candidate);
    }
 -  return families;
-+  if (ordinaryTextFontFamiliesMemo.size >= ORDINARY_TEXT_FAMILIES_MEMO_LIMIT) ordinaryTextFontFamiliesMemo.clear();
-+  ordinaryTextFontFamiliesMemo.set(family, families);
++  if (!memoOff) {
++    if (ordinaryTextFontFamiliesMemo.size >= ORDINARY_TEXT_FAMILIES_MEMO_LIMIT) ordinaryTextFontFamiliesMemo.clear();
++    ordinaryTextFontFamiliesMemo.set(family, families);
++  }
 +  return [...families];
  }
  
  /**
 diff --git a/rhwp-studio/src/core/host-font-requests.ts b/rhwp-studio/src/core/host-font-requests.ts
-index 98ada890c..5c6ebba05 100644
+index 98ada890c..ed60a981b 100644
 --- a/rhwp-studio/src/core/host-font-requests.ts
 +++ b/rhwp-studio/src/core/host-font-requests.ts
 @@ -123,9 +123,15 @@ function hancomEquationFamilies(root: LayerEquationLayoutBox | undefined): Set<s
@@ -365,7 +368,7 @@ index 98ada890c..5c6ebba05 100644
    const selectTextFaces = (family: string, style?: LayerTextStyle) => {
 +    const requested = hostFontStyle(style);
 +    const faceKey = `${family}\u0000${requested.weight}\u0000${requested.slant}`;
-+    if (seenFaces.has(faceKey)) return;
++    if (seenFaces.has(faceKey) && (globalThis as { __hwpxxxNoFontMemo?: boolean }).__hwpxxxNoFontMemo !== true) return;
 +    seenFaces.add(faceKey);
      for (const candidate of ordinaryTextFontFamilies(family)) {
 -      const record = resolveRendererLocalFont(candidate, hostFontStyle(style));

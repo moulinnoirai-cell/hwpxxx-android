@@ -19,8 +19,8 @@
   "featurePatchDir": "patches/rhwp-studio/features",
   "androidPatchDir": "patches/rhwp-studio/android",
   "featurePatches": {
-    "0001-hwpxxx-new-modules.patch": "191d16879da848ad3a3a9603c8dea475de55f84e6022af80eb7679f0549a6243",
-    "0002-hwpxxx-editor-hooks.patch": "fa69f04e827f9ef2ef754a4ee187e9a360e46f21d6c012f2e478872f03129820"
+    "0001-hwpxxx-new-modules.patch": "67144cb006935886f8161c85bdaa883affcf5b51e7e83d8fb04c6387d1acdea9",
+    "0002-hwpxxx-editor-hooks.patch": "7c16a87f461a023effb4ec096577a9f4f338b6834427aa7e3dd8715001f05081"
   },
   "androidPatches": {
     "0101-android-new-modules.patch": "7b50a63eef6791c5fab6242b413327eb76f301e519f3c6ab2cba9a4b73afe0a1",

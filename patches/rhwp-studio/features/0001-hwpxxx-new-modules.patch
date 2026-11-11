@@ -983,10 +983,10 @@ index 000000000..238c57e4e
 +}
 diff --git a/rhwp-studio/src/hwpxxx/signature-memo.ts b/rhwp-studio/src/hwpxxx/signature-memo.ts
 new file mode 100644
-index 000000000..4d1ed6d30
+index 000000000..bd5e21a3d
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/signature-memo.ts
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,30 @@
 +/**
 + * [hwpxxx] 입력 지연 완화: 글꼴 이름 치환 결과의 서명 기반 메모.
 + *
@@ -1005,6 +1005,8 @@ index 000000000..4d1ed6d30
 +  let current = signature();
 +  const memo = new Map<string, string>();
 +  return (input: string): string => {
++    // 진단용 스위치: 시험이 메모를 끄고 같은 장면을 다시 그려 메모가 결과를 바꾸는지 가린다.
++    if ((globalThis as { __hwpxxxNoFontMemo?: boolean }).__hwpxxxNoFontMemo === true) return compute(input);
 +    const now = signature();
 +    if (now !== current) { memo.clear(); current = now; }
 +    const hit = memo.get(input);
