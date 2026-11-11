@@ -1,5 +1,5 @@
 diff --git a/rhwp-studio/index.html b/rhwp-studio/index.html
-index 72c5142..978e89e 100644
+index 72c5142ec..978e89ea5 100644
 --- a/rhwp-studio/index.html
 +++ b/rhwp-studio/index.html
 @@ -12,13 +12,13 @@
@@ -90,7 +90,7 @@ index 72c5142..978e89e 100644
            </div>
          </div>
 diff --git a/rhwp-studio/src/command/commands/edit.ts b/rhwp-studio/src/command/commands/edit.ts
-index 1f54a50..3c4c19b 100644
+index 1f54a501a..3c4c19b1f 100644
 --- a/rhwp-studio/src/command/commands/edit.ts
 +++ b/rhwp-studio/src/command/commands/edit.ts
 @@ -2,6 +2,7 @@ import type { CommandDef } from '../types';
@@ -117,7 +117,7 @@ index 1f54a50..3c4c19b 100644
    },
    {
 diff --git a/rhwp-studio/src/command/commands/hyperlink.ts b/rhwp-studio/src/command/commands/hyperlink.ts
-index daf5c98..35cf2d9 100644
+index daf5c98f0..35cf2d99d 100644
 --- a/rhwp-studio/src/command/commands/hyperlink.ts
 +++ b/rhwp-studio/src/command/commands/hyperlink.ts
 @@ -8,7 +8,7 @@ export const hyperlinkCommand: CommandDef = {
@@ -130,7 +130,7 @@ index daf5c98..35cf2d9 100644
    canExecute: ctx => ctx.hasDocument && ctx.isEditable && !ctx.isFormMode
      && !ctx.inCellSelectionMode && !ctx.inPictureObjectSelection && !ctx.inTableObjectSelection,
 diff --git a/rhwp-studio/src/command/commands/insert.ts b/rhwp-studio/src/command/commands/insert.ts
-index 421cb67..f9e8d42 100644
+index 421cb67d3..f9e8d4229 100644
 --- a/rhwp-studio/src/command/commands/insert.ts
 +++ b/rhwp-studio/src/command/commands/insert.ts
 @@ -1,5 +1,6 @@
@@ -161,8 +161,67 @@ index 421cb67..f9e8d42 100644
    {
      id: 'insert:bookmark',
      opensDialog: true,
+diff --git a/rhwp-studio/src/command/commands/page.ts b/rhwp-studio/src/command/commands/page.ts
+index 905adca0a..bcd7c28f1 100644
+--- a/rhwp-studio/src/command/commands/page.ts
++++ b/rhwp-studio/src/command/commands/page.ts
+@@ -7,6 +7,8 @@ import { ColumnSettingsDialog } from '@/ui/column-settings-dialog';
+ import { NewNumberDialog } from '@/ui/new-number-dialog';
+ import { InsertFieldInHeaderFooterCommand } from '@/engine/command';
+ import { emitHeaderFooterModeChanged } from '@/engine/header-footer-mode';
++import { showToast } from '@/ui/toast';
++import type { InputHandler } from '@/engine/input-handler';
+ 
+ import { t } from '../../i18n/index.ts';
+ function stub(id: string, label: string, icon?: string, shortcut?: string): CommandDef {
+@@ -217,6 +219,21 @@ function applyHfTemplate(
+   setTimeout(() => textarea?.focus(), 50);
+ }
+ 
++/**
++ * [hwpxxx] 쪽·단 나누기 공통 준비. 표 칸·글상자·머리말/꼬리말·각주 안에서는 본문 문단 번호로 나누기를 넣으면
++ * 엉뚱한 문단이 갈라지므로 안내만 하고 하지 않는다. 한글 조합 중이면 먼저 확정해 마지막 글자가 빠지거나 어긋나지 않게 한다.
++ * 쓸 수 있으면 입력 처리기를, 아니면 null 을 돌려준다.
++ */
++function prepareBodyBreak(ih: InputHandler | null | undefined, what: string): InputHandler | null {
++  if (!ih) return null;
++  ih.commitComposition();
++  if (!ih.isInBodyText()) {
++    showToast({ message: `표·글상자·머리말/꼬리말·각주 안에서는 ${what}를 넣을 수 없어요`, durationMs: 2500 });
++    return null;
++  }
++  return ih;
++}
++
+ export const pageCommands: CommandDef[] = [
+   {
+     id: 'page:setup',
+@@ -447,9 +464,9 @@ export const pageCommands: CommandDef[] = [
+     id: 'page:break',
+     label: t('command.page.break.label'),
+     shortcutLabel: 'Ctrl+Enter',
+-    canExecute: (ctx) => ctx.hasDocument,
++    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode,
+     execute(services) {
+-      const ih = services.getInputHandler();
++      const ih = prepareBodyBreak(services.getInputHandler(), '쪽 나누기');
+       if (!ih) return;
+       const pos = ih.getPosition();
+       try {
+@@ -510,9 +527,9 @@ export const pageCommands: CommandDef[] = [
+     id: 'page:column-break',
+     label: t('command.page.columnBreak.label'),
+     shortcutLabel: 'Ctrl+Shift+Enter',
+-    canExecute: (ctx) => ctx.hasDocument,
++    canExecute: (ctx) => ctx.hasDocument && !ctx.isFormMode,
+     execute(services) {
+-      const ih = services.getInputHandler();
++      const ih = prepareBodyBreak(services.getInputHandler(), '단 나누기');
+       if (!ih) return;
+       const pos = ih.getPosition();
+       try {
 diff --git a/rhwp-studio/src/command/commands/table.ts b/rhwp-studio/src/command/commands/table.ts
-index 107bd7b..6ecc48b 100644
+index 107bd7bb8..6ecc48b24 100644
 --- a/rhwp-studio/src/command/commands/table.ts
 +++ b/rhwp-studio/src/command/commands/table.ts
 @@ -982,14 +982,14 @@ export const tableCommands: CommandDef[] = [
@@ -183,7 +242,7 @@ index 107bd7b..6ecc48b 100644
      execute() {},
    },
 diff --git a/rhwp-studio/src/command/shortcut-map.ts b/rhwp-studio/src/command/shortcut-map.ts
-index 9b336e8..b47321c 100644
+index 9b336e8c3..1d11ecb45 100644
 --- a/rhwp-studio/src/command/shortcut-map.ts
 +++ b/rhwp-studio/src/command/shortcut-map.ts
 @@ -60,6 +60,11 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
@@ -198,7 +257,7 @@ index 9b336e8..b47321c 100644
    // 줌
    [{ key: '=', ctrl: true }, 'view:zoom-in'],
    [{ key: '+', ctrl: true }, 'view:zoom-in'],
-@@ -156,6 +161,45 @@ export function matchShortcut(
+@@ -156,6 +161,46 @@ export function matchShortcut(
      if ((def.alt ?? false) !== e.altKey) continue;
      if (eventKey === def.key) return cmdId;
      if (def.code && eventCode === def.code.toLowerCase()) return cmdId;
@@ -206,7 +265,7 @@ index 9b336e8..b47321c 100644
 +    // 엇갈린다. 문자가 영문·숫자가 아닐 때만 물리 키(e.code)로 맞춘다 — 영문 배열은 그대로다.
 +    if ((def.ctrl || def.alt) && !/^[a-z0-9]$/.test(eventKey)) {
 +      const physical = physicalCodeOf(def.key);
-+      if (physical && eventCode === physical) return cmdId;
++      if (physical && (eventCode === physical || (physical === 'enter' && eventCode === 'numpadenter'))) return cmdId;
 +    }
    }
    return null;
@@ -234,7 +293,8 @@ index 9b336e8..b47321c 100644
 +export function physicalCodeOf(key: string): string | null {
 +  if (/^[a-z]$/.test(key)) return 'key' + key;
 +  if (/^[0-9]$/.test(key)) return 'digit' + key;
-+  return ({ '=': 'equal', '-': 'minus', '[': 'bracketleft', ']': 'bracketright' } as Record<string, string>)[key] ?? null;
++  // [hwpxxx] Enter 도 물리 키로 맞춘다: 한글 조합 중에는 e.key 가 'Process' 라 Ctrl+Enter(쪽 나누기) 등이 안 먹었다.
++  return ({ '=': 'equal', '-': 'minus', '[': 'bracketleft', ']': 'bracketright', 'enter': 'enter' } as Record<string, string>)[key] ?? null;
 +}
 +
 +/** 연속 키 두 번째 글자 — 한글 입력 상태·조합 중에도 물리 키로 영문 글자를 구한다. */
@@ -245,7 +305,7 @@ index 9b336e8..b47321c 100644
 +  return physical ? physical[1].toLowerCase() : key;
 +}
 diff --git a/rhwp-studio/src/core/memo.ts b/rhwp-studio/src/core/memo.ts
-index 0078b17..c0d0dc1 100644
+index 0078b17d7..c0d0dc180 100644
 --- a/rhwp-studio/src/core/memo.ts
 +++ b/rhwp-studio/src/core/memo.ts
 @@ -41,3 +41,26 @@ function sameCellPath(path: readonly MemoPathEntry[], cellPath: readonly [number
@@ -276,7 +336,7 @@ index 0078b17..c0d0dc1 100644
 +  return new Error(raw);
 +}
 diff --git a/rhwp-studio/src/core/mutation-method-registry.ts b/rhwp-studio/src/core/mutation-method-registry.ts
-index 5b2bb30..4518d6e 100755
+index 5b2bb303c..4518d6ea0 100755
 --- a/rhwp-studio/src/core/mutation-method-registry.ts
 +++ b/rhwp-studio/src/core/mutation-method-registry.ts
 @@ -75,6 +75,7 @@ export const MUTATING_METHODS: readonly string[] = [
@@ -287,8 +347,33 @@ index 5b2bb30..4518d6e 100755
    'setFieldValue', 'setFieldValueByName', 'removeFieldAt', 'insertClickHereField',
    'updateClickHereProps', 'setFormValue', 'setFormValueInCell', 'applyFormActionUpdates',
    'replaceText', 'replaceOne', 'replaceAll',
+diff --git a/rhwp-studio/src/engine/caret-renderer.ts b/rhwp-studio/src/engine/caret-renderer.ts
+index 1e2a69864..3e33504ef 100644
+--- a/rhwp-studio/src/engine/caret-renderer.ts
++++ b/rhwp-studio/src/engine/caret-renderer.ts
+@@ -103,7 +103,7 @@ export class CaretRenderer {
+   }
+ 
+   /** IME 조합 오버레이를 표시한다 */
+-  showComposition(startRect: CursorRect, charWidth: number, zoom: number, text: string, fontFamily: string): void {
++  showComposition(startRect: CursorRect, charWidth: number, zoom: number, text: string, fontFamily: string, font?: string): void {
+     this.ensureAttached();
+     this.isCompMode = true;
+ 
+@@ -129,6 +129,11 @@ export class CaretRenderer {
+     this.compEl.style.transform = startRect.rotation ? `rotate(${startRect.rotation}deg)` : '';
+     this.compEl.style.fontSize = `${box.h * 0.85 * zoom}px`;
+     this.compEl.style.fontFamily = fontFamily || 'sans-serif';
++    // [hwpxxx] 캔버스와 같은 경로로 푼 글꼴·실제 크기·굵기·기울임(shorthand 가 거부되면 위 기본값이 남는다).
++    if (font) {
++      this.compEl.style.font = font;
++      if (!this.compEl.style.fontFamily) this.compEl.style.fontFamily = fontFamily || 'sans-serif';
++    }
+     this.compEl.style.lineHeight = `${h}px`;
+     this.compEl.textContent = text;
+     this.compEl.style.display = 'block';
 diff --git a/rhwp-studio/src/engine/cursor.ts b/rhwp-studio/src/engine/cursor.ts
-index b2eb731..295a4d7 100644
+index b2eb731e1..295a4d7dd 100644
 --- a/rhwp-studio/src/engine/cursor.ts
 +++ b/rhwp-studio/src/engine/cursor.ts
 @@ -1867,12 +1867,51 @@ export class CursorState {
@@ -345,10 +430,13 @@ index b2eb731..295a4d7 100644
  
    /** 제외된 셀 목록을 반환한다. */
 diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
-index 6f471e6..d974222 100755
+index 6f471e683..be4a3d2f5 100755
 --- a/rhwp-studio/src/engine/input-handler-keyboard.ts
 +++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
-@@ -3,7 +3,8 @@ import { isBodyControl } from './picture-hit-policy';
+@@ -1,9 +1,11 @@
+ import { isBodyControl } from './picture-hit-policy';
++import { showToast } from '@/ui/toast';
+ /** input-handler keyboard methods — extracted from InputHandler class */
  /* eslint-disable @typescript-eslint/no-explicit-any */
  
  import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, cellParaIndexOf } from './command';
@@ -358,7 +446,7 @@ index 6f471e6..d974222 100755
  import {
    resolveCellBlockCtrlShiftS,
    resolveCellBlockLetterShortcut,
-@@ -512,53 +513,6 @@ export async function writeImageToClipboard(
+@@ -512,53 +514,6 @@ export async function writeImageToClipboard(
    await navigator.clipboard.write([item]);
  }
  
@@ -412,7 +500,7 @@ index 6f471e6..d974222 100755
  
  /**
   * PgUp/PgDn 처리 — 화면을 쪽 단위로 옮기고, 캐럿을 **화면상 같은 자리**에 남긴다.
-@@ -727,10 +681,9 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -727,10 +682,9 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
    this._cellBlockLetterImeGuard?.reset();
  
    // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ?) ───
@@ -425,7 +513,7 @@ index 6f471e6..d974222 100755
      if (cmdId && this.dispatcher) {
        e.preventDefault();
        this.dispatcher.dispatch(cmdId);
-@@ -743,28 +696,25 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -743,28 +697,25 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
    // 분기를 갖고 있어 예외도 M 에만 둔다 — K/V/G 는 IME 경로 자체가 없다.)
    if (this._pendingChordM && !(e.isComposing || e.keyCode === 229)) {
      this._pendingChordM = false;
@@ -459,7 +547,21 @@ index 6f471e6..d974222 100755
      if (cmdId && this.dispatcher) {
        e.preventDefault();
        this.dispatcher.dispatch(cmdId);
-@@ -840,6 +790,22 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -814,6 +765,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+     return;
+   }
+ 
++  // [hwpxxx] 연속 모양 복사 중 Escape → 해제(선택·다른 Escape 동작보다 먼저)
++  if (e.key === 'Escape' && !e.isComposing && this.releaseCopiedFormat()) {
++    e.preventDefault();
++    showToast({ message: '모양 복사를 해제했습니다', durationMs: 1500 });
++    return;
++  }
++
+   // 그림 배치 모드에서 Escape → 취소
+   if (this.imagePlacementMode && e.key === 'Escape') {
+     e.preventDefault();
+@@ -840,6 +798,22 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
        this._pendingChordM = true;
        return;
      }
@@ -482,7 +584,7 @@ index 6f471e6..d974222 100755
      // chord 2번째 키 — _pendingChordM 활성화 시 e.code 영역 영역 chordMapM lookup
      if (this._pendingChordM) {
        this._pendingChordM = false;
-@@ -1651,19 +1617,19 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
+@@ -1651,19 +1625,19 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
    }
  
    // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M) ───
@@ -505,7 +607,7 @@ index 6f471e6..d974222 100755
      e.preventDefault();
      this._pendingChordG = true;
      return;
-@@ -2153,6 +2119,9 @@ export function extractHwpJsonModel(html: string): string | null {
+@@ -2153,6 +2127,9 @@ export function extractHwpJsonModel(html: string): string | null {
   * 호출한 쪽이 종전 HTML 경로로 되돌아가게 한다.
   */
  function pasteHwpJsonModel(this: any, model: string, hasSelection: boolean): boolean {
@@ -515,7 +617,7 @@ index 6f471e6..d974222 100755
    let ok = false;
    try {
      this.executeOperation({
-@@ -2160,13 +2129,11 @@ function pasteHwpJsonModel(this: any, model: string, hasSelection: boolean): boo
+@@ -2160,13 +2137,11 @@ function pasteHwpJsonModel(this: any, model: string, hasSelection: boolean): boo
        operationType: 'pasteHwpJson',
        operation: (wasm: WasmBridge) => {
          const p = this.cursor.getPosition();
@@ -531,7 +633,7 @@ index 6f471e6..d974222 100755
          return positionAfterPasteResult(p, parsed);
        },
 diff --git a/rhwp-studio/src/engine/input-handler-mouse.ts b/rhwp-studio/src/engine/input-handler-mouse.ts
-index 0c50823..e329faf 100644
+index 0c5082395..e329faf5f 100644
 --- a/rhwp-studio/src/engine/input-handler-mouse.ts
 +++ b/rhwp-studio/src/engine/input-handler-mouse.ts
 @@ -1,6 +1,7 @@
@@ -552,18 +654,19 @@ index 0c50823..e329faf 100644
    const hyperlinkHit = hyperlinkAtPointer(this, e);
    if (hyperlinkHit) {
 diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
-index 7d25111..fc7446d 100644
+index 7d2511163..af8af093d 100644
 --- a/rhwp-studio/src/engine/input-handler.ts
 +++ b/rhwp-studio/src/engine/input-handler.ts
-@@ -63,6 +63,7 @@ import { showInitialCaretAndPublishFocus } from './initial-caret-focus';
+@@ -63,6 +63,8 @@ import { showInitialCaretAndPublishFocus } from './initial-caret-focus';
  import { CaretLayoutReveal } from './caret-layout-reveal';
  import { emitHeaderFooterModeChanged } from './header-footer-mode';
  import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
 +import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
++import { compositionCssFont } from '@/hwpxxx/composition-font';
  import { ImeNavigationGuard } from './ime-navigation-guard';
  
  const SVG_NS = 'http://www.w3.org/2000/svg';
-@@ -124,7 +125,11 @@ function isSameSelectionCellContainer(a: DocumentPosition, b: DocumentPosition):
+@@ -124,7 +126,13 @@ function isSameSelectionCellContainer(a: DocumentPosition, b: DocumentPosition):
  type FormatCopyState = {
    charProps: Partial<CharProperties>;
    paraProps: Partial<ParaProperties>;
@@ -572,10 +675,12 @@ index 7d25111..fc7446d 100644
    cellProps?: Partial<CellProperties>;
 +  /** 셀 블록에 붙일 때 본문 모양도 함께 적용하는가 */
 +  includeBody: boolean;
++  /** [hwpxxx] 연속 적용: 붙인 뒤에도 복사 상태를 유지한다(Esc·새 복사·문서 전환 때 해제) */
++  continuous: boolean;
  };
  
  type PagePoint = {
-@@ -193,7 +198,8 @@ const FORMAT_COPY_PARA_KEYS: Array<keyof ParaProperties> = [
+@@ -193,7 +201,8 @@ const FORMAT_COPY_PARA_KEYS: Array<keyof ParaProperties> = [
    'borderIgnoreMargin',
  ];
  
@@ -585,7 +690,7 @@ index 7d25111..fc7446d 100644
    'paddingLeft',
    'paddingRight',
    'paddingTop',
-@@ -205,9 +211,11 @@ const FORMAT_COPY_CELL_KEYS: Array<keyof CellProperties> = [
+@@ -205,9 +214,11 @@ const FORMAT_COPY_CELL_KEYS: Array<keyof CellProperties> = [
    'cellProtect',
    'fieldName',
    'editableInForm',
@@ -598,7 +703,7 @@ index 7d25111..fc7446d 100644
  function pickDefined<T extends object, K extends keyof T>(source: T, keys: K[]): Partial<T> {
    const result: Partial<T> = {};
    for (const key of keys) {
-@@ -266,13 +274,21 @@ function fitDroppedImageSizeRaw(
+@@ -266,13 +277,21 @@ function fitDroppedImageSizeRaw(
    };
  }
  
@@ -622,7 +727,16 @@ index 7d25111..fc7446d 100644
    return normalized;
  }
  
-@@ -3509,6 +3525,14 @@ export class InputHandler {
+@@ -766,6 +785,8 @@ export class InputHandler {
+     // `main.ts loadBytes()` 가 문서를 갈아치운 직후 이 이벤트를 낸다.
+     eventBus.on('document-swapped', () => {
+       this.clearTableResizeRuntimeCache();
++      // [hwpxxx] 다른 문서의 서식을 붙이지 않도록 연속 모양 복사는 문서가 바뀌면 해제한다.
++      this.formatCopyState = null;
+     });
+ 
+     // 형광펜 색 선택: 블록이 있으면 즉시 칠하고, 없으면 연속 형광펜 모드로 진입한다.
+@@ -3509,6 +3530,14 @@ export class InputHandler {
    }
  
    /** IME 조합 완료 — 조합 텍스트를 Command로 기록 */
@@ -637,7 +751,46 @@ index 7d25111..fc7446d 100644
    private onCompositionEnd(): void {
      _text.onCompositionEnd.call(this);
    }
-@@ -5972,57 +5996,105 @@ export class InputHandler {
+@@ -3912,11 +3941,17 @@ export class InputHandler {
+             const text = this.textarea.value || '';
+             // 현재 커서 위치의 글꼴 정보
+             let fontFamily = 'sans-serif';
++            let overlayFont: string | undefined;
+             try {
+               const props = this.getCharPropertiesAtCursor();
+               if (props.fontFamily) fontFamily = props.fontFamily;
++              // [hwpxxx] 오버레이도 캔버스와 같은 글꼴 해석·실제 크기·굵기·기울임을 쓴다.
++              overlayFont = compositionCssFont({
++                fontFamily: props.fontFamily, fontSize: props.fontSize, bold: props.bold, italic: props.italic,
++                zoom, boxHeight: startRect.height,
++              });
+             } catch { /* fallback */ }
+-            this.caret.showComposition(startRect, charWidth, zoom, text, fontFamily);
++            this.caret.showComposition(startRect, charWidth, zoom, text, fontFamily, overlayFont);
+           }
+         } catch {
+           // getCursorRect 실패 시 일반 캐럿
+@@ -5045,6 +5080,19 @@ export class InputHandler {
+   /** 모양 복사 상태가 있는가? */
+   hasCopiedFormat(): boolean { return this.formatCopyState !== null; }
+ 
++  /** [hwpxxx] 커서가 본문 문단에 있는가(표 칸·글상자·머리말/꼬리말·각주 밖). 쪽·단 나누기처럼 본문 문단 번호만 받는 편집의 조건 */
++  isInBodyText(): boolean {
++    return this.cursor.getPosition().parentParaIndex === undefined
++      && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote();
++  }
++
++  /** [hwpxxx] 연속 적용 중인 모양 복사를 해제한다. 해제할 것이 있었으면 true */
++  releaseCopiedFormat(): boolean {
++    if (!this.formatCopyState) return false;
++    this.formatCopyState = null;
++    return true;
++  }
++
+   /** 현재 커서 위치를 반환한다 */
+   getCursorPosition(): DocumentPosition { return this.cursor.getPosition(); }
+ 
+@@ -5972,58 +6020,110 @@ export class InputHandler {
    }
  
    private applyCopiedFormatToCurrentTarget(): boolean {
@@ -656,7 +809,7 @@ index 7d25111..fc7446d 100644
 +      if (!hasCellProps && !state.includeBody) return false;
 +      if (hasCellProps && !this.applyCopiedCellPropsToSelection(state.cellProps!)) return false;
 +      if (state.includeBody) this.applyCopiedBodyFormat(state, null);
-+      this.formatCopyState = null;
++      if (!state.continuous) this.formatCopyState = null;
 +      this.focusTextarea();
 +      return true;
      }
@@ -671,9 +824,11 @@ index 7d25111..fc7446d 100644
 -    if (Object.keys(paraProps).length > 0) {
 -      this.applyParaPropsToRange(sel.start, sel.end, paraProps);
 -    }
+-    // 한컴 호환: 복사한 모양은 한 번 붙여넣으면 자동 해제한다.
+-    this.formatCopyState = null;
 +    this.applyCopiedBodyFormat(state, sel);
-     // 한컴 호환: 복사한 모양은 한 번 붙여넣으면 자동 해제한다.
-     this.formatCopyState = null;
++    // [hwpxxx] 연속 적용(기본): 복사한 모양을 Esc·새 복사·문서 전환 전까지 유지한다. 끈 경우만 한컴처럼 한 번 붙이면 해제한다.
++    if (!state.continuous) this.formatCopyState = null;
      this.focusTextarea();
      return true;
    }
@@ -769,11 +924,16 @@ index 7d25111..fc7446d 100644
 +      styleId,
        cellProps: cellProps ? JSON.parse(JSON.stringify(cellProps)) : undefined,
 +      includeBody: !cellProps || options.tableTarget === 'both',
++      continuous: options.continuous !== false,
      };
++    if (this.formatCopyState.continuous) {
++      showToast({ message: '모양을 복사했습니다. 적용할 글을 선택하고 Alt+C 로 붙이세요 (Esc 로 해제)', durationMs: 3000 });
++    }
      this.focusTextarea();
    }
+ 
 diff --git a/rhwp-studio/src/i18n/locales/en.ts b/rhwp-studio/src/i18n/locales/en.ts
-index 01c5847..5094ac8 100644
+index 01c584720..5094ac831 100644
 --- a/rhwp-studio/src/i18n/locales/en.ts
 +++ b/rhwp-studio/src/i18n/locales/en.ts
 @@ -1882,6 +1882,7 @@ const catalog = {
@@ -785,7 +945,7 @@ index 01c5847..5094ac8 100644
    "ui.btnItalic.tooltip": "Italic (Ctrl+I)",
    "ui.btnLsDown.tooltip": "Decrease line spacing (-5%)",
 diff --git a/rhwp-studio/src/i18n/locales/ko.ts b/rhwp-studio/src/i18n/locales/ko.ts
-index bdfefc7..403b59d 100644
+index bdfefc703..403b59dd9 100644
 --- a/rhwp-studio/src/i18n/locales/ko.ts
 +++ b/rhwp-studio/src/i18n/locales/ko.ts
 @@ -1882,6 +1882,7 @@ const catalog = {
@@ -797,7 +957,7 @@ index bdfefc7..403b59d 100644
    "ui.btnItalic.tooltip": "기울임 (Ctrl+I)",
    "ui.btnLsDown.tooltip": "줄 간격 감소 (-5%)",
 diff --git a/rhwp-studio/src/style.css b/rhwp-studio/src/style.css
-index 8d08dbf..e5e454b 100644
+index 8d08dbfa5..e5e454b2d 100644
 --- a/rhwp-studio/src/style.css
 +++ b/rhwp-studio/src/style.css
 @@ -49,3 +49,38 @@
@@ -840,7 +1000,7 @@ index 8d08dbf..e5e454b 100644
 +.hwpxxx-tooltip-reason { flex-basis: 100%; color: var(--color-text-muted, #777); font-size: 11px; }
 +@media (prefers-reduced-motion: reduce) { .hwpxxx-tooltip { transition: none; } }
 diff --git a/rhwp-studio/src/styles/style-bar.css b/rhwp-studio/src/styles/style-bar.css
-index 530ca0d..d12c8a0 100644
+index 530ca0dcf..d12c8a0fc 100644
 --- a/rhwp-studio/src/styles/style-bar.css
 +++ b/rhwp-studio/src/styles/style-bar.css
 @@ -530,6 +530,14 @@
@@ -914,7 +1074,7 @@ index 530ca0d..d12c8a0 100644
 +  border-radius: 0 0 2px 0;
 +}
 diff --git a/rhwp-studio/src/ui/para-shape-dialog.ts b/rhwp-studio/src/ui/para-shape-dialog.ts
-index 310b0b1..59dd296 100644
+index 310b0b11c..59dd29650 100644
 --- a/rhwp-studio/src/ui/para-shape-dialog.ts
 +++ b/rhwp-studio/src/ui/para-shape-dialog.ts
 @@ -76,6 +76,22 @@ function ptToRaw(pt: number): number {
@@ -965,7 +1125,7 @@ index 310b0b1..59dd296 100644
  
      // ── 확장 탭
 diff --git a/rhwp-studio/src/ui/style-toolbar-overflow.ts b/rhwp-studio/src/ui/style-toolbar-overflow.ts
-index 47e3b33..7ad2be0 100644
+index 47e3b33bd..7ad2be00a 100644
 --- a/rhwp-studio/src/ui/style-toolbar-overflow.ts
 +++ b/rhwp-studio/src/ui/style-toolbar-overflow.ts
 @@ -1,8 +1,9 @@
@@ -981,7 +1141,7 @@ index 47e3b33..7ad2be0 100644
  export const STYLE_TOOLBAR_OVERFLOW_QUERY = `(max-width: ${STYLE_TOOLBAR_COMMAND_INLINE_MIN - 1}px), (min-width: ${STYLE_TOOLBAR_ONE_ROW_MIN}px) and (max-width: ${STYLE_TOOLBAR_FULL_ROW_MIN - 1}px)`;
  
 diff --git a/rhwp-studio/src/ui/toolbar.ts b/rhwp-studio/src/ui/toolbar.ts
-index 10770ff..5ca111a 100644
+index 10770ff6d..5ca111af4 100644
 --- a/rhwp-studio/src/ui/toolbar.ts
 +++ b/rhwp-studio/src/ui/toolbar.ts
 @@ -5,7 +5,7 @@ import type { CharProperties, ParaProperties } from '@/core/types';
@@ -1168,7 +1328,7 @@ index 10770ff..5ca111a 100644
      }
    }
 diff --git a/rhwp-studio/tests/accessibility-shell.test.ts b/rhwp-studio/tests/accessibility-shell.test.ts
-index 841733c..b4b4c30 100644
+index 841733c95..b4b4c30be 100644
 --- a/rhwp-studio/tests/accessibility-shell.test.ts
 +++ b/rhwp-studio/tests/accessibility-shell.test.ts
 @@ -15,7 +15,7 @@ test('편집기 셸은 제목과 header, main, footer landmark를 제공한다',
@@ -1181,7 +1341,7 @@ index 841733c..b4b4c30 100644
    assert.match(html, /<main id="editor-area" aria-label="문서 편집 영역"[^>]*>/);
    assert.match(html, /<footer id="status-bar">/);
 diff --git a/rhwp-studio/tests/mutation-routing-guard.test.ts b/rhwp-studio/tests/mutation-routing-guard.test.ts
-index 10d57c1..43522e9 100644
+index 10d57c1a1..43522e9af 100644
 --- a/rhwp-studio/tests/mutation-routing-guard.test.ts
 +++ b/rhwp-studio/tests/mutation-routing-guard.test.ts
 @@ -58,7 +58,7 @@ function bridgePublicMethods(): string[] {
@@ -1194,7 +1354,7 @@ index 10d57c1..43522e9 100644
  test('MUTATING_VERB 는 MUTATING_METHODS 전 항목을 커버한다(drift 사각 방지)', () => {
    // 목록에 있으나 동사 패턴에 안 걸리는 이름이 있으면, 그 계열의 신규 브리지
 diff --git a/rhwp-studio/tests/responsive-toolbar-layout.test.ts b/rhwp-studio/tests/responsive-toolbar-layout.test.ts
-index effe38f..d3cd3db 100644
+index effe38f6c..d3cd3db6b 100644
 --- a/rhwp-studio/tests/responsive-toolbar-layout.test.ts
 +++ b/rhwp-studio/tests/responsive-toolbar-layout.test.ts
 @@ -64,7 +64,7 @@ test('style ribbon boundaries are content-derived and paragraph overflow never a
@@ -1207,7 +1367,7 @@ index effe38f..d3cd3db 100644
    assert.match(
      styleBar,
 diff --git a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
-index 0b0211d..a645e8c 100644
+index 0b0211da9..a645e8cc1 100644
 --- a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
 +++ b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
 @@ -89,7 +89,7 @@ test('only real menus retain dropdown affordances', () => {
@@ -1230,7 +1390,7 @@ index 0b0211d..a645e8c 100644
  
  test('two-row ribbon keeps the fixed 136px font field and 460px command contract', () => {
 diff --git a/rhwp-studio/tests/style-toolbar-overflow.test.ts b/rhwp-studio/tests/style-toolbar-overflow.test.ts
-index 79459f6..6321910 100644
+index 79459f6bc..6321910b0 100644
 --- a/rhwp-studio/tests/style-toolbar-overflow.test.ts
 +++ b/rhwp-studio/tests/style-toolbar-overflow.test.ts
 @@ -13,10 +13,10 @@ import {

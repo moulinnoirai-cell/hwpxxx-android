@@ -136,7 +136,7 @@ after(async () => {
 
 /** Contract-shaped test double of the native workspace (docs/DEX-WORKSPACE.md). NOT the Java WorkspaceModel. */
 class FakeNative {
-  constructor({workspace = true, maxTabs = 8} = {}) {
+  constructor({workspace = true, maxTabs = 5} = {}) {
     this.workspace = workspace; this.maxTabs = maxTabs; this.tabs = []; this.activeId = null; this.primaryId = null; this.secondaryId = null; this.split = false;
     this.pending = new Map(); this.views = new Map(); this.log = []; this.closeWaiters = new Map(); this.finished = false; this.mru = [];
     this.onTabAdded = null; this.recents = [];
@@ -326,7 +326,7 @@ async function until(fn, message, timeout = 8000) {
   const end = Date.now() + timeout; let last;
   for (;;) { last = await fn(); if (last) return last; if (Date.now() > end) assert.fail('timeout: ' + message); await new Promise(resolve => setTimeout(resolve, 50)); }
 }
-async function startWorkspace({target = 'fake', width = 1280, views = 1, workspace = true, maxTabs = 8, capability, init} = {}) {
+async function startWorkspace({target = 'fake', width = 1280, views = 1, workspace = true, maxTabs = 5, capability, init} = {}) {
   const native = new FakeNative({workspace, maxTabs});
   const first = native.add(null);
   const opened = [await openView(native, first, {target, width, capability, init})];

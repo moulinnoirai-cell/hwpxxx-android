@@ -16,7 +16,14 @@ import java.util.regex.Pattern;
  * Unknown/malformed ids never throw and never mutate (the call returns false/null).
  */
 public final class WorkspaceModel {
-    public static final int MAX_TABS = 8;
+    /** Tabs that may be open (and the limit shown to the user). New tabs are refused at or above this. */
+    public static final int MAX_TABS = 5;
+    /**
+     * A saved workspace written by an older build (limit 8) may hold more than {@link #MAX_TABS} tabs. Such a state is restored as it is
+     * instead of being discarded, so no tab or its recovery data is lost: the tabs stay open until the user closes them, and new tabs
+     * are refused while {@code size() >= MAX_TABS}. More than this is not a state any build wrote and is refused as invalid.
+     */
+    public static final int RESTORE_MAX_TABS = 8;
     public static final int MAX_TITLE = 120;
     private static final Pattern UUID_RE = Pattern.compile("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
@@ -138,7 +145,7 @@ public final class WorkspaceModel {
 
     public static WorkspaceModel restore(State s) {
         if (s == null) throw new IllegalArgumentException("state");
-        if (s.tabIds.isEmpty() || s.tabIds.size() > MAX_TABS) throw new IllegalArgumentException("tab count");
+        if (s.tabIds.isEmpty() || s.tabIds.size() > RESTORE_MAX_TABS) throw new IllegalArgumentException("tab count");
         WorkspaceModel m = new WorkspaceModel();
         Set<String> seen = new HashSet<>();
         for (String raw : s.tabIds) {
@@ -186,6 +193,8 @@ public final class WorkspaceModel {
     public boolean isEmpty() { return tabs.isEmpty(); }
     public boolean contains(String id) { return indexOf(id) >= 0; }
     public boolean canCreateTab() { return tabs.size() < MAX_TABS; }
+    /** True when an older build's workspace with more than {@link #MAX_TABS} tabs was restored (no new tabs until some are closed). */
+    public boolean isOverLimit() { return tabs.size() > MAX_TABS; }
     public List<String> tabIds() { List<String> o = new ArrayList<>(); for (Tab t : tabs) o.add(t.id); return Collections.unmodifiableList(o); }
     public Tab tab(String id) { int i = indexOf(id); return i < 0 ? null : tabs.get(i); }
     public String activeId() { return active; }

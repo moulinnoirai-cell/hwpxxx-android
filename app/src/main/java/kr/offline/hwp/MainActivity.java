@@ -90,7 +90,10 @@ public class MainActivity extends Activity {
             workspace=new WorkspaceModel();
             if(!legacyTests){
                 WorkspaceStateStore.Loaded loaded=workspaceState.load();
-                if(loaded.status==WorkspaceStateStore.Status.OK)workspace=loaded.model;
+                if(loaded.status==WorkspaceStateStore.Status.OK){
+                    workspace=loaded.model;
+                    if(workspace.isOverLimit())startupWarning="열 수 있는 문서는 "+WorkspaceModel.MAX_TABS+"개까지예요. 이전에 열어 둔 "+workspace.size()+"개는 그대로 두었어요. 새 문서를 열려면 사용하지 않는 탭을 닫아 주세요.";
+                }
                 else if(loaded.status!=WorkspaceStateStore.Status.ABSENT){
                     startupWarning="이전 작업공간 배치를 읽지 못했어요. 복구 자료는 보존했어요.";
                     try{workspaceState.quarantineInvalid();}catch(IOException preserved){workspaceState=null;}
@@ -145,7 +148,7 @@ public class MainActivity extends Activity {
             workspace=WorkspaceModel.restore(new WorkspaceModel.State(ids,dropPlaceholder?primary:before.activeId,primary,dropPlaceholder?null:before.secondaryId,!dropPlaceholder&&before.split,recent));
             savedWorkspaceRevision=-1;
         }
-        if(pending>0)startupWarning="열 수 있는 문서는 8개까지예요. 추가 복구 자료는 보존했어요. 사용하지 않는 탭을 닫고 앱을 다시 열어 주세요.";
+        if(pending>0)startupWarning="열 수 있는 문서는 5개까지예요. 추가 복구 자료는 보존했어요. 사용하지 않는 탭을 닫고 앱을 다시 열어 주세요.";
     }
     private void retainEditor(EditorSession editor){
         String unloadedOwner=unloadedOwners.remove(editor.tabId);if(unloadedOwner!=null)requests.removeSession(unloadedOwner);
@@ -214,7 +217,7 @@ public class MainActivity extends Activity {
         workspace.setActive(editor.tabId);if(editor.web!=null&&!editor.web.hasFocus())editor.web.requestFocus();changed();
     }
     private EditorSession newEditor(EditorSession origin,String initialAction)throws Exception {
-        if(!workspace.canCreateTab())throw new IOException("문서는 8개까지 열 수 있어요. 사용하지 않는 탭을 닫아 주세요.");
+        if(!workspace.canCreateTab())throw new IOException("문서는 5개까지 열 수 있어요. 사용하지 않는 탭을 닫아 주세요.");
         UUID uuid=UUID.randomUUID();String id=uuid.toString();
         EditorSession editor=new EditorSession(id,initialAction);
         if(!workspace.createTab(uuid,origin==null?workspace.activeId():origin.tabId)){editor.dispose();throw new IOException("새 문서 탭을 만들지 못했어요.");}

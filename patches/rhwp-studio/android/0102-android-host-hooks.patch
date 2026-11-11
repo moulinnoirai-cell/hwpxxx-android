@@ -1,5 +1,5 @@
 diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
-index 367e345..331c129 100644
+index 367e3451f..331c12935 100644
 --- a/rhwp-studio/src/command/commands/file.ts
 +++ b/rhwp-studio/src/command/commands/file.ts
 @@ -70,6 +70,8 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
@@ -457,7 +457,7 @@ index 367e345..331c129 100644
        await openRecentEntry(entry, {
          ensurePermission: ensureReadPermission,
 diff --git a/rhwp-studio/src/core/document-dirty-state.ts b/rhwp-studio/src/core/document-dirty-state.ts
-index c28ff9b..1c4fad6 100644
+index c28ff9b9a..1c4fad6a7 100644
 --- a/rhwp-studio/src/core/document-dirty-state.ts
 +++ b/rhwp-studio/src/core/document-dirty-state.ts
 @@ -13,6 +13,8 @@ export interface DirtyStateChange {
@@ -495,7 +495,7 @@ index c28ff9b..1c4fad6 100644
  
    installBeforeUnload(windowLike: Window): () => void {
 diff --git a/rhwp-studio/src/core/local-fonts.ts b/rhwp-studio/src/core/local-fonts.ts
-index a4d6fd2..9bc1c7e 100644
+index a4d6fd2df..9bc1c7e31 100644
 --- a/rhwp-studio/src/core/local-fonts.ts
 +++ b/rhwp-studio/src/core/local-fonts.ts
 @@ -1048,6 +1048,51 @@ export function getLocalFonts(options: GetLocalFontsOptions = {}): string[] {
@@ -551,7 +551,7 @@ index a4d6fd2..9bc1c7e 100644
  export function getDetectedLocalFonts(): string[] {
    return cachedSnapshot ? [...cachedSnapshot.families] : [];
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index cebf9b4..0e9bda1 100644
+index cebf9b402..0e9bda15a 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
 @@ -13,7 +13,7 @@ import type { CanvasMetricDocument } from './canvas-metric-session';
@@ -690,7 +690,7 @@ index cebf9b4..0e9bda1 100644
      if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
      return this.doc.insertHyperlinkEx(JSON.stringify({ target, start, end, uri }));
 diff --git a/rhwp-studio/src/history/idb-store.ts b/rhwp-studio/src/history/idb-store.ts
-index 9f2c815..2a83400 100644
+index 9f2c81509..2a8340069 100644
 --- a/rhwp-studio/src/history/idb-store.ts
 +++ b/rhwp-studio/src/history/idb-store.ts
 @@ -6,6 +6,15 @@
@@ -815,7 +815,7 @@ index 9f2c815..2a83400 100644
      async (db) =>
        new Promise<void>((resolve, reject) => {
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index 7049ad6..0cbbf4c 100644
+index 7049ad669..4231fc50e 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
 @@ -33,6 +33,7 @@ import type { ChromeVisibility } from '@/automation/types';
@@ -826,16 +826,17 @@ index 7049ad6..0cbbf4c 100644
  import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
  import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
  import { handleDocumentSelectAllShortcut, isTextEditingTarget } from '@/command/document-shortcut-guard';
-@@ -86,7 +87,7 @@ import { userSettings } from '@/core/user-settings';
+@@ -86,7 +87,8 @@ import { userSettings } from '@/core/user-settings';
  import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
  import { clearAutosaveDrafts, deleteAutosaveDraft, getAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
  import { recoveryFileName } from '@/recovery/recovery-format';
 -import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
 +import { autosaveErrorMessage, restoredDraftToast, showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
++import { installPerfProbe, installInputPerfProbes } from '@/hwpxxx/perf-probe';
  import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
  import { cellSelectionPhaseLabel, type CellSelectionPhase } from '@/engine/cell-selection-phase';
  import { TableObjectRenderer } from '@/engine/table-object-renderer';
-@@ -120,6 +121,15 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+@@ -120,6 +122,15 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
  import { enrichFontDecisionTrace } from '@/core/font-decision-trace';
  import { DocumentAgentController } from '@/document-agent/controller';
  import { initI18n, t } from '@/i18n/index.ts';
@@ -851,9 +852,11 @@ index 7049ad6..0cbbf4c 100644
  import { SidePanelController, createDomSidePanelView } from '@/view/side-panel-host';
  import { navigateToSearchHit } from '@/ui/find-dialog';
  
-@@ -141,9 +151,13 @@ Object.defineProperty(window, 'rhwpCommandErrors', { value: Object.freeze({
+@@ -140,10 +151,15 @@ Object.defineProperty(window, 'rhwpCommandErrors', { value: Object.freeze({
+   getState: () => inputHandler?.getCommandErrorState() ?? null,
  }), configurable: true });
  documentState.installBeforeUnload(window);
++installPerfProbe();
  const autosaveManager = new AutosaveManager({
 -  exportBytes: () => wasm.exportHwp(),
 -  // No plaintext persistence: protected documents need a session-only recovery key.
@@ -868,7 +871,7 @@ index 7049ad6..0cbbf4c 100644
    protectDraft: async draft => {
      if (!wasm.requiresPasswordForSave) return draft;
      const cipher = wasm.recoveryCipher;
-@@ -188,6 +202,21 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
+@@ -188,6 +204,21 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
    forms: { setActionsEnabled: setFormActionsEnabled },
    fonts: { setProvider: setHostFontProvider, getState: getHostFontState },
  };
@@ -890,7 +893,7 @@ index 7049ad6..0cbbf4c 100644
  
  // E2E 테스트용 전역 노출 (개발 모드 전용)
  if (import.meta.env.DEV) {
-@@ -315,6 +344,7 @@ const commandServices: CommandServices = {
+@@ -315,6 +346,7 @@ const commandServices: CommandServices = {
  };
  
  const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
@@ -898,7 +901,7 @@ index 7049ad6..0cbbf4c 100644
  
  // 자동화 표면 — 외부 JavaScript 가 커맨드·메뉴를 다루는 자리. 실행은 메뉴·툴바·키보드와 같은
  // dispatcher 를 타므로 게이트가 갈리지 않는다. 메뉴 컨테이너는 이 시점에 아직 없을 수 있어
-@@ -419,6 +449,8 @@ registry.registerAll(insertCommands);
+@@ -419,6 +451,8 @@ registry.registerAll(insertCommands);
  registry.registerAll(tableCommands);
  registry.registerAll(pageCommands);
  registry.registerAll(toolCommands);
@@ -907,7 +910,7 @@ index 7049ad6..0cbbf4c 100644
  
  /**
   * embed 프로파일의 메뉴·도구막대 정리 — index.html은 그대로 두고 부트 시 런타임에
-@@ -477,6 +509,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
+@@ -477,6 +511,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
  }
  
  function handleAutosaveStatus(status: AutosaveStatus): void {
@@ -915,7 +918,7 @@ index 7049ad6..0cbbf4c 100644
    const message = document.getElementById('sb-message');
    if (!message) return;
    if (autosaveStatusRestoreTimer) {
-@@ -500,9 +533,11 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
+@@ -500,9 +535,11 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
      nextMessage = `${status.encrypted ? '암호화 복구본 자동 저장' : '복구용 자동 저장'} 완료 (${formatBytes(status.byteLength)})`;
    } else if (status.state === 'blocked') {
      // 실패가 아니라 의도된 차단이므로 구분해서 알린다 (#5992).
@@ -929,7 +932,15 @@ index 7049ad6..0cbbf4c 100644
    }
    message.textContent = nextMessage;
    if (restoreTarget !== null && restoreTarget !== nextMessage) {
-@@ -935,6 +970,8 @@ async function initialize(): Promise<void> {
+@@ -738,6 +775,7 @@ async function initialize(): Promise<void> {
+       canvasView.getVirtualScroll(),
+       canvasView.getViewportManager(),
+     );
++    installInputPerfProbes(inputHandler as unknown as Record<string, any>); // [hwpxxx] 입력 경로 시간 계측(숫자만, 기록·전송 없음)
+     inputHandler.configureCommandErrors({
+       isDirty: () => documentState.isDirty(),
+       render: () => canvasView!.refreshDocumentAgentMutation(),
+@@ -935,6 +973,8 @@ async function initialize(): Promise<void> {
          },
        });
      }
@@ -938,7 +949,7 @@ index 7049ad6..0cbbf4c 100644
  
      // E2E 테스트용 전역 노출 (개발 모드 전용)
      if (import.meta.env.DEV) {
-@@ -1527,6 +1564,15 @@ async function initializeDocument(
+@@ -1527,6 +1567,15 @@ async function initializeDocument(
        }, extensionViewerSettings);
      }
      console.log('[initDoc] 2. 폰트 로딩 완료');
@@ -954,7 +965,7 @@ index 7049ad6..0cbbf4c 100644
      await updateLoadProgress(75, '문서 상태 적용 중...');
      totalSections = docInfo.sectionCount ?? 1;
      sbSection().textContent = t('ui.sbSection.text', { p1: 1, p2: totalSections });
-@@ -1982,10 +2028,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+@@ -1982,10 +2031,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
    finally { if (draft.protection) data.fill(0); }
    await deleteAutosaveDraft(draft.id);
    documentState.markDirty('autosave-recovered');
@@ -968,7 +979,7 @@ index 7049ad6..0cbbf4c 100644
  
  
 diff --git a/rhwp-studio/src/recent/recent-open.ts b/rhwp-studio/src/recent/recent-open.ts
-index db34b47..300a91e 100644
+index db34b47cb..300a91e08 100644
 --- a/rhwp-studio/src/recent/recent-open.ts
 +++ b/rhwp-studio/src/recent/recent-open.ts
 @@ -11,6 +11,7 @@
@@ -1044,7 +1055,7 @@ index db34b47..300a91e 100644
    if (!entry.handle) {
      deps.toast(
 diff --git a/rhwp-studio/src/recent/recent-store.ts b/rhwp-studio/src/recent/recent-store.ts
-index d68402f..19f091a 100644
+index d68402fc6..19f091ac7 100644
 --- a/rhwp-studio/src/recent/recent-store.ts
 +++ b/rhwp-studio/src/recent/recent-store.ts
 @@ -16,6 +16,7 @@
@@ -1133,10 +1144,16 @@ index d68402f..19f091a 100644
      async (db) =>
        new Promise<void>((resolve, reject) => {
 diff --git a/rhwp-studio/src/recovery/autosave-manager.ts b/rhwp-studio/src/recovery/autosave-manager.ts
-index 2385683..d4f1de1 100644
+index 238568332..74740753a 100644
 --- a/rhwp-studio/src/recovery/autosave-manager.ts
 +++ b/rhwp-studio/src/recovery/autosave-manager.ts
-@@ -39,6 +39,8 @@ export interface AutosaveManagerOptions {
+@@ -1,4 +1,5 @@
+ import type { DirtyStateChange } from '@/core/document-dirty-state';
++import { timed, timedAsync } from '../hwpxxx/perf-probe.ts';
+ import type { EventBus } from '@/core/event-bus';
+ import {
+   createAutosaveDraftId,
+@@ -39,6 +40,8 @@ export interface AutosaveManagerOptions {
     * 막기 위한 fail-closed 조건이다 (#5992).
     */
    isRecoveryBlocked?: () => boolean;
@@ -1145,7 +1162,7 @@ index 2385683..d4f1de1 100644
    debounceMs?: number;
    minSaveIntervalMs?: number;
    schedule?: Partial<AutosaveScheduleSettings>;
-@@ -66,6 +68,7 @@ export class AutosaveManager {
+@@ -66,6 +69,7 @@ export class AutosaveManager {
    private readonly exportBytes: () => Uint8Array;
    private readonly protectDraft?: (draft: AutosaveDraft) => Promise<AutosaveDraft>;
    private readonly isRecoveryBlocked: () => boolean;
@@ -1153,7 +1170,7 @@ index 2385683..d4f1de1 100644
    private readonly now: () => number;
    private readonly idFactory: () => string;
    private readonly store: AutosaveStoreLike;
-@@ -86,6 +89,7 @@ export class AutosaveManager {
+@@ -86,6 +90,7 @@ export class AutosaveManager {
      this.exportBytes = options.exportBytes;
      this.protectDraft = options.protectDraft;
      this.isRecoveryBlocked = options.isRecoveryBlocked ?? (() => false);
@@ -1161,7 +1178,7 @@ index 2385683..d4f1de1 100644
      this.scheduleSettings = normalizeSchedule({
        recoveryEnabled: true,
        recoveryIntervalMs: options.minSaveIntervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS,
-@@ -133,6 +137,9 @@ export class AutosaveManager {
+@@ -133,6 +138,9 @@ export class AutosaveManager {
      this.cancelTimers();
      this.pendingReason = null;
      this.lastSavedAt = 0;
@@ -1171,20 +1188,21 @@ index 2385683..d4f1de1 100644
      this.current = {
        draftId: meta.draftId ?? this.idFactory(),
        fileName: meta.fileName,
-@@ -206,7 +213,12 @@ export class AutosaveManager {
+@@ -206,7 +214,12 @@ export class AutosaveManager {
      this.cancelTimers();
      this.onStatus?.({ state: 'saving', reason });
      try {
+-      const bytes = this.exportBytes();
 +      // [hwpxxx-android] 암호 표시는 바이트를 만들기 전과 후에 같아야 한다(보호 상태가 바뀌는 사이에 평문이 암호 복구본으로
 +      // 표시되거나 그 반대가 되면 안 된다). 둘 다 같은 동기 구간이라 어긋나면 안 되는 일이지만, 어긋나면 저장하지 않는다.
 +      const encryptedBefore = this.isEncrypted();
-       const bytes = this.exportBytes();
++      const bytes = timed('autosave.export', () => this.exportBytes(), (b) => ({ bytes: b?.byteLength ?? 0 }));
 +      const encrypted = this.isEncrypted();
 +      if (encrypted !== encryptedBefore) throw new Error('복구본을 만드는 사이 보호 상태가 바뀌어 저장하지 않았습니다.');
        const savedAt = this.now();
        const generationAtStart = this.discardGeneration;
        let draft: AutosaveDraft = {
-@@ -217,6 +229,9 @@ export class AutosaveManager {
+@@ -217,10 +230,13 @@ export class AutosaveManager {
          byteLength: bytes.byteLength,
          data: new Uint8Array(bytes),
          dirtyReason: reason,
@@ -1192,10 +1210,16 @@ index 2385683..d4f1de1 100644
 +        // [hwpxxx-android] 내용 손실 보고가 있는 복구본은 완전한 사본으로 보이지 않도록 표시한다.
 +        ...((bytes as { lossy?: boolean }).lossy === true ? { lossy: true } : {}),
        };
-       if (this.protectDraft) draft = await this.protectDraft(draft);
+-      if (this.protectDraft) draft = await this.protectDraft(draft);
++      if (this.protectDraft) draft = await timedAsync('autosave.protect', () => this.protectDraft!(draft));
        if (this.discardGeneration !== generationAtStart || this.current !== current) return;
+-      await this.store.saveDraft(draft);
++      await timedAsync('autosave.store', () => this.store.saveDraft(draft), () => ({ bytes: draft.data.byteLength }));
+       if (this.discardGeneration !== generationAtStart) {
+         // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
+         await this.deleteDraft(current.draftId, 'discarded-during-save');
 diff --git a/rhwp-studio/src/recovery/autosave-store.ts b/rhwp-studio/src/recovery/autosave-store.ts
-index 82f1291..d785c28 100644
+index 82f12912d..d785c2893 100644
 --- a/rhwp-studio/src/recovery/autosave-store.ts
 +++ b/rhwp-studio/src/recovery/autosave-store.ts
 @@ -5,6 +5,8 @@
@@ -1344,7 +1368,7 @@ index 82f1291..d785c28 100644
    await withDb(
      async (db) =>
 diff --git a/rhwp-studio/src/recovery/recovery-ui.ts b/rhwp-studio/src/recovery/recovery-ui.ts
-index 6cca89b..32c59ab 100644
+index 6cca89bf8..32c59abb7 100644
 --- a/rhwp-studio/src/recovery/recovery-ui.ts
 +++ b/rhwp-studio/src/recovery/recovery-ui.ts
 @@ -2,17 +2,57 @@ import { ModalDialog } from '@/ui/dialog';
@@ -1437,7 +1461,7 @@ index 6cca89b..32c59ab 100644
      this.resolve({ action: 'restore', draftId: this.selectedDraftId });
      return true;
 diff --git a/rhwp-studio/src/ui/char-shape-dialog.ts b/rhwp-studio/src/ui/char-shape-dialog.ts
-index e07866a..f705c8e 100644
+index e07866a8c..f705c8eee 100644
 --- a/rhwp-studio/src/ui/char-shape-dialog.ts
 +++ b/rhwp-studio/src/ui/char-shape-dialog.ts
 @@ -30,7 +30,7 @@ import type { WasmBridge } from '@/core/wasm-bridge';
@@ -1459,7 +1483,7 @@ index e07866a..f705c8e 100644
        const localGroup = document.createElement('optgroup');
        localGroup.label = '로컬 글꼴';
 diff --git a/rhwp-studio/src/ui/font-set-edit-dialog.ts b/rhwp-studio/src/ui/font-set-edit-dialog.ts
-index b938e6d..5c4f968 100644
+index b938e6d35..5c4f9682d 100644
 --- a/rhwp-studio/src/ui/font-set-edit-dialog.ts
 +++ b/rhwp-studio/src/ui/font-set-edit-dialog.ts
 @@ -8,7 +8,7 @@ import { ModalDialog } from './dialog';
@@ -1481,7 +1505,7 @@ index b938e6d..5c4f968 100644
        'korean', 'english', 'chinese', 'japanese', 'other', 'symbol', 'user',
      ];
 diff --git a/rhwp-studio/src/ui/history-dialog.ts b/rhwp-studio/src/ui/history-dialog.ts
-index 8db9d4f..7515b6a 100644
+index 8db9d4fa4..7515b6afb 100644
 --- a/rhwp-studio/src/ui/history-dialog.ts
 +++ b/rhwp-studio/src/ui/history-dialog.ts
 @@ -30,6 +30,7 @@ import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '@/com
@@ -1510,7 +1534,7 @@ index 8db9d4f..7515b6a 100644
        const msg = err instanceof Error ? err.message : String(err);
        this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xa25915', { p1: msg });
 diff --git a/rhwp-studio/tests/toolbar-local-font-options.test.ts b/rhwp-studio/tests/toolbar-local-font-options.test.ts
-index 20e20fb..7f00dc1 100644
+index 20e20fb6b..7f00dc1f4 100644
 --- a/rhwp-studio/tests/toolbar-local-font-options.test.ts
 +++ b/rhwp-studio/tests/toolbar-local-font-options.test.ts
 @@ -17,9 +17,10 @@ test('글꼴 메뉴는 문서 글꼴을 기본으로 열고 시스템 글꼴은
@@ -1528,7 +1552,7 @@ index 20e20fb..7f00dc1 100644
  
  test('한컴형 글꼴 메뉴는 범주 목록과 기존 글꼴 적용 이벤트를 함께 사용한다', () => {
 diff --git a/rhwp-studio/vite.config.ts b/rhwp-studio/vite.config.ts
-index 58c83bd..c3b65ad 100644
+index 58c83bddd..c3b65add9 100644
 --- a/rhwp-studio/vite.config.ts
 +++ b/rhwp-studio/vite.config.ts
 @@ -20,6 +20,14 @@ const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';

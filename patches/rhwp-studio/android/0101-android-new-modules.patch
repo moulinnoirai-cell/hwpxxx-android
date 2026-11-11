@@ -1,6 +1,6 @@
 diff --git a/rhwp-studio/src/hwpxxx/android-draft-envelope.ts b/rhwp-studio/src/hwpxxx/android-draft-envelope.ts
 new file mode 100644
-index 0000000..9316144
+index 000000000..9316144c1
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/android-draft-envelope.ts
 @@ -0,0 +1,62 @@
@@ -68,7 +68,7 @@ index 0000000..9316144
 +}
 diff --git a/rhwp-studio/src/hwpxxx/android-host.ts b/rhwp-studio/src/hwpxxx/android-host.ts
 new file mode 100644
-index 0000000..06ee707
+index 000000000..06ee707b7
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/android-host.ts
 @@ -0,0 +1,300 @@
@@ -374,7 +374,7 @@ index 0000000..06ee707
 +}
 diff --git a/rhwp-studio/src/hwpxxx/android-print.ts b/rhwp-studio/src/hwpxxx/android-print.ts
 new file mode 100644
-index 0000000..8ee91d6
+index 000000000..8ee91d6ec
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/android-print.ts
 @@ -0,0 +1,198 @@
@@ -578,7 +578,7 @@ index 0000000..8ee91d6
 +}
 diff --git a/rhwp-studio/src/hwpxxx/android-save-verify.ts b/rhwp-studio/src/hwpxxx/android-save-verify.ts
 new file mode 100644
-index 0000000..56b5c31
+index 000000000..56b5c310c
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/android-save-verify.ts
 @@ -0,0 +1,798 @@
@@ -1382,7 +1382,7 @@ index 0000000..56b5c31
 +}
 diff --git a/rhwp-studio/src/hwpxxx/android-state.ts b/rhwp-studio/src/hwpxxx/android-state.ts
 new file mode 100644
-index 0000000..718747f
+index 000000000..718747f00
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/android-state.ts
 @@ -0,0 +1,77 @@
@@ -1465,7 +1465,7 @@ index 0000000..718747f
 +}
 diff --git a/rhwp-studio/tests/hwpxxx-android-field-evidence-compatibility.test.ts b/rhwp-studio/tests/hwpxxx-android-field-evidence-compatibility.test.ts
 new file mode 100644
-index 0000000..108ca75
+index 000000000..108ca753f
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-field-evidence-compatibility.test.ts
 @@ -0,0 +1,169 @@
@@ -1640,7 +1640,7 @@ index 0000000..108ca75
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-field-save.test.ts b/rhwp-studio/tests/hwpxxx-android-field-save.test.ts
 new file mode 100644
-index 0000000..dcf5f07
+index 000000000..dcf5f0767
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-field-save.test.ts
 @@ -0,0 +1,82 @@
@@ -1728,7 +1728,7 @@ index 0000000..dcf5f07
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-font-picker.test.ts b/rhwp-studio/tests/hwpxxx-android-font-picker.test.ts
 new file mode 100644
-index 0000000..bbda6cd
+index 000000000..bbda6cd1a
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-font-picker.test.ts
 @@ -0,0 +1,124 @@
@@ -1858,7 +1858,7 @@ index 0000000..bbda6cd
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-host.test.ts b/rhwp-studio/tests/hwpxxx-android-host.test.ts
 new file mode 100644
-index 0000000..ae9a100
+index 000000000..ae9a1001b
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-host.test.ts
 @@ -0,0 +1,145 @@
@@ -2009,7 +2009,7 @@ index 0000000..ae9a100
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts b/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts
 new file mode 100644
-index 0000000..a7010b8
+index 000000000..a7010b801
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-recovery-ui.test.ts
 @@ -0,0 +1,231 @@
@@ -2246,7 +2246,7 @@ index 0000000..a7010b8
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts b/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts
 new file mode 100644
-index 0000000..4f3eeec
+index 000000000..4f3eeec1a
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-save-safety.test.ts
 @@ -0,0 +1,578 @@
@@ -2830,7 +2830,7 @@ index 0000000..4f3eeec
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-state.test.ts b/rhwp-studio/tests/hwpxxx-android-state.test.ts
 new file mode 100644
-index 0000000..aa6ed8b
+index 000000000..aa6ed8b95
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-state.test.ts
 @@ -0,0 +1,232 @@
@@ -3068,7 +3068,7 @@ index 0000000..aa6ed8b
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts b/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts
 new file mode 100644
-index 0000000..77b57ea
+index 000000000..77b57ea2d
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-workspace-routing.test.ts
 @@ -0,0 +1,91 @@
@@ -3165,7 +3165,7 @@ index 0000000..77b57ea
 +});
 diff --git a/rhwp-studio/tests/support/android-workspace-routing.runner.mjs b/rhwp-studio/tests/support/android-workspace-routing.runner.mjs
 new file mode 100644
-index 0000000..03d73a3
+index 000000000..03d73a3df
 --- /dev/null
 +++ b/rhwp-studio/tests/support/android-workspace-routing.runner.mjs
 @@ -0,0 +1,135 @@

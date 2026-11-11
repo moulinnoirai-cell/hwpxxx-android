@@ -240,9 +240,9 @@ public class WorkspaceIsolationTest {
         yes(store.load().status==WorkspaceStateStore.Status.INVALID,"corrupt state detected");
         File kept=store.quarantineInvalid();yes(kept!=null&&kept.isFile()&&!file.exists()&&Arrays.equals(Files.readAllBytes(kept.toPath()),"garbage".getBytes("UTF-8")),"corrupt state preserved aside");
         yes(store.load().status==WorkspaceStateStore.Status.ABSENT,"next start begins empty after quarantine");
-        // The 9th tab is refused; unrelated tabs stay.
+        // The 6th tab is refused; unrelated tabs stay.
         WorkspaceModel full=new WorkspaceModel();for(int i=0;i<WorkspaceModel.MAX_TABS;i++)full.createTab(UUID.randomUUID());
-        yes(!full.canCreateTab()&&!full.createTab(UUID.randomUUID())&&full.size()==WorkspaceModel.MAX_TABS,"eight tab cap");
+        yes(!full.canCreateTab()&&!full.createTab(UUID.randomUUID())&&full.size()==WorkspaceModel.MAX_TABS,"five tab cap");
     }
 
     // ---- orphan recovery discovery: opaque UUIDs only, read-only, never touches records -------------------

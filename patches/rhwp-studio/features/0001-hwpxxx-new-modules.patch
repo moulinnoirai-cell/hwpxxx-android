@@ -1,6 +1,6 @@
 diff --git a/rhwp-studio/src/command/chord-map.ts b/rhwp-studio/src/command/chord-map.ts
 new file mode 100644
-index 0000000..85fb854
+index 000000000..85fb85400
 --- /dev/null
 +++ b/rhwp-studio/src/command/chord-map.ts
 @@ -0,0 +1,57 @@
@@ -63,7 +63,7 @@ index 0000000..85fb854
 +];
 diff --git a/rhwp-studio/src/command/commands/memo.ts b/rhwp-studio/src/command/commands/memo.ts
 new file mode 100644
-index 0000000..aaf6e4b
+index 000000000..aaf6e4b33
 --- /dev/null
 +++ b/rhwp-studio/src/command/commands/memo.ts
 @@ -0,0 +1,53 @@
@@ -122,7 +122,7 @@ index 0000000..aaf6e4b
 +};
 diff --git a/rhwp-studio/src/core/lineseg-autoreflow.ts b/rhwp-studio/src/core/lineseg-autoreflow.ts
 new file mode 100644
-index 0000000..c59ca85
+index 000000000..c59ca85f9
 --- /dev/null
 +++ b/rhwp-studio/src/core/lineseg-autoreflow.ts
 @@ -0,0 +1,16 @@
@@ -142,9 +142,65 @@ index 0000000..c59ca85
 +  const warnings = report.warnings ?? [];
 +  return warnings.length > 0 && warnings.every(w => w.kind === 'LinesegArrayEmpty');
 +}
+diff --git a/rhwp-studio/src/hwpxxx/composition-font.ts b/rhwp-studio/src/hwpxxx/composition-font.ts
+new file mode 100644
+index 000000000..bef76a678
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/composition-font.ts
+@@ -0,0 +1,50 @@
++/**
++ * [hwpxxx] IME 조합 오버레이의 글꼴.
++ *
++ * 조합 중인 글자는 문서에 이미 들어가 있지만, 그 위에 덮는 오버레이는 DOM 이라 캔버스와 다른 경로로 글꼴을 찾는다.
++ * 캔버스는 `ctx.font` 대입이 Studio 의 글꼴 치환(`substituteCssFontFamily`: 문서에 없는 글꼴 → 표시 가능한 대체 체인)을
++ * 거치지만, 오버레이는 글꼴 이름만 그대로 CSS 에 넣어 Android 처럼 해당 글꼴이 없는 기기에서 기본 글꼴로 떨어졌다.
++ * 그래서 조합 중에는 다른 글꼴로 보이다가 확정되면 설정한 글꼴로 바뀌어 보였다.
++ * 여기서는 캔버스와 같은 대입 경로(오프스크린 캔버스의 `ctx.font`)로 글꼴을 풀고, 실제 글자 크기·굵기·기울임도 따른다.
++ */
++export interface CompositionFontInput {
++  fontFamily?: string;
++  /** HWPUNIT (1pt = 100) */
++  fontSize?: number;
++  bold?: boolean;
++  italic?: boolean;
++  zoom: number;
++  /** 글자 크기를 모를 때 쓰는 오버레이 상자 높이(CSS px, 줌 적용 전) */
++  boxHeight: number;
++}
++
++export type FontResolver = (font: string) => string;
++
++let sharedContext: CanvasRenderingContext2D | null | undefined;
++
++/** 캔버스 `ctx.font` 대입을 거쳐 풀린 글꼴(치환 체인 포함). 캔버스를 못 쓰면 그대로 돌려준다. */
++export function resolveFontLikeCanvas(font: string): string {
++  try {
++    if (sharedContext === undefined) {
++      sharedContext = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
++    }
++    if (!sharedContext) return font;
++    sharedContext.font = font;
++    return sharedContext.font || font;
++  } catch {
++    return font;
++  }
++}
++
++function quoteFamily(name: string): string {
++  return `"${name.replace(/["\\\n\r]/g, '')}"`;
++}
++
++/** 오버레이에 쓸 CSS `font` 값. 글자 크기는 문서의 실제 크기(없으면 상자 높이의 85%)에 줌을 곱한다. */
++export function compositionCssFont(input: CompositionFontInput, resolve: FontResolver = resolveFontLikeCanvas): string {
++  const pt = typeof input.fontSize === 'number' && Number.isFinite(input.fontSize) && input.fontSize > 0 ? input.fontSize / 100 : null;
++  const px = Math.max(1, (pt !== null ? pt * 96 / 72 : input.boxHeight * 0.85) * input.zoom);
++  const family = input.fontFamily && input.fontFamily.trim() ? `${quoteFamily(input.fontFamily.trim())}, sans-serif` : 'sans-serif';
++  const style = `${input.italic ? 'italic ' : ''}${input.bold ? 'bold ' : ''}`;
++  return resolve(`${style}${Math.round(px * 100) / 100}px ${family}`);
++}
 diff --git a/rhwp-studio/src/hwpxxx/memo-context.ts b/rhwp-studio/src/hwpxxx/memo-context.ts
 new file mode 100644
-index 0000000..cd6016a
+index 000000000..cd6016acf
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-context.ts
 @@ -0,0 +1,74 @@
@@ -224,7 +280,7 @@ index 0000000..cd6016a
 +}
 diff --git a/rhwp-studio/src/hwpxxx/memo-marks.ts b/rhwp-studio/src/hwpxxx/memo-marks.ts
 new file mode 100644
-index 0000000..04a5aaa
+index 000000000..04a5aaaa2
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-marks.ts
 @@ -0,0 +1,240 @@
@@ -470,7 +526,7 @@ index 0000000..04a5aaa
 +export const installMemoMarks = (services: CommandServices): MemoMarks => memoMarks(services);
 diff --git a/rhwp-studio/src/hwpxxx/memo-panel.ts b/rhwp-studio/src/hwpxxx/memo-panel.ts
 new file mode 100644
-index 0000000..64c4214
+index 000000000..64c42143c
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-panel.ts
 @@ -0,0 +1,286 @@
@@ -760,9 +816,142 @@ index 0000000..64c4214
 +
 +let panel: MemoPanel | null = null;
 +export const memoPanel = (services: CommandServices): MemoPanel => (panel ??= new MemoPanel(services));
+diff --git a/rhwp-studio/src/hwpxxx/perf-probe.ts b/rhwp-studio/src/hwpxxx/perf-probe.ts
+new file mode 100644
+index 000000000..238c57e4e
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/perf-probe.ts
+@@ -0,0 +1,127 @@
++/**
++ * [hwpxxx] 성능 계측: 입력·자동 복구 저장이 메인 스레드를 얼마나 잡는지 기기에서 재기 위한 가벼운 기록기.
++ *
++ * - 시간 값(ms)과 바이트 수 같은 숫자만 기록한다. 문서 내용·파일 이름·경로는 절대 담지 않는다.
++ * - 항목은 고리 버퍼(최근 300개)에만 둔다. 저장하거나 어디로 보내지 않는다(Studio 는 오프라인 앱이다).
++ * - 읽기: `window.rhwpPerfSnapshot()` — 이름별 횟수·합계·최대·p95 와 최근 항목, 50ms 이상 메인 스레드를 막은 긴 작업(longtask).
++ * 기능 동작에는 영향이 없다(계측이 던져도 삼킨다).
++ */
++export interface PerfEntry {
++  name: string;
++  ms: number;
++  /** performance.now() 기준 기록 시각 */
++  at: number;
++  extra?: Record<string, number>;
++}
++
++export interface PerfSummaryItem { count: number; totalMs: number; maxMs: number; p95Ms: number }
++export interface PerfSnapshot { summary: Record<string, PerfSummaryItem>; recent: PerfEntry[]; dropped: number }
++
++const MAX_ENTRIES = 300;
++const entries: PerfEntry[] = [];
++let dropped = 0;
++
++const nowMs = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
++
++export function recordPerf(name: string, ms: number, extra?: Record<string, number>): void {
++  try {
++    if (!Number.isFinite(ms)) return;
++    entries.push({ name, ms: Math.round(ms * 100) / 100, at: Math.round(nowMs()), ...(extra ? { extra } : {}) });
++    if (entries.length > MAX_ENTRIES) { entries.shift(); dropped += 1; }
++  } catch { /* 계측은 동작을 바꾸지 않는다 */ }
++}
++
++/** 동기 작업의 시간을 재고 결과를 그대로 돌려준다(던지면 시간을 기록한 뒤 다시 던진다). */
++export function timed<T>(name: string, fn: () => T, extra?: (result: T | undefined) => Record<string, number> | undefined): T {
++  const t0 = nowMs();
++  let result: T | undefined;
++  try {
++    result = fn();
++    return result;
++  } finally {
++    let more: Record<string, number> | undefined;
++    try { more = extra?.(result); } catch { more = undefined; }
++    recordPerf(name, nowMs() - t0, more);
++  }
++}
++
++export async function timedAsync<T>(name: string, fn: () => Promise<T>, extra?: (result: T | undefined) => Record<string, number> | undefined): Promise<T> {
++  const t0 = nowMs();
++  let result: T | undefined;
++  try {
++    result = await fn();
++    return result;
++  } finally {
++    let more: Record<string, number> | undefined;
++    try { more = extra?.(result); } catch { more = undefined; }
++    recordPerf(name, nowMs() - t0, more);
++  }
++}
++
++/** 객체의 메서드를 시간 재는 래퍼로 바꾼다(this·인자·반환·예외 그대로). 없는 메서드는 건너뛴다. */
++export function wrapMethods(target: Record<string, any>, names: readonly string[], prefix: string): void {
++  for (const name of names) {
++    const original = target[name];
++    if (typeof original !== 'function' || (original as { __perfWrapped?: boolean }).__perfWrapped) continue;
++    const wrapped = function (this: unknown, ...args: unknown[]): unknown {
++      const t0 = nowMs();
++      try {
++        return original.apply(this, args);
++      } finally {
++        recordPerf(`${prefix}.${name}`, nowMs() - t0);
++      }
++    };
++    (wrapped as { __perfWrapped?: boolean }).__perfWrapped = true;
++    target[name] = wrapped;
++  }
++}
++
++export function perfSnapshot(): PerfSnapshot {
++  const byName = new Map<string, number[]>();
++  for (const entry of entries) {
++    const list = byName.get(entry.name) ?? [];
++    list.push(entry.ms);
++    byName.set(entry.name, list);
++  }
++  const summary: Record<string, PerfSummaryItem> = {};
++  for (const [name, list] of byName) {
++    const sorted = [...list].sort((a, b) => a - b);
++    const total = sorted.reduce((a, b) => a + b, 0);
++    summary[name] = {
++      count: sorted.length,
++      totalMs: Math.round(total * 100) / 100,
++      maxMs: sorted[sorted.length - 1],
++      p95Ms: sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)],
++    };
++  }
++  return { summary, recent: entries.slice(-60), dropped };
++}
++
++export function resetPerf(): void {
++  entries.length = 0;
++  dropped = 0;
++}
++
++let installed = false;
++
++/** 긴 작업(50ms+) 관찰기와 읽기 함수를 한 번만 설치한다. */
++export function installPerfProbe(win: Record<string, any> | undefined = typeof window !== 'undefined' ? (window as any) : undefined): void {
++  if (installed || !win) return;
++  installed = true;
++  try {
++    Object.defineProperty(win, 'rhwpPerfSnapshot', { value: perfSnapshot, configurable: true });
++    Object.defineProperty(win, 'rhwpPerfReset', { value: resetPerf, configurable: true });
++  } catch { /* 이미 있으면 그대로 */ }
++  try {
++    const Observer = (globalThis as { PerformanceObserver?: typeof PerformanceObserver }).PerformanceObserver;
++    if (!Observer || !(Observer.supportedEntryTypes ?? []).includes('longtask')) return;
++    new Observer((list) => {
++      for (const item of list.getEntries()) recordPerf('longtask', item.duration);
++    }).observe({ entryTypes: ['longtask'] });
++  } catch { /* 지원하지 않는 WebView */ }
++}
++
++/** 입력 경로의 비싼 단계들을 계측한다(생성자에서 묶인 리스너가 아니라 동적으로 불리는 메서드만 잡힌다). */
++export function installInputPerfProbes(handler: Record<string, any>): void {
++  wrapMethods(handler, ['afterEdit', 'updateCaret', 'executeOperation', 'flushDeferredPaginationIfNeeded'], 'input');
++}
 diff --git a/rhwp-studio/src/styles/hwpxxx-memo.css b/rhwp-studio/src/styles/hwpxxx-memo.css
 new file mode 100644
-index 0000000..879fb1d
+index 000000000..879fb1d37
 --- /dev/null
 +++ b/rhwp-studio/src/styles/hwpxxx-memo.css
 @@ -0,0 +1,57 @@
@@ -825,7 +1014,7 @@ index 0000000..879fb1d
 +@media print { .hwpxxx-memo-marks { display: none; } }
 diff --git a/rhwp-studio/src/ui/command-tooltip.ts b/rhwp-studio/src/ui/command-tooltip.ts
 new file mode 100644
-index 0000000..6157704
+index 000000000..61577047d
 --- /dev/null
 +++ b/rhwp-studio/src/ui/command-tooltip.ts
 @@ -0,0 +1,185 @@
@@ -1016,10 +1205,10 @@ index 0000000..6157704
 +}
 diff --git a/rhwp-studio/src/ui/format-copy-dialog.ts b/rhwp-studio/src/ui/format-copy-dialog.ts
 new file mode 100644
-index 0000000..72ecbed
+index 000000000..7a8949980
 --- /dev/null
 +++ b/rhwp-studio/src/ui/format-copy-dialog.ts
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,174 @@
 +import { ModalDialog } from './dialog';
 +
 +/** [hwpxxx] 모양 복사 옵션 — 한/글 Alt+C 대화상자(모양 복사)와 같은 구성 */
@@ -1032,6 +1221,8 @@ index 0000000..72ecbed
 +  cellBackground: boolean;
 +  /** 표에서 적용 대상: 본문 모양과 셀 모양 둘 다 / 셀 모양만 */
 +  tableTarget: 'both' | 'cellOnly';
++  /** 연속 적용: 복사한 모양을 Esc·새 복사·문서 전환 전까지 여러 번 붙인다(기본 켬) */
++  continuous: boolean;
 +}
 +
 +export const DEFAULT_FORMAT_COPY_OPTIONS: FormatCopyOptions = {
@@ -1040,6 +1231,7 @@ index 0000000..72ecbed
 +  cellBorder: false,
 +  cellBackground: false,
 +  tableTarget: 'both',
++  continuous: true,
 +};
 +
 +export interface FormatCopyContext {
@@ -1062,12 +1254,16 @@ index 0000000..72ecbed
 +  private bodyRadios: HTMLInputElement[] = [];
 +  private cellBoxes: Record<'cellAttr' | 'cellBorder' | 'cellBackground', HTMLInputElement> | null = null;
 +  private targetRadios: HTMLInputElement[] = [];
++  private continuousBox: HTMLInputElement | null = null;
 +
-+  constructor(
-+    private context: FormatCopyContext,
-+    private onCopy: (options: FormatCopyOptions) => void,
-+  ) {
++  private context: FormatCopyContext;
++  private onCopy: (options: FormatCopyOptions) => void;
++
++  // (생성자 매개변수 속성은 쓰지 않는다: Node 의 type-stripping 시험 실행기가 지원하지 않는다)
++  constructor(context: FormatCopyContext, onCopy: (options: FormatCopyOptions) => void) {
 +    super('모양 복사', 300);
++    this.context = context;
++    this.onCopy = onCopy;
 +  }
 +
 +  protected createBody(): HTMLElement {
@@ -1075,6 +1271,7 @@ index 0000000..72ecbed
 +    body.appendChild(this.section('본문 모양 복사', this.buildBody()));
 +    body.appendChild(this.section('셀 모양 복사', this.buildCells()));
 +    body.appendChild(this.section('표에서 적용 대상', this.buildTarget()));
++    body.appendChild(this.buildContinuous());
 +    this.syncTarget();
 +    return body;
 +  }
@@ -1094,13 +1291,27 @@ index 0000000..72ecbed
 +    const lbl = document.createElement('label');
 +    lbl.appendChild(input);
 +    lbl.appendChild(document.createTextNode(label));
-+    // 라디오·체크박스는 입력 칸으로 취급돼 Enter 가 확인 버튼까지 닿지 않는다.
-+    input.addEventListener('keydown', (e) => {
-+      if (e.key !== 'Enter') return;
-+      e.preventDefault();
-+      this.dialog.querySelector<HTMLButtonElement>('.dialog-btn-primary')?.click();
-+    });
 +    return lbl;
++  }
++
++  /**
++   * 라디오·체크박스에서 Enter 는 확인이다. 대화상자의 문서 단위 capture 핸들러가 입력 칸의 키를 먼저 가로채
++   * 칸 자신의 keydown 핸들러에는 닿지 않으므로, 기반 클래스의 확인 판정 훅으로 알린다.
++   */
++  protected override shouldConfirmOnEnter(target: HTMLElement): boolean {
++    return target instanceof HTMLInputElement && (target.type === 'radio' || target.type === 'checkbox');
++  }
++
++  private buildContinuous(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    const input = document.createElement('input');
++    input.type = 'checkbox';
++    input.checked = DEFAULT_FORMAT_COPY_OPTIONS.continuous;
++    input.name = 'format-copy-continuous';
++    group.appendChild(this.option(input, '연속 적용 (Esc 로 해제할 때까지 여러 번 붙이기)'));
++    this.continuousBox = input;
++    return group;
 +  }
 +
 +  private buildBody(): HTMLElement {
@@ -1168,12 +1379,62 @@ index 0000000..72ecbed
 +      cellBorder: boxes?.cellBorder.checked ?? false,
 +      cellBackground: boxes?.cellBackground.checked ?? false,
 +      tableTarget: (this.targetRadios.find((r) => r.checked)?.value ?? DEFAULT_FORMAT_COPY_OPTIONS.tableTarget) as FormatCopyOptions['tableTarget'],
++      continuous: this.continuousBox?.checked ?? DEFAULT_FORMAT_COPY_OPTIONS.continuous,
 +    });
 +  }
 +}
+diff --git a/rhwp-studio/tests/hwpxxx-composition-font.test.ts b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+new file mode 100644
+index 000000000..a0cce36a4
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+@@ -0,0 +1,43 @@
++// [hwpxxx] IME 조합 오버레이 글꼴: 캔버스와 같은 해석 경로를 쓰고, 실제 크기·굵기·기울임을 따른다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { compositionCssFont } from '../src/hwpxxx/composition-font.ts';
++
++const identity = (font: string) => font;
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++
++test('글꼴 이름은 따옴표로 감싸 대체 글꼴을 뒤에 붙이고, 해석기를 거친다', () => {
++  const seen: string[] = [];
++  const out = compositionCssFont({ fontFamily: '함초롬바탕', zoom: 1, boxHeight: 20 }, (f) => { seen.push(f); return `resolved:${f}`; });
++  assert.equal(seen.length, 1);
++  assert.equal(out, 'resolved:17px "함초롬바탕", sans-serif');
++});
++
++test('실제 글자 크기(HWPUNIT)·줌·굵기·기울임을 따른다', () => {
++  // 10pt = 13.333px, 줌 1.5 → 20px
++  assert.equal(compositionCssFont({ fontFamily: 'A', fontSize: 1000, bold: true, italic: true, zoom: 1.5, boxHeight: 99 }, identity), 'italic bold 20px "A", sans-serif');
++  assert.equal(compositionCssFont({ fontFamily: 'A', fontSize: 1000, zoom: 1, boxHeight: 99 }, identity), '13.33px "A", sans-serif');
++});
++
++test('크기를 모르거나 이상하면 상자 높이의 85%로 물러난다', () => {
++  for (const fontSize of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
++    assert.equal(compositionCssFont({ fontFamily: 'A', fontSize, zoom: 2, boxHeight: 10 }, identity), '17px "A", sans-serif', String(fontSize));
++  }
++});
++
++test('글꼴 이름이 없거나 따옴표·역슬래시·줄바꿈이 섞여도 CSS 가 깨지지 않는다', () => {
++  assert.equal(compositionCssFont({ zoom: 1, boxHeight: 20 }, identity), '17px sans-serif');
++  assert.equal(compositionCssFont({ fontFamily: '   ', zoom: 1, boxHeight: 20 }, identity), '17px sans-serif');
++  const evil = compositionCssFont({ fontFamily: 'A", serif; x:"\\\n', zoom: 1, boxHeight: 20 }, identity);
++  assert.equal(evil, '17px "A, serif; x:", sans-serif');
++});
++
++test('연결: 조합 오버레이가 해석된 글꼴을 받고, 못 쓰면 기존 값으로 물러난다', () => {
++  const handler = source('engine/input-handler.ts');
++  assert.match(handler, /overlayFont = compositionCssFont\(\{/);
++  assert.match(handler, /this\.caret\.showComposition\(startRect, charWidth, zoom, text, fontFamily, overlayFont\)/);
++  const caret = source('engine/caret-renderer.ts');
++  assert.match(caret, /if \(font\) \{\s+this\.compEl\.style\.font = font;/);
++  assert.match(caret, /this\.compEl\.style\.lineHeight = `\$\{h\}px`;/, '줄 높이는 shorthand 뒤에 다시 정한다');
++});
 diff --git a/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
 new file mode 100644
-index 0000000..b8b9de1
+index 000000000..b8b9de153
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
 @@ -0,0 +1,92 @@
@@ -1269,9 +1530,86 @@ index 0000000..b8b9de1
 +  assert.equal(command({ key: '=', code: 'Equal', ctrlKey: true }), 'view:zoom-in');
 +  assert.equal(shortcutFromTitle('줄 간격 증가 (+5%)'), undefined);
 +});
+diff --git a/rhwp-studio/tests/hwpxxx-format-copy.test.ts b/rhwp-studio/tests/hwpxxx-format-copy.test.ts
+new file mode 100644
+index 000000000..da6e9bbc1
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-format-copy.test.ts
+@@ -0,0 +1,71 @@
++// [hwpxxx] 모양 복사(Alt+C): 연속 적용 기본 켬, 대화상자에서 라디오·체크박스 Enter 확인, Esc·문서 전환 해제.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { register } from 'node:module';
++
++const g = globalThis as Record<string, any>;
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++
++class FakeElement {
++  tagName: string; children: any[] = []; style: Record<string, string> = {};
++  className = ''; type = ''; name = ''; value = ''; checked = false; disabled = false; textContent = '';
++  constructor(tag: string) { this.tagName = tag.toUpperCase(); }
++  appendChild(c: any) { this.children.push(c); return c; }
++  addEventListener() {}
++  setAttribute() {}
++  find(pred: (e: FakeElement) => boolean): FakeElement[] {
++    const out: FakeElement[] = []; const walk = (e: any) => { if (e instanceof FakeElement) { if (pred(e)) out.push(e); e.children.forEach(walk); } };
++    walk(this); return out;
++  }
++}
++g.document = { createElement: (t: string) => new FakeElement(t), createTextNode: (t: string) => ({ text: t }) };
++g.HTMLInputElement = FakeElement;
++g.window ??= new EventTarget();
++register(new URL('./support/studio-alias-hooks.mjs', import.meta.url), import.meta.url);
++const { FormatCopyDialog, DEFAULT_FORMAT_COPY_OPTIONS } = await import('../src/ui/format-copy-dialog.ts');
++
++const makeDialog = () => {
++  const copied: any[] = [];
++  const dialog: any = new FormatCopyDialog({ inCell: false, charStyleAvailable: false }, (o: unknown) => copied.push(o));
++  const body = dialog.createBody() as FakeElement;
++  return { dialog, body, copied };
++};
++const inputs = (body: FakeElement) => body.find((e) => e.tagName === 'INPUT');
++
++test('연속 적용은 기본으로 켜져 있고, 끄면 옵션에 false 로 담긴다', () => {
++  assert.equal(DEFAULT_FORMAT_COPY_OPTIONS.continuous, true);
++  const { dialog, body, copied } = makeDialog();
++  const box = inputs(body).find((i) => i.name === 'format-copy-continuous')!;
++  assert.equal(box.checked, true);
++  dialog.onConfirm();
++  assert.equal(copied[0].continuous, true);
++  box.checked = false;
++  dialog.onConfirm();
++  assert.equal(copied[1].continuous, false);
++});
++
++test('Enter 확인: 라디오·체크박스는 확인으로 판정하고, 버튼·텍스트 칸은 아니다', () => {
++  const { dialog, body } = makeDialog();
++  for (const input of inputs(body)) assert.equal(dialog.shouldConfirmOnEnter(input), true, `${input.name}/${input.type}`);
++  const text = new FakeElement('input'); text.type = 'text';
++  assert.equal(dialog.shouldConfirmOnEnter(text), false);
++});
++
++test('입력 처리 연결: 연속 상태는 붙인 뒤에도 남고, Esc·새 복사·문서 전환에서 해제된다', () => {
++  const handler = source('engine/input-handler.ts');
++  assert.match(handler, /if \(!state\.continuous\) this\.formatCopyState = null;/);
++  assert.equal((handler.match(/if \(!state\.continuous\) this\.formatCopyState = null;/g) ?? []).length, 2, '셀 블록·본문 두 경로 모두');
++  assert.ok(!/\/\/ 한컴 호환: 복사한 모양은 한 번 붙여넣으면 자동 해제한다\.\n\s+this\.formatCopyState = null;/.test(handler), '무조건 해제가 남아 있지 않다');
++  assert.match(handler, /continuous: options\.continuous !== false/);
++  const swapped = handler.slice(handler.indexOf("eventBus.on('document-swapped'"), handler.indexOf("eventBus.on('highlight-pick'"));
++  assert.match(swapped, /this\.formatCopyState = null;/);
++  const keyboard = source('engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /e\.key === 'Escape' && !e\.isComposing && this\.releaseCopiedFormat\(\)/);
++});
++
++test('명령 연결: 복사한 모양이 있어도 선택이 없으면 Alt+C 는 새 복사 대화상자를 연다', () => {
++  const edit = source('command/commands/edit.ts');
++  const cmd = edit.slice(edit.indexOf("id: 'edit:format-copy'"), edit.indexOf("id: 'edit:format-paste'"));
++  assert.match(cmd, /if \(!handler \|\| handler\.tryApplyCopiedFormat\(\)\) return;\s+new FormatCopyDialog/);
++});
 diff --git a/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
 new file mode 100644
-index 0000000..eb15f1a
+index 000000000..eb15f1a82
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
 @@ -0,0 +1,32 @@
@@ -1307,9 +1645,74 @@ index 0000000..eb15f1a
 +test('i18n: 새 단추 설명이 ko/en 모두에 있다', () => {
 +  for (const locale of ['ko', 'en']) assert.match(source(`src/i18n/locales/${locale}.ts`), /"ui\.btnHighlightPalette\.tooltip":/);
 +});
+diff --git a/rhwp-studio/tests/hwpxxx-line-page-break.test.ts b/rhwp-studio/tests/hwpxxx-line-page-break.test.ts
+new file mode 100644
+index 000000000..4aac2ef47
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-line-page-break.test.ts
+@@ -0,0 +1,59 @@
++// [hwpxxx] 본문 강제 줄바꿈(Shift+Enter)과 쪽 나누기(Ctrl+Enter): 한글 조합 중에도 물리 Enter 로 맞고,
++// 본문 밖(표 칸·머리말/꼬리말·각주)에서는 쪽·단 나누기를 넣지 않으며, 조합을 먼저 확정한다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { defaultShortcuts, matchShortcut, physicalCodeOf } from '../src/command/shortcut-map.ts';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++function key(input: Partial<KeyboardEvent>): KeyboardEvent {
++  return {
++    key: input.key ?? '', code: input.code ?? '',
++    shiftKey: input.shiftKey ?? false, ctrlKey: input.ctrlKey ?? false,
++    metaKey: input.metaKey ?? false, altKey: input.altKey ?? false,
++  } as KeyboardEvent;
++}
++const command = (input: Partial<KeyboardEvent>) => matchShortcut(key(input), defaultShortcuts, 'other');
++
++test('Ctrl+Enter 는 쪽 나누기, Ctrl+Shift+Enter 는 단 나누기, Ctrl+Alt+Enter 는 단 설정', () => {
++  assert.equal(command({ key: 'Enter', code: 'Enter', ctrlKey: true }), 'page:break');
++  assert.equal(command({ key: 'Enter', code: 'Enter', ctrlKey: true, shiftKey: true }), 'page:column-break');
++  assert.equal(command({ key: 'Enter', code: 'Enter', ctrlKey: true, altKey: true }), 'page:col-settings');
++});
++
++test('한글 조합 중(e.key 가 Process)에도 물리 Enter·숫자패드 Enter 로 맞는다', () => {
++  assert.equal(command({ key: 'Process', code: 'Enter', ctrlKey: true }), 'page:break');
++  assert.equal(command({ key: 'Process', code: 'NumpadEnter', ctrlKey: true }), 'page:break');
++  assert.equal(command({ key: 'Process', code: 'Enter', ctrlKey: true, shiftKey: true }), 'page:column-break');
++  assert.equal(physicalCodeOf('enter'), 'enter');
++});
++
++test('일반 Enter·Shift+Enter 는 단축키 명령이 아니다(본문 입력 경로가 처리한다)', () => {
++  assert.equal(command({ key: 'Enter', code: 'Enter' }), null);
++  assert.equal(command({ key: 'Enter', code: 'Enter', shiftKey: true }), null);
++  assert.equal(command({ key: 'Process', code: 'Enter' }), null, 'Ctrl 없는 조합 중 Enter 는 건드리지 않는다');
++  assert.equal(command({ key: 'Process', code: 'Enter', shiftKey: true }), null);
++});
++
++test('Shift+Enter 는 선택을 지운 뒤 강제 줄바꿈 명령을 넣는다(표 칸 분기보다 먼저)', () => {
++  const keyboard = source('engine/input-handler-keyboard.ts');
++  const enter = keyboard.slice(keyboard.indexOf("case 'Enter': {"), keyboard.indexOf("case 'Enter': {") + 900);
++  assert.ok(enter.indexOf('deleteSelection()') < enter.indexOf('e.shiftKey'));
++  assert.ok(enter.indexOf('e.shiftKey') < enter.indexOf('InsertLineBreakCommand'));
++  assert.ok(enter.indexOf('InsertLineBreakCommand') < enter.indexOf('else if (inCell)'), '표 칸에서도 Shift+Enter 는 줄바꿈이다');
++});
++
++test('쪽·단 나누기: 조합 확정 → 본문 위치 확인 → 삽입 순서이고, 본문 밖에서는 안내만 한다', () => {
++  const page = source('command/commands/page.ts');
++  const helper = page.slice(page.indexOf('function prepareBodyBreak'), page.indexOf('export const pageCommands'));
++  assert.ok(helper.indexOf('ih.commitComposition()') < helper.indexOf('ih.isInBodyText()'));
++  assert.match(helper, /showToast\(/);
++  for (const id of ['page:break', 'page:column-break']) {
++    const cmd = page.slice(page.indexOf(`id: '${id}'`), page.indexOf(`id: '${id}'`) + 600);
++    assert.match(cmd, /prepareBodyBreak\(services\.getInputHandler\(\)/, id);
++    assert.ok(cmd.indexOf('prepareBodyBreak(') < cmd.indexOf('ih.getPosition()'), `${id}: 위치는 조합 확정 뒤에 읽는다`);
++    assert.match(cmd, /canExecute: \(ctx\) => ctx\.hasDocument && !ctx\.isFormMode/, id);
++  }
++  const handler = source('engine/input-handler.ts');
++  assert.match(handler, /isInBodyText\(\): boolean \{\s+return this\.cursor\.getPosition\(\)\.parentParaIndex === undefined\s+&& !this\.cursor\.isInHeaderFooter\(\) && !this\.cursor\.isInFootnote\(\);/);
++});
 diff --git a/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
 new file mode 100644
-index 0000000..6c39eb5
+index 000000000..6c39eb5e2
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
 @@ -0,0 +1,14 @@
@@ -1327,9 +1730,81 @@ index 0000000..6c39eb5
 +  assert.equal(onlyEmptyLinesegWarnings({ count: 3 }), false);
 +  assert.equal(onlyEmptyLinesegWarnings(null), false);
 +});
+diff --git a/rhwp-studio/tests/hwpxxx-perf-probe.test.ts b/rhwp-studio/tests/hwpxxx-perf-probe.test.ts
+new file mode 100644
+index 000000000..3279c2151
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-perf-probe.test.ts
+@@ -0,0 +1,66 @@
++// [hwpxxx] 성능 계측기: 숫자만 담고, 동작(반환·this·예외)을 바꾸지 않으며, 고리 버퍼가 넘치지 않는다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { recordPerf, timed, timedAsync, wrapMethods, perfSnapshot, resetPerf } from '../src/hwpxxx/perf-probe.ts';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++
++test('timed/timedAsync 는 결과를 그대로 돌려주고 시간을 기록하며, 던지면 기록한 뒤 다시 던진다', async () => {
++  resetPerf();
++  assert.equal(timed('a', () => 7, (r) => ({ bytes: r ?? 0 })), 7);
++  assert.equal(await timedAsync('b', async () => 'x'), 'x');
++  assert.throws(() => timed('c', () => { throw new Error('boom'); }), /boom/);
++  await assert.rejects(timedAsync('d', async () => { throw new Error('async boom'); }), /async boom/);
++  const { summary } = perfSnapshot();
++  for (const name of ['a', 'b', 'c', 'd']) assert.equal(summary[name].count, 1, name);
++  assert.deepEqual(perfSnapshot().recent.find((e) => e.name === 'a')?.extra, { bytes: 7 });
++});
++
++test('extra 계산이 던져도 계측이 동작을 바꾸지 않는다', () => {
++  resetPerf();
++  assert.equal(timed('x', () => 1, () => { throw new Error('extra'); }), 1);
++  assert.equal(perfSnapshot().summary.x.count, 1);
++});
++
++test('wrapMethods: this·인자·반환·예외를 보존하고 이중 래핑하지 않으며 없는 메서드는 건너뛴다', () => {
++  resetPerf();
++  const target: Record<string, any> = {
++    n: 2,
++    add(this: { n: number }, k: number) { return this.n + k; },
++    fail() { throw new Error('nope'); },
++  };
++  wrapMethods(target, ['add', 'fail', 'missing'], 'input');
++  wrapMethods(target, ['add'], 'input');
++  assert.equal(target.add(3), 5);
++  assert.throws(() => target.fail(), /nope/);
++  assert.equal('missing' in target, false);
++  const { summary } = perfSnapshot();
++  assert.equal(summary['input.add'].count, 1, '한 번 호출 → 한 번 기록');
++  assert.equal(summary['input.fail'].count, 1);
++});
++
++test('고리 버퍼는 300개를 넘지 않고, 요약은 횟수·합계·최대·p95 를 낸다', () => {
++  resetPerf();
++  for (let i = 1; i <= 350; i++) recordPerf('loop', i);
++  recordPerf('nan', Number.NaN);
++  const snap = perfSnapshot();
++  assert.equal(snap.summary.loop.count, 300);
++  assert.equal(snap.dropped, 50);
++  assert.equal(snap.summary.loop.maxMs, 350);
++  assert.equal(snap.summary.loop.p95Ms, 335);
++  assert.equal(snap.summary.nan, undefined, '유한하지 않은 값은 기록하지 않는다');
++  assert.ok(snap.recent.length <= 60);
++});
++
++test('연결: 자동 저장의 내보내기·보호·저장소 단계와 입력 경로가 계측되고, 문서 내용은 담지 않는다', () => {
++  const manager = source('recovery/autosave-manager.ts');
++  assert.match(manager, /timed\('autosave\.export'/);
++  assert.match(manager, /timedAsync\('autosave\.protect'/);
++  assert.match(manager, /timedAsync\('autosave\.store'/);
++  const main = source('main.ts');
++  assert.match(main, /installPerfProbe\(\);/);
++  assert.match(main, /installInputPerfProbes\(inputHandler/);
++  const probe = source('hwpxxx/perf-probe.ts');
++  assert.ok(!/fileName|textContent|innerText|getText/.test(probe.replace(/\/\*\*[\s\S]*?\*\//g, '')), '계측기는 이름·내용을 읽지 않는다');
++});
 diff --git a/rhwp-studio/tests/support/studio-alias-hooks.mjs b/rhwp-studio/tests/support/studio-alias-hooks.mjs
 new file mode 100644
-index 0000000..cd705a3
+index 000000000..cd705a31f
 --- /dev/null
 +++ b/rhwp-studio/tests/support/studio-alias-hooks.mjs
 @@ -0,0 +1,36 @@
