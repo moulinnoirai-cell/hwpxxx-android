@@ -9,6 +9,7 @@ for attempt in 1 2; do
   echo "EMULATOR_LEGACY_ATTEMPT_FAILED attempt=$attempt"
   # The suites assume a fresh device (permission denied, no Termux): give the retry one.
   adb uninstall kr.offline.hwp.preview >/dev/null 2>&1
+  adb shell rm -rf /sdcard/Download/hwpxxx-qa >/dev/null 2>&1   # the first attempt leaves its output files; a leftover name would collide in the second
   adb uninstall com.termux >/dev/null 2>&1
 done
 node tests/android-studio-suite.cjs

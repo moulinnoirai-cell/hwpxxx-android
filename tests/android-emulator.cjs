@@ -180,10 +180,13 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   await open('qa-edit.hwpx');await edit();
   await record('Android input dispatcher types through the installed WebView',async()=>{
    const t=page.locator('#text-editor');await t.click();
-   // Wait for the keyboard/viewport transition before computing a native tap.
-   await pause(1000);const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);
-   if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');
-   await until(()=>t.evaluate(t=>document.activeElement===t));await pause(1000);
+   // Wait for the keyboard/viewport transition before computing a native tap. The tap is computed from the editor's bounds, which move while the soft
+   // keyboard animates in, so a tap can miss on a slow emulator: recompute and tap again (up to three times) before judging the focus.
+   const nativeTap=async()=>{await pause(1000);const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);
+    if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');};
+   await nativeTap();
+   for(let attempt=1;attempt<=3;attempt++){try{await until(()=>t.evaluate(t=>document.activeElement===t),attempt<3?12000:45000);break;}catch(e){if(attempt===3)throw e;console.log('INPUT_FOCUS_RETRY',attempt);await t.click().catch(()=>{});await nativeTap();}}
+   await pause(1000);
    const before=await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd}));
    sh('input','text','DEX_OS_KEYS');
    try{await until(async()=>(await t.inputValue())===before.text.slice(0,before.start)+'DEX_OS_KEYS'+before.text.slice(before.end));}catch(e){console.error('NATIVE_INPUT_DIAGNOSTIC',JSON.stringify({before,after:await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd,active:document.activeElement===t,connected:t.isConnected}))}));throw e;}
