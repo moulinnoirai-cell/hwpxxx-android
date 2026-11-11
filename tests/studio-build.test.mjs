@@ -78,8 +78,8 @@ function synthetic(){
  const r=fs.mkdtempSync(path.join(os.tmpdir(),'studio-verify-'));
  const put=(rel,data)=>{const f=path.join(r,rel);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,data);return f;};
  // config + patches (real files: their hashes are the pins)
- for(const f of [CONFIG,config.engineConfig,JSON.parse(fs.readFileSync(path.join(repo,config.engineConfig),'utf8')).patch])put(f,fs.readFileSync(path.join(repo,f)));
- for(const [dir,pins] of [[config.desktopPatchDir,config.desktopPatches],[config.androidPatchDir,config.androidPatches]])for(const n of Object.keys(pins))put(`${dir}/${n}`,fs.readFileSync(path.join(repo,dir,n)));
+ for(const f of [CONFIG,config.engineConfig])put(f,fs.readFileSync(path.join(repo,f)));
+ for(const [dir,pins] of [[config.featurePatchDir,config.featurePatches],[config.androidPatchDir,config.androidPatches]])for(const n of Object.keys(pins))put(`${dir}/${n}`,fs.readFileSync(path.join(repo,dir,n)));
  // synthetic engine core with a build-info that repeats the engine lock
  const wasm=Buffer.concat([Buffer.from([0,0x61,0x73,0x6d,1,0,0,0]),Buffer.alloc(1_200_000,7)]);
  const glue=Buffer.from(['getMemoList(','insertMemo(','insertMemoByPath(','setMemoText(','removeMemo('].join('\n'));
@@ -103,7 +103,10 @@ const rewriteIndex=(s,fn)=>{const f=path.join(s.r,DEFAULT_OUT,'index.html'),h=fn
 test('the checked-in lock is internally consistent (patch pins equal the patch files; commit equals the engine lock)',()=>{
  assert.deepEqual(verifyPatches(repo,config),[]);
  assert.equal(config.commit,JSON.parse(fs.readFileSync(path.join(repo,config.engineConfig),'utf8')).commit);
- assert.equal(config.desktopVersion,'1.6.1');assert.equal(Object.keys(config.desktopPatches).length,11);
+ assert.equal(config.upstreamTag,'v0.9.0');assert.equal(config.desktopVersion,undefined);assert.equal(config.desktopRepoCommit,undefined);
+ assert.equal(Object.keys(config.featurePatches).length,2);assert.equal(Object.keys(config.androidPatches).length,2);
+ assert.equal(config.env.RHWP_WITHOUT_AI,'1','the AI assistant (external network) stays out of the Android build');
+ for(const p of ['rhwp-shared','src/renderer/square_gradient.sksl'])assert.ok(config.sourcePaths.includes(p),p);
  assert.match(config.csp,/script-src 'self' 'wasm-unsafe-eval'/);assert.doesNotMatch(config.csp,/(^|[ ;])'unsafe-eval'/);assert.doesNotMatch(config.csp,/https?:|\*/);
 });
 test('the pinned CSP is exactly the policy MainActivity sends (the Studio may not need more than the shell allows)',()=>{
@@ -121,12 +124,12 @@ test('a tampered, extra or missing file is refused',()=>{
  s=synthetic();fs.rmSync(path.join(s.r,DEFAULT_OUT,'fonts/NanumGothic-Regular.woff2'));assert.match(errorsOf(s.r),/listed in build-info\.json but missing/);
 });
 test('a stale pin (patch set, lock, or engine core changed after the Studio was built) is refused',()=>{
- let s=synthetic();rewriteInfo(s,i=>{i.pins.androidPatches['0106-android-save-verification-private-password-recovery.patch']='0'.repeat(64);});assert.match(errorsOf(s.r),/pin "androidPatches" differs/);
- s=synthetic();rewriteInfo(s,i=>{i.pins.desktopVersion='1.6.0';});assert.match(errorsOf(s.r),/pin "desktopVersion" differs/);
+ let s=synthetic();rewriteInfo(s,i=>{i.pins.androidPatches['0102-android-host-hooks.patch']='0'.repeat(64);});assert.match(errorsOf(s.r),/pin "androidPatches" differs/);
+ s=synthetic();rewriteInfo(s,i=>{i.pins.upstreamTag='v0.8.7';});assert.match(errorsOf(s.r),/pin "upstreamTag" differs/);
  s=synthetic();rewriteInfo(s,i=>{i.core['rhwp_bg.wasm']='1'.repeat(64);});assert.match(errorsOf(s.r),/built on a different engine core/);
 });
 test('a modified patch file is refused even when build-info repeats the pins',()=>{
- const s=synthetic();fs.appendFileSync(path.join(s.r,config.androidPatchDir,'0102-android-host-bridge.patch'),'\n# tampered\n');assert.match(errorsOf(s.r),/0102-android-host-bridge\.patch does not match its pinned SHA-256/);
+ const s=synthetic();fs.appendFileSync(path.join(s.r,config.androidPatchDir,'0102-android-host-hooks.patch'),'\n# tampered\n');assert.match(errorsOf(s.r),/0102-android-host-hooks\.patch does not match its pinned SHA-256/);
  const t=synthetic();t.put(`${config.androidPatchDir}/0999-extra.patch`,'x');assert.match(errorsOf(t.r),/holds .*0999-extra\.patch/);
 });
 test('the bundled WebAssembly must be the packaged engine, and only one copy may exist',()=>{

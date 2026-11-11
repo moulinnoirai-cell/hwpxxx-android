@@ -1,6 +1,6 @@
 # hwpxxx for Android 0.3.0
 
-개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.8.7(MIT).
+개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.9.0(MIT).
 인터넷 권한이 없고 광고·분석·원격 글꼴·외부 전송이 없습니다. 문서는 기기 안에서만 처리합니다.
 
 ## 이 저장소의 출처
@@ -22,18 +22,18 @@
 | `app/src/main/java/kr/offline/hwp/FileStore.java` | 경로 검증, 문서 검증, 원자적 저장, 백업, 이동 |
 | `app/src/main/assets/studio-host.js` | 데스크톱 편집기의 Android 파일·복구·글꼴·클립보드·인쇄 연결 |
 | `app/src/main/assets/studio/` | 고정한 데스크톱 Studio에서 생성하는 편집기 번들 (Git 제외) |
-| `config/android-studio.json`, `patches/rhwp-studio/` | 데스크톱 1.6.1 소스와 Android 연결 패치의 빌드 고정 정보 |
+| `config/android-studio.json`, `patches/rhwp-studio/` | 본가 rhwp-studio(v0.9.0)와 hwpxxx 패치 시리즈(편집기 기능 + Android 연결)의 빌드 고정 정보 |
 | `app/src/main/assets/app.js` | 명시적으로 선택하는 기존 문서함·편집기 테스트 경로 |
 | `app/src/main/java/kr/offline/hwp/FontStore.java` | 가져온 TTF/OTF의 비공개 영구 보관·검증 |
 | `app/src/main/assets/intro.js` | 파일 접근 미허용 안내 3화면과 전환 |
 | `app/src/main/assets/library.css` | 승인 디자인에서 생성한 문서함·안내·팝업 스타일 (`scripts/make_library_css.py`) |
-| `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.8.7, Noto Sans KR, Lucide (원래 라이선스 포함) |
+| `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.9.0, Noto Sans KR, Lucide (원래 라이선스 포함) |
 | `design/latest-inline-fragment.html` | 승인 디자인 원본 |
 | `tests/` | FileStore JVM 시험, 브라우저 미리보기 서버, 안내 화면 타이밍 시험, rhwp 샘플 문서 |
 
 ## 0.3.0 편집 및 태블릿 지원
 
-PC 1.6.1의 메모·형광펜 모드·모양 복사·문단 간격·자간/장평·표 칸 합치기를 추가했습니다. 갤럭시 탭 S7 가로 화면에서는 오른쪽 편집 패널을 사용하고 회전 중에도 입력을 유지합니다. 범위와 기기 시험 상태는 [변경 안내](docs/CHANGES-0.3.0.md)를 참고하세요.
+메모·형광펜(본체 단추 즉시 적용 + 팔레트 ▾)·모양 복사·문단 간격·자간/장평·표 칸 합치기를 본가 rhwp 위에 얹었습니다. 갤럭시 탭 S7 가로 화면에서는 오른쪽 편집 패널을 사용하고 회전 중에도 입력을 유지합니다. 범위와 기기 시험 상태는 [변경 안내](docs/CHANGES-0.3.0.md)를 참고하세요.
 
 현재 개발 브랜치는 **데스크톱의 실제 편집기 코드**를 기본 화면으로 사용합니다. 단축키·마우스 선택·툴팁·서식·표·쪽·개체 명령을 공유하고, Android 파일 저장과 내려받은 글꼴 등록을 연결합니다. 사용법과 검증 구분은 [DeX 데스크톱 편집기](docs/DEX-DESKTOP-PARITY.md), 글꼴의 형식·보관 방식은 [글꼴 안내](docs/ANDROID-FONTS.md)를 참고하세요. 실행한 검사와 기기 확인 범위는 [검증 기록](docs/DEX-VALIDATION.md)에 정리했습니다.
 

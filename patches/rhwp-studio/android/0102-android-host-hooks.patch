@@ -1,0 +1,1565 @@
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index 367e345..331c129 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -70,6 +70,8 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
+ import { openRecentEntry } from '@/recent/recent-open';
+ 
+ import { t } from '../../i18n/index.ts';
++import { androidExportBlob, androidPrintDocument, androidWorkspaceRouting, handleAndroidWorkspaceAction, isAndroidHost, runAndroidSaveGuard, type AndroidWorkspaceAction } from '@/hwpxxx/android-host';
++import { prepareAndroidPrintJob } from '@/hwpxxx/android-print';
+ /**
+  * 파일 열기 대화상자(File System Access picker, 미지원 시 숨김 input 폴백)를 열어
+  * 문서를 로드한다. `file:open` 커맨드와 "최근 문서" 메타-only 항목 재열기가 공유한다.
+@@ -86,6 +88,15 @@ async function openFileViaPicker(services: CommandServices): Promise<void> {
+   });
+ }
+ 
++/**
++ * [hwpxxx-android] 작업 공간(탭) 호스트가 켜져 있으면 열기·새 문서·최근 문서는 현재 문서를 건드리지 않고 새 탭으로 간다
++ * (저장/버리기 확인이 필요 없다). 호출자는 `androidWorkspaceRouting()` 을 명령 시작 시점에 동기적으로 읽어야 한다.
++ * 호스트가 처리하지 않겠다고 하면(false) 옛 제자리 동작으로 돌아간다. 오류가 나도 현재 문서를 바꾸지 않는다.
++ */
++function androidWorkspaceHandled(action: AndroidWorkspaceAction, id?: string): Promise<boolean> {
++  return handleAndroidWorkspaceAction(action, id, (message) => showToast({ message, durationMs: 4500 }));
++}
++
+ /** 최근 문서 핸들의 읽기 권한을 확인/요청한다. 최종 'granted' 여부 반환. */
+ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<boolean> {
+   try {
+@@ -109,8 +120,10 @@ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<b
+  * 두 케이스 모두 fallback download 우회 — 사용자가 명시적으로 취소했으므로
+  * 의도하지 않은 Downloads 폴더 저장 + chrome-extension viewer 자동 연결 차단. */
+ function isUserCancelError(e: unknown): boolean {
++  // [hwpxxx-android] 셸은 네이티브 저장 거절(충돌·해시 불일치·권한)을 NotAllowedError 로 올린다. 사용자의 취소가 아니므로
++  // 조용히 넘기지 않고 저장 실패로 알린다(문서는 dirty 로 남는다). AbortError(선택 취소)만 취소로 본다.
+   return e instanceof DOMException
+-      && (e.name === 'AbortError' || e.name === 'NotAllowedError');
++      && (e.name === 'AbortError' || (e.name === 'NotAllowedError' && !isAndroidHost()));
+ }
+ 
+ function saveBaseNameFor(fileName: string, format: SaveFormat): string {
+@@ -145,11 +158,12 @@ interface SavePayload {
+   contentLoss: ContentLossReport | null;
+ }
+ 
+-function createSavePayload(
++async function createSavePayload(
+   services: CommandServices,
+   format: SaveFormat,
+-  password?: string,
+-): SavePayload {
++  password: string | undefined,
++  mode: 'save' | 'save-as',
++): Promise<SavePayload> {
+   const artifact: SaveExportArtifact = password === undefined
+     ? exportDocumentWithReportForFormat(services.wasm, format)
+     : exportPasswordProtectedDocumentWithReportForFormat(
+@@ -157,6 +171,24 @@ function createSavePayload(
+       requirePasswordSaveFormat(format),
+       password,
+     );
++  if (isAndroidHost()) {
++    // [hwpxxx-android] 옛 Android 작업기와 같게: 내용 손실 보고가 있으면 저장하지 않고, 내보낸 바이트를 다시 열어
++    // 글·쪽·서식·메모를 편집 중인 문서와 비교한다(비밀번호는 이 호출 범위에서만 쓴다). 하나라도 다르면 던진다.
++    if (artifact.contentLoss && artifact.contentLoss.losses.length > 0) {
++      const what = artifact.contentLoss.losses.slice(0, 3).map((item) => item.path).join(', ');
++      throw new Error(`저장하면 문서 일부(${what})가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.`);
++    }
++    services.wasm.verifyAndroidSave(artifact.bytes, format, password);
++  }
++  // [hwpxxx-android] 호스트가 등록한 저장 검사: 실제 내보낸 바이트로 왕복·보고서를 확인한다. 던지면 저장하지 않는다.
++  await runAndroidSaveGuard({
++    bytes: artifact.bytes,
++    format,
++    fileName: services.wasm.fileName,
++    encrypted: password !== undefined,
++    contentLoss: artifact.contentLoss,
++    mode,
++  });
+   return {
+     blob: new Blob([artifact.bytes as unknown as BlobPart], {
+       type: SAVE_FORMAT_DETAILS[format].mimeType,
+@@ -202,7 +234,7 @@ async function tryFileSystemSave(
+   currentHandle: FileSystemFileHandleLike | null,
+ ): Promise<SaveDocumentResult | 'cancelled'> {
+   try {
+-    return await saveDocumentToFileSystem({
++    const saved = await saveDocumentToFileSystem({
+       blob,
+       suggestedName,
+       currentHandle,
+@@ -210,13 +242,44 @@ async function tryFileSystemSave(
+       forceSaveAs,
+       saveFormat: format,
+     });
++    if (saved.method === 'fallback' && isAndroidHost()) {
++      // [hwpxxx-android] 저장 선택기가 없으면 다운로드로 돌리지 않고 실패로 알린다(문서는 dirty 로 남는다).
++      throw new Error('파일 저장 위치를 고를 수 없어 저장하지 못했습니다. 문서는 저장되지 않았습니다.');
++    }
++    return saved;
+   } catch (error) {
+     if (isUserCancelError(error)) return 'cancelled';
++    // [hwpxxx-android] 네이티브 저장 거절(충돌·해시·권한 등)을 다운로드 폴백으로 덮지 않는다.
++    if (isAndroidHost()) throw error;
+     console.warn('[file:save] File System Access API 실패, 폴백:', error);
+     return { method: 'fallback', handle: null, fileName: suggestedName };
+   }
+ }
+ 
++/**
++ * [hwpxxx-android] 저장은 여러 번 await 한다(대화상자·내보내기 검사·네이티브 쓰기). 그 사이 다른 문서가 열릴 수 있으므로 저장을 시작한
++ * 문서의 세대와 파일 핸들을 처음에 붙잡아 두고, 바이트를 만든 문서와 쓰는 대상이 같은지 확인한다. 어긋나면 쓰기 전에 눈에 보이게
++ * 멈추고, 이미 시작한 쓰기가 끝난 뒤에는 새로 열린 문서의 이름·핸들·저장 상태를 건드리지 않는다.
++ */
++interface DocumentStamp {
++  generation: number;
++  handle: FileSystemFileHandleLike | null;
++}
++
++function documentStamp(services: CommandServices): DocumentStamp {
++  return { generation: services.wasm.documentGeneration, handle: services.wasm.currentFileHandle };
++}
++
++function documentChangedSince(services: CommandServices, stamp: DocumentStamp): boolean {
++  return isAndroidHost() && services.wasm.documentGeneration !== stamp.generation;
++}
++
++function assertSameDocument(services: CommandServices, stamp: DocumentStamp): void {
++  if (documentChangedSince(services, stamp)) {
++    throw new Error('저장하는 동안 다른 문서가 열려 저장을 멈췄어요. 지금 열린 문서는 그대로예요. 이전 문서는 다시 열어 저장해 주세요.');
++  }
++}
++
+ function publishSaveProtection(services: CommandServices, protectedFile: boolean,
+   cipher: RecoveryCipher | null, generation: number): void {
+   if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+@@ -226,14 +289,22 @@ function publishSaveProtection(services: CommandServices, protectedFile: boolean
+ 
+ function completeHandleSave(
+   services: CommandServices,
++  stamp: DocumentStamp,
+   sourceFormat: string,
+   saveFormat: SaveFormat,
+   result: SaveDocumentResult,
+   reason: 'save' | 'save-as',
+   passwordProtected = false,
++  revision?: number,
+   cipher: RecoveryCipher | null = null,
+   generation = services.wasm.documentGeneration,
+ ): void {
++  if (documentChangedSince(services, stamp)) {
++    // [hwpxxx-android] 저장한 문서는 이미 닫혔다: 쓰기는 안전하게 끝났지만 지금 열린 문서의 이름·핸들·저장 상태는 바꾸지 않는다.
++    void addRecentDoc({ fileName: result.fileName, sourceFormat: saveFormat, handle: result.handle }).catch(() => undefined);
++    showToast({ message: `이전 문서 "${result.fileName}"를 저장했어요. 지금 열린 문서는 그대로예요.`, durationMs: 5000 });
++    return;
++  }
+   publishSaveProtection(services, passwordProtected, cipher, generation);
+   if (sourceFormat === 'hml') markConvertedHmlSaveHandle(result.handle);
+   if (sourceFormat === 'pdf') markConvertedPdfSaveHandle(result.handle);
+@@ -246,14 +317,24 @@ function completeHandleSave(
+   }).catch(() => undefined);
+   services.refreshDocumentStatus();
+   services.wasm.requiresPasswordForSave = passwordProtected;
+-  services.documentState.markClean(reason);
++  services.documentState.markClean(reason, revision);
+ }
+ 
+ function exportHtmlBasedFile(services: CommandServices, format: HtmlExportFormat): void {
+   const label = HTML_EXPORT_DETAILS[format].label;
+   try {
+     const file = buildHtmlExportFile(services.wasm, format, services.wasm.fileName);
+-    downloadBlob(new Blob([file.content], { type: file.mimeType }), file.fileName);
++    const exported = new Blob([file.content], { type: file.mimeType });
++    if (isAndroidHost()) {
++      // [hwpxxx-android] WebView 는 <a download> 를 조용히 버린다 — 호스트 저장 선택기로 내보내고 실패는 알린다.
++      void androidExportBlob(exported, file.fileName).catch((error) => {
++        if (isUserCancelError(error)) return;
++        const message = error instanceof Error ? error.message : String(error);
++        alert(t('command.file.exportHtmlBasedFile.message', { p1: label, p2: message }));
++      });
++      return;
++    }
++    downloadBlob(exported, file.fileName);
+   } catch (error) {
+     const message = error instanceof Error ? error.message : String(error);
+     alert(t('command.file.exportHtmlBasedFile.message', { p1: label, p2: message }));
+@@ -261,6 +342,10 @@ function exportHtmlBasedFile(services: CommandServices, format: HtmlExportFormat
+ }
+ 
+ function downloadBlob(blob: Blob, fileName: string): void {
++  if (isAndroidHost()) {
++    // [hwpxxx-android] 다운로드는 WebView 에서 버려지는데 저장 성공으로 처리되면 안 된다.
++    throw new Error('이 앱에서는 브라우저 다운로드로 저장할 수 없습니다. 저장 위치를 고를 수 없어 문서는 저장되지 않았습니다.');
++  }
+   const url = URL.createObjectURL(blob);
+   const anchor = document.createElement('a');
+   anchor.href = url;
+@@ -326,36 +411,49 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+   let recoveryCipher: RecoveryCipher | null = null;
+   const generation = services.wasm.documentGeneration;
+   try {
++    const stamp = documentStamp(services);
+     const sourceFormat = services.wasm.getSourceFormat();
+     const options = await promptSaveAsOptions(services, format);
+     if (options === null) return;
++    assertSameDocument(services, stamp);
+     password = options.password;
+ 
+     flushDeferredPaginationBeforeExplicitOutput(services, 'save-as');
+     const saveName = options.fileName;
++    services.getInputHandler()?.commitComposition();
++    // [hwpxxx] 이 내용을 만든 시점의 문서 번호 — 저장 중 새 편집이 있으면 dirty 를 유지한다.
++    assertSameDocument(services, stamp);
++    const revision = services.documentState.getRevision();
++    // [hwpxxx-android] 셸은 세션 복구 키를 쓰지 않는다(보관한 비밀번호로 복구본을 암호화).
+     recoveryCipher = password !== null ? await RecoveryCipher.create(password) : null;
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+-    const payload = createSavePayload(services, format, password ?? undefined);
+-    const originalHandle = sourceFormat === 'hml' || sourceFormat === 'pdf'
+-      ? services.wasm.currentFileHandle : null;
++    const payload = await createSavePayload(services, format, password ?? undefined, 'save-as');
++    const originalHandle = sourceFormat === 'hml' || sourceFormat === 'pdf' ? stamp.handle : null;
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+-      () => tryFileSystemSave(
+-        services,
+-        format,
+-        payload.blob,
+-        saveName,
+-        true,
+-        originalHandle,
+-      ),
++      () => {
++        assertSameDocument(services, stamp);
++        return tryFileSystemSave(
++          services,
++          format,
++          payload.blob,
++          saveName,
++          true,
++          originalHandle,
++        );
++      },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+       (saveResult) => completeHandleSave(
+         services,
++        stamp,
+         sourceFormat,
+         format,
+         saveResult as SaveDocumentResult,
+         'save-as',
+-        password !== null, recoveryCipher, generation,
++        password !== null,
++        revision,
++        recoveryCipher,
++        generation,
+       ),
+       showExportContentLoss,
+     );
+@@ -379,7 +477,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+         }).catch(() => undefined);
+         services.refreshDocumentStatus();
+         services.wasm.requiresPasswordForSave = password !== null;
+-        services.documentState.markClean('save-as');
++        services.documentState.markClean('save-as', revision);
+       },
+       showExportContentLoss,
+     );
+@@ -404,6 +502,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+   let recoveryCipher: RecoveryCipher | null = null;
+   const generation = services.wasm.documentGeneration;
+   try {
++    const stamp = documentStamp(services);
+     flushDeferredPaginationBeforeExplicitOutput(services, 'save');
+     const sourceFormat = services.wasm.getSourceFormat();
+     let target = resolveSaveTarget(
+@@ -415,6 +514,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+     if (requiresSaveFormatChoice(target, hmlEnabled)) {
+       const format = await chooseSaveAsFormat(services);
+       if (format === null) return 'cancelled';
++      assertSameDocument(services, stamp);
+       target = {
+         ...target,
+         format,
+@@ -427,27 +527,39 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       password = await showHwpSavePasswordDialog(fileNameForFormat(services.wasm.fileName, passwordFormat));
+       if (password === null) return 'cancelled';
+     }
++    assertSameDocument(services, stamp);
++    services.getInputHandler()?.commitComposition();
++    // [hwpxxx] 이 내용을 만든 시점의 문서 번호 — 저장 중 새 편집이 있으면 dirty 를 유지한다.
++    const revision = services.documentState.getRevision();
+     recoveryCipher = password !== null ? await RecoveryCipher.create(password) : null;
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+-    const payload = createSavePayload(services, target.format, password ?? undefined);
++    const payload = await createSavePayload(services, target.format, password ?? undefined, 'save');
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+-      () => tryFileSystemSave(
+-        services,
+-        target.format,
+-        payload.blob,
+-        target.suggestedName,
+-        target.forceSaveAs,
+-        services.wasm.currentFileHandle,
+-      ),
++      () => {
++        // [hwpxxx-android] 바이트를 만든 문서의 핸들로만 쓴다(그 사이 열린 문서의 핸들을 읽지 않는다).
++        assertSameDocument(services, stamp);
++        return tryFileSystemSave(
++          services,
++          target.format,
++          payload.blob,
++          target.suggestedName,
++          target.forceSaveAs,
++          stamp.handle,
++        );
++      },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+       (saveResult) => completeHandleSave(
+         services,
++        stamp,
+         sourceFormat,
+         target.format,
+         saveResult as SaveDocumentResult,
+         'save',
+-        password !== null, recoveryCipher, generation,
++        password !== null,
++        revision,
++        recoveryCipher,
++        generation,
+       ),
+       showExportContentLoss,
+     );
+@@ -463,7 +575,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       () => {
+         publishSaveProtection(services, password !== null, recoveryCipher, generation);
+         services.wasm.requiresPasswordForSave = password !== null;
+-        services.documentState.markClean('save');
++        services.documentState.markClean('save', revision);
+       },
+       showExportContentLoss,
+     );
+@@ -623,6 +735,46 @@ async function preparePrintPages(
+   return printPages;
+ }
+ 
++/**
++ * [hwpxxx-android] 인쇄/PDF: iframe·팝업 대신(CSP 가 frame-src 'none') 화면과 같은 Canvas2D 렌더러로 쪽마다 PNG 를 만들어
++ * 셸의 네이티브 서비스로 넘긴다. 가져온 글꼴은 SVG 에 실리지 않으므로 SVG 경로는 쓰지 않는다. 인쇄는 시스템 인쇄 서비스,
++ * PDF 는 새 파일 저장 선택이다. 한 번에 한 쪽만 메모리에 두고, 작업 중 문서가 바뀌면 멈춘다.
++ */
++async function runAndroidPrint(services: CommandServices, intent: 'print' | 'pdf'): Promise<void> {
++  const wasm = services.wasm;
++  const statusEl = document.getElementById('sb-message');
++  const originalStatus = statusEl?.textContent || '';
++  const controller = new AbortController();
++  const stop = () => controller.abort();
++  window.addEventListener('pagehide', stop, { once: true });
++  try {
++    flushDeferredPaginationBeforeExplicitOutput(services, intent === 'pdf' ? 'print-pdf' : 'print');
++    if (wasm.pageCount === 0) return;
++    if (statusEl) statusEl.textContent = printProgressText(intent, 0, wasm.pageCount);
++    await waitForHostPaint();
++    const revision = services.documentState.getRevision();
++    const job = await prepareAndroidPrintJob(wasm, {
++      signal: controller.signal,
++      isCurrent: () => services.documentState.getRevision() === revision,
++    });
++    await androidPrintDocument(wasm.fileName, job.pageCount, async (index) => {
++      if (statusEl) statusEl.textContent = printProgressText(intent, index + 1, job.pageCount);
++      return job.renderPage(index);
++    }, intent, controller.signal);
++    if (statusEl) statusEl.textContent = originalStatus;
++  } catch (err) {
++    if (statusEl) statusEl.textContent = originalStatus;
++    // 사용자가 대상 선택을 취소했거나 앱이 내려간 경우는 오류가 아니다.
++    if (err instanceof DOMException && err.name === 'AbortError') return;
++    const msg = err instanceof Error ? err.message : String(err);
++    console.error('[file:print-android]', msg);
++    if (statusEl) statusEl.textContent = t('command.file.statusEl.text', { p1: msg });
++    showToast({ message: t('command.file.runPdfPrint.message', { p1: msg }), durationMs: 5000 });
++  } finally {
++    window.removeEventListener('pagehide', stop);
++  }
++}
++
+ let printJobActive = false;
+ 
+ function beginPrintJob(): boolean {
+@@ -636,6 +788,10 @@ function beginPrintJob(): boolean {
+ 
+ async function runPdfPrint(services: CommandServices): Promise<void> {
+   if (!beginPrintJob()) return;
++  if (isAndroidHost()) {
++    try { await runAndroidPrint(services, 'pdf'); } finally { printJobActive = false; }
++    return;
++  }
+ 
+   const wasm = services.wasm;
+   const statusEl = document.getElementById('sb-message');
+@@ -714,6 +870,10 @@ async function runPdfPrint(services: CommandServices): Promise<void> {
+ 
+ async function runPrintPreview(services: CommandServices): Promise<void> {
+   if (!beginPrintJob()) return;
++  if (isAndroidHost()) {
++    try { await runAndroidPrint(services, 'print'); } finally { printJobActive = false; }
++    return;
++  }
+ 
+   const wasm = services.wasm;
+   const statusEl = document.getElementById('sb-message');
+@@ -775,14 +935,25 @@ export const fileCommands: CommandDef[] = [
+     icon: 'icon-new-doc',
+     shortcutLabel: 'Alt+N',
+     canExecute: () => true,
+-    execute(services) {
++    execute(services, params) {
++      // [hwpxxx-android] 작업 공간이 켜져 있으면 새 탭의 빈 문서. 꺼져 있으면 아래 옛 경로가 그대로(동기) 실행된다.
++      if (androidWorkspaceRouting(params)) {
++        void androidWorkspaceHandled('new').then((handled) => { if (!handled) services.eventBus.emit('create-new-document'); });
++        return;
++      }
+       services.eventBus.emit('create-new-document');
+     },
+   },
+   {
+     id: 'file:open',
+     label: t('command.file.open.label'),
+-    execute: openFileViaPicker,
++    execute(services, params) {
++      // [hwpxxx-android] 작업 공간이 켜져 있으면 새 탭에서 연다(현재 문서·실행 취소·저장 상태는 그대로).
++      if (androidWorkspaceRouting(params)) {
++        return androidWorkspaceHandled('open').then((handled) => (handled ? undefined : openFileViaPicker(services)));
++      }
++      return openFileViaPicker(services);
++    },
+   },
+   {
+     // 최근 문서 재열기 — 저장된 핸들 권한 재확인 후 라이브 파일 로드. params.id로 레코드 지정.
+@@ -792,6 +963,8 @@ export const fileCommands: CommandDef[] = [
+     id: 'file:open-recent',
+     label: t('command.file.openRecent.registryLabel'),
+     async execute(services, params) {
++      // [hwpxxx-android] 제자리 표식은 명령 params 에 실려 오므로 await 이후에도 같은 판단이다(첫 줄에서 읽는다).
++      const routeToWorkspace = androidWorkspaceRouting(params);
+       const id = typeof params?.id === 'string' ? params.id : undefined;
+       if (!id) return;
+       const recents = await listRecentDocs();
+@@ -800,6 +973,8 @@ export const fileCommands: CommandDef[] = [
+         showToast({ message: t('command.file.execute.message'), durationMs: 2500 });
+         return;
+       }
++      // [hwpxxx-android] 셸이 관리하는 항목은 불투명 ID 만 새 탭으로 넘긴다(핸들·FSA 객체는 다른 문서 영역으로 가지 않는다).
++      if (routeToWorkspace && entry.hostManaged && await androidWorkspaceHandled('recent', id)) return;
+ 
+       await openRecentEntry(entry, {
+         ensurePermission: ensureReadPermission,
+diff --git a/rhwp-studio/src/core/document-dirty-state.ts b/rhwp-studio/src/core/document-dirty-state.ts
+index c28ff9b..1c4fad6 100644
+--- a/rhwp-studio/src/core/document-dirty-state.ts
++++ b/rhwp-studio/src/core/document-dirty-state.ts
+@@ -13,6 +13,8 @@ export interface DirtyStateChange {
+  */
+ export class DocumentDirtyState {
+   private dirty = false;
++  // [hwpxxx] 변경마다 오르는 번호. 저장은 직렬화 시점의 번호를 기억했다가, 저장 중 새 변경이 없을 때만 clean 으로 만든다.
++  private revision = 0;
+   private beforeUnloadWindow: Window | null = null;
+   private readonly eventBus: EventBus;
+   private readonly beforeUnloadHandler = (event: BeforeUnloadEvent): string | void => {
+@@ -31,11 +33,23 @@ export class DocumentDirtyState {
+   }
+ 
+   markDirty(reason?: string): void {
++    this.revision++;
+     this.setDirty(true, reason);
+   }
+ 
+-  markClean(reason?: string): void {
++  /** 지금 문서 상태의 번호 — 저장할 내용을 만들기 직전에 읽는다. */
++  getRevision(): number {
++    return this.revision;
++  }
++
++  /**
++   * revision 을 주면 그 뒤로 변경이 없었을 때만 clean 으로 만든다(저장 중 편집은 dirty 유지).
++   * 변경이 있었으면 false 를 돌려준다.
++   */
++  markClean(reason?: string, revision?: number): boolean {
++    if (revision !== undefined && revision !== this.revision) return false;
+     this.setDirty(false, reason);
++    return true;
+   }
+ 
+   installBeforeUnload(windowLike: Window): () => void {
+diff --git a/rhwp-studio/src/core/local-fonts.ts b/rhwp-studio/src/core/local-fonts.ts
+index a4d6fd2..9bc1c7e 100644
+--- a/rhwp-studio/src/core/local-fonts.ts
++++ b/rhwp-studio/src/core/local-fonts.ts
+@@ -1048,6 +1048,51 @@ export function getLocalFonts(options: GetLocalFontsOptions = {}): string[] {
+   return normalizeFamilies(getLocalFontRecords(options).map(record => record.displayName));
+ }
+ 
++/**
++ * [hwpxxx-android] 글꼴 선택 UI(도구 모음 글꼴 상자·글자 모양·대표 글꼴 세트)가 보여 줄 호스트(가져온) 글꼴 이름.
++ *
++ * 호스트 목록은 문서 렌더러용으로 감지 snapshot 과 일부러 분리돼 있어 `getLocalFonts()` 에 없다. 선택기는 따로 합친다:
++ * - 기본 글자 서식으로 실제 face 를 고를 수 있는 가족명만 낸다. 굵게/기울임은 같은 가족의 face 를 고른다.
++ * - 가족명 + 플래그로 닿지 않는 face 는 실제로 그 face 에 닿는 전체 이름 또는 PostScript 이름으로 낸다.
++ *   굵은 글꼴만 가져온 경우나 같은 가족·굵기의 face 가 여러 개인 경우에도 무효한 선택지를 내지 않는다.
++ * 호스트 공급자가 없으면 빈 목록이다. 계산은 호출 때마다 현재 목록으로 한다(가져오기·삭제 뒤 바로 반영).
++ */
++export function getHostFontPickerNames(): string[] {
++  if (!hostFontSource.active) return [];
++  const byFamily = new Map<string, LocalFontRecord[]>();
++  for (const record of currentHostRecords()) {
++    const key = normalizeFontAlias(record.family);
++    if (!key) continue;
++    const faces = byFamily.get(key);
++    if (faces) faces.push(record); else byFamily.set(key, [record]);
++  }
++  const names: string[] = [];
++  const normal = { weight: 400, slant: 'normal' } as const;
++  const resolves = (name: string, record: LocalFontRecord, style = normal) =>
++    resolveRendererLocalFont(name, style)?.hostReference?.face.id === record.hostReference?.face.id;
++  for (const faces of byFamily.values()) {
++    const family = faces[0].family;
++    const hasDefault = faces.some(r => resolves(family, r));
++    if (hasDefault) names.push(family);
++    for (const r of faces) {
++      const weight = r.hostReference?.face.weight;
++      const slant = r.hostReference?.face.slant === 'normal' ? 'normal' : 'italic';
++      const reachableByFlags = hasDefault && (weight === 400 || weight === 700)
++        && resolveRendererLocalFont(family, { weight, slant })?.hostReference?.face.id === r.hostReference?.face.id;
++      if (!reachableByFlags) {
++        const exact = [r.fullName, r.postscriptName].find(name => name && resolves(name, r));
++        if (exact) names.push(exact);
++      }
++    }
++  }
++  return normalizeFontNames(names);
++}
++
++/** 글꼴 선택 UI 의 시스템/로컬 글꼴 목록 = 감지된 로컬 글꼴 + 호스트(가져온) 글꼴. 같은 이름(대소문자·공백·NFC 무시)은 하나로 합친다. */
++export function getFontPickerNames(): string[] {
++  return normalizeFontNames([...getLocalFonts(), ...getHostFontPickerNames()]);
++}
++
+ /** 캐시된 전체 로컬 글꼴 목록을 반환한다. */
+ export function getDetectedLocalFonts(): string[] {
+   return cachedSnapshot ? [...cachedSnapshot.families] : [];
+diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
+index cebf9b4..0e9bda1 100644
+--- a/rhwp-studio/src/core/wasm-bridge.ts
++++ b/rhwp-studio/src/core/wasm-bridge.ts
+@@ -13,7 +13,7 @@ import type { CanvasMetricDocument } from './canvas-metric-session';
+ import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
+ import type { CharShapeRun } from './types';
+ import type { HyperlinkTarget, HyperlinkContext } from './hyperlink';
+-import type { MemoAnchor } from './memo';
++import { memoApiError, type MemoAnchor, type MemoEntry } from './memo';
+ import * as wasmExports from '@wasm/rhwp.js';
+ import { inspectFontSymbols } from './wasm-font-symbol-coverage';
+ import { hasPdfImportCapability } from './pdf-import-capability';
+@@ -234,6 +234,9 @@ import {
+ } from './font-substitution';
+ import { rememberRawCanvasFontDescriptor } from './canvas-font-raw';
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
++import { isAndroidHost } from '@/hwpxxx/android-host';
++import { verifyReopenedDocument, type VerifiableDocument, type VerifyCoverage } from '@/hwpxxx/android-save-verify';
++import type { RecoveryBytes } from '@/recovery/autosave-store';
+ 
+ /**
+  * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
+@@ -327,6 +330,21 @@ function installCanvasFontSubstitution(): void {
+   canvasFontSubstitutionInstalled = true;
+ }
+ 
++const PASSWORD_REQUIRED_TEXT = '비밀번호가 필요한 암호 문서';
++
++/** 비밀번호 없이 열리면(= 암호화되지 않았으면) 던진다. `openWithPassword` 는 평문 파일도 열기 때문에 암호화 증명이 따로 필요하다. */
++function assertNeedsPassword(bytes: Uint8Array): void {
++  let opened: HwpDocument | null = null;
++  try {
++    opened = new HwpDocument(bytes);
++  } catch (error) {
++    if (String((error as { message?: unknown } | null)?.message ?? error).includes(PASSWORD_REQUIRED_TEXT)) return;
++    throw new Error('암호가 적용됐는지 확인하지 못해 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++  }
++  try { opened.free(); } catch { /* noop */ }
++  throw new Error('암호가 적용되지 않은 결과라 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++}
++
+ import { declaredOpenTypeProgram, prepareDeclaredFontPrograms, type DocumentFontSelectionPlan } from './declared-font-environment';
+ import { documentFontPreferences, applyDocumentFontPreferences } from './document-font-preferences.ts';
+ 
+@@ -343,7 +361,6 @@ export class WasmBridge {
+   private readonly nativePuaFonts = new NativePuaFontSession();
+   private readonly metafileFonts = new MetafileFontSession();
+   private canvasFontGeneration = 0;
+-
+   private canvasMetricDocument(): CanvasMetricDocument | null {
+     const doc = this.doc as unknown as Partial<CanvasMetricDocument> | null;
+     return doc && ['collectCanvasMetricRequests', 'registerCanvasMetricReplies', 'selectCanvasMetrics', 'canvasMetricsActive', 'getCanvasPageLayerTree']
+@@ -776,6 +793,47 @@ export class WasmBridge {
+     this.onRecoveryProtectionChanged?.();
+   }
+ 
++  // ── [hwpxxx-android] 저장 검증 · 복구본 손실 표시 ─────────────────────────────────────────
++
++  /**
++   * 복구본 바이트(HWP). 암호 문서도 평문으로 내보내며, 이후 `protectDraft`(upstream 복구 암호)가 세션 키로 감싼다 — 비밀번호를 보관하지 않는다.
++   * 엔진이 내용 손실을 보고하면 바이트는 그대로 두되 `lossy` 로 표시한다(복구본을 완전한 사본처럼 보이게 하지 않는다).
++   */
++  exportRecoveryBytes(): RecoveryBytes {
++    const artifact: DocumentExportArtifact = this.exportHwpWithReport();
++    const bytes: RecoveryBytes = artifact.bytes;
++    const loss = artifact.contentLoss;
++    if (loss && (loss.count > 0 || loss.losses.length > 0)) bytes.lossy = true;
++    return bytes;
++  }
++
++  /**
++   * 저장 직전, 내보낸 바이트를 다시 열어 편집 중인 문서와 비교한다. 다르면 던진다(네이티브 저장 전에 멈춘다).
++   * 비밀번호는 이 호출 범위의 지역 값으로만 쓰고 어디에도 두지 않는다. 암호 저장은 비밀번호 없이 열리지 않는지도 확인한다.
++   * 비교한 범위와 비교하지 못한 곳을 돌려준다.
++   */
++  verifyAndroidSave(bytes: Uint8Array, format: 'hwp' | 'hwpx' | 'hml', password?: string): VerifyCoverage | null {
++    if (!isAndroidHost()) return null;
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    if (password !== undefined) assertNeedsPassword(bytes);
++    let reopened: HwpDocument;
++    try {
++      reopened = password !== undefined ? HwpDocument.openWithPassword(bytes, password) : new HwpDocument(bytes);
++    } catch {
++      // 원본 오류는 입력값이 섞일 수 있어 전달하지 않는다.
++      throw new Error('저장한 문서를 다시 열 수 없어 저장을 멈췄어요. 원본은 변경하지 않았어요.');
++    }
++    try {
++      return verifyReopenedDocument(
++        this.doc as unknown as VerifiableDocument,
++        reopened as unknown as VerifiableDocument,
++        bytes.byteLength,
++        { crossFormat: this.getSourceFormat() !== format },
++      );
++    } finally {
++      try { reopened.free(); } catch { /* noop */ }
++    }
++  }
+ 
+   get isNewDocument(): boolean {
+     return this._fileName === '새 문서.hwp';
+@@ -3899,6 +3957,37 @@ export class WasmBridge {
+     return JSON.parse(this.doc.getMemoList());
+   }
+ 
++  /** [hwpxxx] 문서의 메모 전체(본문·표 칸·글상자·꼬리 영역)와 편집 가능 여부. */
++  getMemoList(): MemoEntry[] {
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    return JSON.parse(this.doc.getMemoList());
++  }
++
++  /** [hwpxxx] 본문 문단의 `[start, end)` 글자에 메모를 단다. 메모 번호(id)를 돌려준다. */
++  insertMemo(section: number, para: number, start: number, end: number, author: string, text: string): number {
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    try { return JSON.parse(this.doc.insertMemo(section, para, start, end, JSON.stringify({ author, text }))).id; }
++    catch (error) { throw memoApiError(error); }
++  }
++
++  /** [hwpxxx] 표 칸·글상자 안의 글자에 메모를 단다. */
++  insertMemoByPath(section: number, para: number, cellPath: [number, number, number][], start: number, end: number, author: string, text: string): number {
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    const path = cellPath.map(([controlIndex, cellIndex, cellParaIndex]) => ({ controlIndex, cellIndex, cellParaIndex }));
++    try { return JSON.parse(this.doc.insertMemoByPath(section, para, JSON.stringify(path), start, end, JSON.stringify({ author, text }))).id; }
++    catch (error) { throw memoApiError(error); }
++  }
++
++  setMemoText(id: number, text: string): void {
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    try { this.doc.setMemoText(id, text); } catch (error) { throw memoApiError(error); }
++  }
++
++  removeMemo(id: number): void {
++    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
++    try { this.doc.removeMemo(id); } catch (error) { throw memoApiError(error); }
++  }
++
+   insertHyperlink(target: HyperlinkTarget, start: number, end: number, uri: string): number {
+     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+     return this.doc.insertHyperlinkEx(JSON.stringify({ target, start, end, uri }));
+diff --git a/rhwp-studio/src/history/idb-store.ts b/rhwp-studio/src/history/idb-store.ts
+index 9f2c815..2a83400 100644
+--- a/rhwp-studio/src/history/idb-store.ts
++++ b/rhwp-studio/src/history/idb-store.ts
+@@ -6,6 +6,15 @@
+ 
+ import type { CompareDocumentSnapshot } from '@/compare/types';
+ import type { DocHistoryEntryMeta } from './types';
++import {
++  MAX_HISTORY_META_BYTES,
++  MAX_HISTORY_SNAPSHOT_BYTES,
++  androidHistoryStore,
++  clearHistoryVolatile,
++  forgetHistoryVolatile,
++  markHistoryVolatile,
++  type HistoryVolatileReason,
++} from '../hwpxxx/android-state.ts';
+ 
+ const DB_NAME = 'rhwpStudioDocHistory';
+ const DB_VER = 1;
+@@ -28,7 +37,8 @@ export type HistoryPayload =
+   | { kind: 'legacy'; bytes: Uint8Array };
+ 
+ function idbAvailable(): boolean {
+-  return typeof indexedDB !== 'undefined';
++  // [hwpxxx-android] 셸이 있으면 전체 문서가 담긴 이력은 IndexedDB 에 쓰지 않는다(셸의 암호화 저장소 또는 세션 메모리만).
++  return androidHistoryStore() === undefined && typeof indexedDB !== 'undefined';
+ }
+ 
+ function openDb(): Promise<IDBDatabase | null> {
+@@ -62,6 +72,13 @@ async function listMetaMemory(): Promise<MetaRow[]> {
+ }
+ 
+ export async function listHistoryMeta(): Promise<MetaRow[]> {
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    // 세션 메모리(암호 문서·저장소 없음) + 셸 저장소. 저장소 오류는 숨기지 않고 던진다.
++    const stored = android ? (await android.list()) as MetaRow[] : [];
++    const seen = new Set(stored.map((m) => m.id));
++    return [...stored, ...(await listMetaMemory()).filter((m) => !seen.has(m.id))].sort((a, b) => b.createdAt - a.createdAt);
++  }
+   return withDb(
+     async (db) =>
+       new Promise((resolve, reject) => {
+@@ -86,6 +103,17 @@ export async function getHistoryPayload(id: string): Promise<HistoryPayload | nu
+     if (mem.legacyBytes) return { kind: 'legacy', bytes: mem.legacyBytes };
+     return null;
+   }
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (!android) return null;
++    const bytes = await android.get(id);
++    if (!bytes) return null;
++    try {
++      return { kind: 'ir', snapshot: JSON.parse(new TextDecoder().decode(bytes)) as CompareDocumentSnapshot };
++    } catch {
++      return null;
++    }
++  }
+   return withDb(
+     async (db) =>
+       new Promise<HistoryPayload | null>((resolve, reject) => {
+@@ -147,6 +175,8 @@ export async function saveHistoryIrSnapshot(
+   label: string,
+   sourceFileName: string,
+   snapshot: CompareDocumentSnapshot,
++  /** [hwpxxx-android] `encrypted`: 암호 문서 — 어떤 경우에도 디스크에 두지 않는다. */
++  options: { encrypted?: boolean } = {},
+ ): Promise<DocHistoryEntryMeta> {
+   const id = globalThis.crypto?.randomUUID?.() ?? `h_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+   const createdAt = Date.now();
+@@ -161,6 +191,27 @@ export async function saveHistoryIrSnapshot(
+     storageKind: 'ir',
+   };
+ 
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    const reason: HistoryVolatileReason | null = options.encrypted ? 'encrypted' : android ? null : 'no-store';
++    if (reason) {
++      while (memory.size >= MAX_SNAPSHOTS) {
++        const oldest = [...memory.entries()].sort((a, b) => a[1].meta.createdAt - b[1].meta.createdAt)[0];
++        if (oldest) { memory.delete(oldest[0]); forgetHistoryVolatile(oldest[0]); }
++      }
++      memory.set(id, { meta, irSnapshot: cloneSnapshot(snapshot) });
++      markHistoryVolatile(id, reason);
++      return meta;
++    }
++    const bytes = new TextEncoder().encode(json);
++    if (bytes.byteLength > MAX_HISTORY_SNAPSHOT_BYTES) throw new Error('이 문서의 이력이 너무 커서 저장하지 못했어요.');
++    if (new TextEncoder().encode(JSON.stringify(meta)).byteLength > MAX_HISTORY_META_BYTES) throw new Error('이력 이름이 너무 길어요.');
++    await android!.put(meta as never, bytes);          // 실패하면 그대로 던진다: IndexedDB·메모리로 돌리지 않는다.
++    const all = (await android!.list()).sort((a, b) => b.createdAt - a.createdAt);
++    for (const old of all.slice(MAX_SNAPSHOTS)) await android!.delete(old.id);
++    return meta;
++  }
++
+   const db = await openDb();
+   if (!db) {
+     while (memory.size >= MAX_SNAPSHOTS) {
+@@ -188,6 +239,12 @@ export async function saveHistoryIrSnapshot(
+ 
+ export async function deleteHistorySnapshot(id: string): Promise<void> {
+   memory.delete(id);
++  forgetHistoryVolatile(id);
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (android) await android.delete(id);
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+@@ -203,6 +260,12 @@ export async function deleteHistorySnapshot(id: string): Promise<void> {
+ 
+ export async function clearHistory(): Promise<void> {
+   memory.clear();
++  clearHistoryVolatile();
++  const android = androidHistoryStore();
++  if (android !== undefined) {
++    if (android) await android.clear();
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 7049ad6..0cbbf4c 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -33,6 +33,7 @@ import type { ChromeVisibility } from '@/automation/types';
+ import { PluginHostRegistry } from '@/plugin/host';
+ import type { StudioPlugin } from '@/plugin/types';
+ import { CommandDispatcher } from '@/command/dispatcher';
++import { installMemoMarks } from '@/hwpxxx/memo-marks';
+ import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
+ import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+ import { handleDocumentSelectAllShortcut, isTextEditingTarget } from '@/command/document-shortcut-guard';
+@@ -86,7 +87,7 @@ import { userSettings } from '@/core/user-settings';
+ import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
+ import { clearAutosaveDrafts, deleteAutosaveDraft, getAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
+ import { recoveryFileName } from '@/recovery/recovery-format';
+-import { showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
++import { autosaveErrorMessage, restoredDraftToast, showAutosaveRecoveryDialog } from '@/recovery/recovery-ui';
+ import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
+ import { cellSelectionPhaseLabel, type CellSelectionPhase } from '@/engine/cell-selection-phase';
+ import { TableObjectRenderer } from '@/engine/table-object-renderer';
+@@ -120,6 +121,15 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+ import { enrichFontDecisionTrace } from '@/core/font-decision-trace';
+ import { DocumentAgentController } from '@/document-agent/controller';
+ import { initI18n, t } from '@/i18n/index.ts';
++import { onlyEmptyLinesegWarnings } from '@/core/lineseg-autoreflow';
++import { initCommandTooltips } from '@/ui/command-tooltip';
++import {
++  androidRecoveryUnavailable,
++  createAndroidHostApi,
++  isAndroidHost,
++  notifyAndroidReady,
++  recordAutosaveStatus,
++} from '@/hwpxxx/android-host';
+ import { SidePanelController, createDomSidePanelView } from '@/view/side-panel-host';
+ import { navigateToSearchHit } from '@/ui/find-dialog';
+ 
+@@ -141,9 +151,13 @@ Object.defineProperty(window, 'rhwpCommandErrors', { value: Object.freeze({
+ }), configurable: true });
+ documentState.installBeforeUnload(window);
+ const autosaveManager = new AutosaveManager({
+-  exportBytes: () => wasm.exportHwp(),
+-  // No plaintext persistence: protected documents need a session-only recovery key.
+-  isRecoveryBlocked: () => wasm.requiresPasswordForSave && !wasm.recoveryCipher,
++  // [hwpxxx-android] 셸에서는 엔진의 내용 손실 보고를 복구본에 표시한다(바이트는 그대로).
++  exportBytes: () => (isAndroidHost() ? wasm.exportRecoveryBytes() : wasm.exportHwp()),
++  isEncrypted: () => isAndroidHost() && wasm.requiresPasswordForSave,
++  // exportHwp()는 평문 HWP 바이트를 만든다. 보호 문서에서는 세션 복구 키가 없으면 복구본을 남기지 않는다 (#5992).
++  // [hwpxxx-android] 셸에서는 비공개 복구 저장소가 없으면 막는다(암호 문서의 보호는 upstream 규칙 그대로다).
++  isRecoveryBlocked: () => (isAndroidHost() && androidRecoveryUnavailable())
++    || (wasm.requiresPasswordForSave && !wasm.recoveryCipher),
+   protectDraft: async draft => {
+     if (!wasm.requiresPasswordForSave) return draft;
+     const cipher = wasm.recoveryCipher;
+@@ -188,6 +202,21 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
+   forms: { setActionsEnabled: setFormActionsEnabled },
+   fonts: { setProvider: setHostFontProvider, getState: getHostFontState },
+ };
++// [hwpxxx-android] 셸이 부르는 API. 셸(`window.rhwpAndroidHost`)이 있을 때만 노출한다.
++if (isAndroidHost()) {
++  (window as any).rhwpStudio.android = createAndroidHostApi({
++    hasDocument: () => wasm.pageCount > 0,
++    getFileName: () => wasm.fileName,
++    isDirty: () => documentState.isDirty(),
++    isEncrypted: () => wasm.requiresPasswordForSave,
++    getFormat: () => wasm.getSourceFormat() as 'hwp' | 'hwpx' | 'hml',
++    getFileHandle: () => wasm.currentFileHandle,
++    discardRecovery: (reason) => autosaveManager.discardCurrentDraft(reason),
++    canReplaceDocument: () => canReplaceCurrentDocument(),
++    flushAutosave: (reason) => autosaveManager.flushNow(reason),
++    newDocument: () => eventBus.emit('create-new-document'),
++  });
++}
+ 
+ // E2E 테스트용 전역 노출 (개발 모드 전용)
+ if (import.meta.env.DEV) {
+@@ -315,6 +344,7 @@ const commandServices: CommandServices = {
+ };
+ 
+ const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
++installMemoMarks(commandServices); // [hwpxxx] 문서 화면의 메모 표시(글자 칠·오른쪽 메모 상자·안내선)
+ 
+ // 자동화 표면 — 외부 JavaScript 가 커맨드·메뉴를 다루는 자리. 실행은 메뉴·툴바·키보드와 같은
+ // dispatcher 를 타므로 게이트가 갈리지 않는다. 메뉴 컨테이너는 이 시점에 아직 없을 수 있어
+@@ -419,6 +449,8 @@ registry.registerAll(insertCommands);
+ registry.registerAll(tableCommands);
+ registry.registerAll(pageCommands);
+ registry.registerAll(toolCommands);
++// [hwpxxx] 도구 막대 버튼 툴팁(기능 이름 + 실제 단축키)
++initCommandTooltips(registry, dispatcher);
+ 
+ /**
+  * embed 프로파일의 메뉴·도구막대 정리 — index.html은 그대로 두고 부트 시 런타임에
+@@ -477,6 +509,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
+ }
+ 
+ function handleAutosaveStatus(status: AutosaveStatus): void {
++  recordAutosaveStatus(status);
+   const message = document.getElementById('sb-message');
+   if (!message) return;
+   if (autosaveStatusRestoreTimer) {
+@@ -500,9 +533,11 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
+     nextMessage = `${status.encrypted ? '암호화 복구본 자동 저장' : '복구용 자동 저장'} 완료 (${formatBytes(status.byteLength)})`;
+   } else if (status.state === 'blocked') {
+     // 실패가 아니라 의도된 차단이므로 구분해서 알린다 (#5992).
+-    nextMessage = '보호 문서는 복구용 자동 저장을 하지 않습니다';
++    nextMessage = androidRecoveryUnavailable()
++      ? '비공개 복구 저장소가 없어 복구용 자동 저장을 하지 않습니다'
++      : '보호 문서는 복구용 자동 저장을 하지 않습니다';
+   } else {
+-    nextMessage = '복구용 자동 저장 실패';
++    nextMessage = autosaveErrorMessage(status.error);
+   }
+   message.textContent = nextMessage;
+   if (restoreTarget !== null && restoreTarget !== nextMessage) {
+@@ -935,6 +970,8 @@ async function initialize(): Promise<void> {
+         },
+       });
+     }
++    // [hwpxxx-android] 소비자(launchQueue)까지 설치된 뒤에 셸에 준비됐음을 알린다(글꼴 제공자 등록·보류된 파일 전달).
++    if (isAndroidHost()) notifyAndroidReady((window as any).rhwpStudio);
+ 
+     // E2E 테스트용 전역 노출 (개발 모드 전용)
+     if (import.meta.env.DEV) {
+@@ -1527,6 +1564,15 @@ async function initializeDocument(
+       }, extensionViewerSettings);
+     }
+     console.log('[initDoc] 2. 폰트 로딩 완료');
++    // [hwpxxx] 줄 정보가 없는 HWPX(다른 도구가 만든 문서)는 열면서 한 번 줄 정보를 계산한다. 편집으로 치지 않는다.
++    try {
++      if (wasm.getSourceFormat() === 'hwpx' && onlyEmptyLinesegWarnings(wasm.getValidationWarnings())) {
++        const reflowed = wasm.reflowLinesegs();
++        console.log(`[hwpxxx] 줄 정보 없는 문단 ${reflowed}개 보정`);
++      }
++    } catch (e) {
++      console.warn('[hwpxxx] 줄 정보 보정 실패 (치명적이지 않음):', e);
++    }
+     await updateLoadProgress(75, '문서 상태 적용 중...');
+     totalSections = docInfo.sectionCount ?? 1;
+     sbSection().textContent = t('ui.sbSection.text', { p1: 1, p2: totalSections });
+@@ -1982,10 +2028,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+   finally { if (draft.protection) data.fill(0); }
+   await deleteAutosaveDraft(draft.id);
+   documentState.markDirty('autosave-recovered');
+-  showToast({
+-    message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
+-    durationMs: 5000,
+-  });
++  // [hwpxxx-android] 엔진이 내용 손실을 보고한 복구본은 닫기를 눌러야 사라지는 경고를 붙인다(그 밖에는 upstream 안내와 같다).
++  showToast(restoredDraftToast(fileName, draft));
+ }
+ 
+ 
+diff --git a/rhwp-studio/src/recent/recent-open.ts b/rhwp-studio/src/recent/recent-open.ts
+index db34b47..300a91e 100644
+--- a/rhwp-studio/src/recent/recent-open.ts
++++ b/rhwp-studio/src/recent/recent-open.ts
+@@ -11,6 +11,7 @@
+ 
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
+ import type { RecentDoc } from './recent-store';
++import { androidRecentStore } from '../hwpxxx/android-state.ts';
+ 
+ export interface OpenRecentDeps {
+   ensurePermission: (handle: FileSystemFileHandleLike) => Promise<boolean>;
+@@ -27,14 +28,62 @@ export interface OpenRecentDeps {
+    * 미주입 시 안내 토스트만 띄운다.
+    */
+   requestReopen?: () => void;
++  /** [hwpxxx-android] 셸 항목을 불투명 ID 로 다시 연다(기본: 셸의 `recent.open`). */
++  hostOpen?: (id: string) => Promise<FileSystemFileHandleLike>;
+ }
+ 
+-export type OpenRecentResult = 'opened' | 'permission-denied' | 'removed' | 'needs-pick';
++export type OpenRecentResult = 'opened' | 'permission-denied' | 'removed' | 'needs-pick' | 'failed';
++
++/**
++ * [hwpxxx-android] 셸이 관리하는 항목의 재열기. 셸이 권한·존재·읽기를 재확인해 새 핸들을 준다.
++ * - NotFoundError   → 항목 제거 + 안내
++ * - NotAllowedError → 항목 유지 + 안내 + 파일 선택 창(권한이 사라졌어도 죽은 명령이 되지 않는다)
++ * - 그 밖의 오류    → 안내(항목 유지)
++ * 성공하면 일반 열기 경로(open-document-bytes, 저장하지 않은 변경 확인 포함)로 넘긴다.
++ */
++async function openHostRecent(entry: RecentDoc, deps: OpenRecentDeps): Promise<OpenRecentResult> {
++  const open = deps.hostOpen ?? ((id: string) => {
++    const store = androidRecentStore();
++    if (!store) throw new DOMException('셸의 최근 문서 저장소가 없습니다.', 'NotAllowedError');
++    return store.open(id);
++  });
++  const fail = async (err: unknown): Promise<OpenRecentResult> => {
++    const name = (err as { name?: string } | null)?.name;
++    if (name === 'NotFoundError') {
++      await deps.remove(entry.id);
++      deps.toast(`"${entry.fileName}" 파일을 찾을 수 없어 목록에서 제거했습니다.`, 3500);
++      return 'removed';
++    }
++    if (name === 'NotAllowedError') {
++      deps.toast(`"${entry.fileName}"에 접근할 수 없어요(권한이 바뀌었을 수 있어요). 파일을 다시 선택해 주세요.`, 4500);
++      deps.requestReopen?.();
++      return 'needs-pick';
++    }
++    const message = err instanceof Error ? err.message : String(err);
++    deps.toast(`"${entry.fileName}"을(를) 열지 못했어요: ${message}`, 4500);
++    return 'failed';
++  };
++  let handle: FileSystemFileHandleLike;
++  try {
++    handle = await open(entry.id);
++  } catch (err) {
++    return fail(err);
++  }
++  try {
++    const { bytes, name } = await deps.readFile(handle);
++    deps.emitOpen({ bytes, fileName: name, fileHandle: handle });
++    return 'opened';
++  } catch (err) {
++    return fail(err);
++  }
++}
+ 
+ export async function openRecentEntry(
+   entry: RecentDoc,
+   deps: OpenRecentDeps,
+ ): Promise<OpenRecentResult> {
++  if (entry.hostManaged) return openHostRecent(entry, deps);
++
+   // 메타-only 항목: 라이브 핸들이 없어 자동 재열기 불가 → 파일 다시 선택 유도.
+   if (!entry.handle) {
+     deps.toast(
+diff --git a/rhwp-studio/src/recent/recent-store.ts b/rhwp-studio/src/recent/recent-store.ts
+index d68402f..19f091a 100644
+--- a/rhwp-studio/src/recent/recent-store.ts
++++ b/rhwp-studio/src/recent/recent-store.ts
+@@ -16,6 +16,7 @@
+  */
+ 
+ import type { FileSystemFileHandleLike } from '@/command/file-system-access';
++import { androidRecentStore } from '../hwpxxx/android-state.ts';
+ 
+ const DB_NAME = 'rhwpStudioRecent';
+ const DB_VER = 1;
+@@ -38,6 +39,11 @@ export interface RecentDoc {
+    * (`handle` 미존재), 이 경우 자동 재열기는 불가하고 목록/이력 표시에만 쓰인다.
+    */
+   handle?: FileSystemFileHandleLike;
++  /**
++   * [hwpxxx-android] 셸의 비공개 저장소가 관리하는 항목: 핸들 대신 불투명 ID 로 다시 연다(권한·존재를 셸이 재확인).
++   * 없으면(메타-only) 파일을 다시 고르게 한다.
++   */
++  hostManaged?: boolean;
+ }
+ 
+ /** addRecentDoc 입력 (id/openedAt는 내부 생성) */
+@@ -54,7 +60,8 @@ export interface RecentDocInput {
+ const memory = new Map<string, RecentDoc>();
+ 
+ function idbAvailable(): boolean {
+-  return typeof indexedDB !== 'undefined';
++  // [hwpxxx-android] 셸이 있으면 최근 문서는 IndexedDB 에 쓰지 않는다(셸 저장소, 없으면 세션 메모리 — 파일명만).
++  return androidRecentStore() === undefined && typeof indexedDB !== 'undefined';
+ }
+ 
+ function createRecentId(): string {
+@@ -144,6 +151,12 @@ function sortAndTrim(rows: RecentDoc[]): RecentDoc[] {
+  * 로 재시도한다 — 기록 자체는 남긴다.
+  */
+ export async function addRecentDoc(input: RecentDocInput): Promise<void> {
++  const android = androidRecentStore();
++  if (android) {
++    // 핸들은 셸 자신의 객체다: 셸이 사용자가 고른 원본만 불투명 토큰으로 바꿔 저장한다(경로·URI·함수는 저장하지 않는다).
++    await android.add({ fileName: input.fileName, sourceFormat: input.sourceFormat }, input.handle ?? null);
++    return;
++  }
+   const entry: RecentDoc = {
+     id: createRecentId(),
+     fileName: input.fileName,
+@@ -190,6 +203,17 @@ export async function addRecentDoc(input: RecentDocInput): Promise<void> {
+ 
+ /** 최근 문서 목록(최신순). */
+ export async function listRecentDocs(): Promise<RecentDoc[]> {
++  const android = androidRecentStore();
++  if (android) {
++    const rows = await android.list();
++    return sortAndTrim(rows.map((r): RecentDoc => ({
++      id: r.id,
++      fileName: r.fileName,
++      sourceFormat: r.sourceFormat,
++      openedAt: r.openedAt,
++      ...(r.reopenable ? { hostManaged: true } : {}),
++    })));
++  }
+   return withDb(
+     async (db) => sortAndTrim(await getAllRows(db)),
+     async () => sortAndTrim([...memory.values()]),
+@@ -199,6 +223,11 @@ export async function listRecentDocs(): Promise<RecentDoc[]> {
+ /** 특정 최근 문서를 제거한다. */
+ export async function removeRecentDoc(id: string): Promise<void> {
+   memory.delete(id);
++  const android = androidRecentStore();
++  if (android) {
++    await android.remove(id);
++    return;
++  }
+   await withDb(
+     async (db) => deleteRow(db, id),
+     async () => {},
+@@ -208,6 +237,11 @@ export async function removeRecentDoc(id: string): Promise<void> {
+ /** 최근 문서 목록 전체 삭제. */
+ export async function clearRecentDocs(): Promise<void> {
+   memory.clear();
++  const android = androidRecentStore();
++  if (android) {
++    await android.clear();
++    return;
++  }
+   await withDb(
+     async (db) =>
+       new Promise<void>((resolve, reject) => {
+diff --git a/rhwp-studio/src/recovery/autosave-manager.ts b/rhwp-studio/src/recovery/autosave-manager.ts
+index 2385683..d4f1de1 100644
+--- a/rhwp-studio/src/recovery/autosave-manager.ts
++++ b/rhwp-studio/src/recovery/autosave-manager.ts
+@@ -39,6 +39,8 @@ export interface AutosaveManagerOptions {
+    * 막기 위한 fail-closed 조건이다 (#5992).
+    */
+   isRecoveryBlocked?: () => boolean;
++  /** [hwpxxx-android] 복구본이 비밀번호로 암호화된 바이트이면 draft 메타데이터에 표시한다. */
++  isEncrypted?: () => boolean;
+   debounceMs?: number;
+   minSaveIntervalMs?: number;
+   schedule?: Partial<AutosaveScheduleSettings>;
+@@ -66,6 +68,7 @@ export class AutosaveManager {
+   private readonly exportBytes: () => Uint8Array;
+   private readonly protectDraft?: (draft: AutosaveDraft) => Promise<AutosaveDraft>;
+   private readonly isRecoveryBlocked: () => boolean;
++  private readonly isEncrypted: () => boolean;
+   private readonly now: () => number;
+   private readonly idFactory: () => string;
+   private readonly store: AutosaveStoreLike;
+@@ -86,6 +89,7 @@ export class AutosaveManager {
+     this.exportBytes = options.exportBytes;
+     this.protectDraft = options.protectDraft;
+     this.isRecoveryBlocked = options.isRecoveryBlocked ?? (() => false);
++    this.isEncrypted = options.isEncrypted ?? (() => false);
+     this.scheduleSettings = normalizeSchedule({
+       recoveryEnabled: true,
+       recoveryIntervalMs: options.minSaveIntervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS,
+@@ -133,6 +137,9 @@ export class AutosaveManager {
+     this.cancelTimers();
+     this.pendingReason = null;
+     this.lastSavedAt = 0;
++    // [hwpxxx-android] 이전 문서의 복구본을 지우는 교체라면 진행 중인 저장도 '버려진 저장'으로 만든다 — 그렇지 않으면 방금 지운
++    // 이전 문서(암호 문서 포함)의 복구본이 늦게 끝난 저장으로 되살아나 비공개 저장소에 남는다.
++    if (options.discardPreviousDraft && previousDraftId) this.discardGeneration += 1;
+     this.current = {
+       draftId: meta.draftId ?? this.idFactory(),
+       fileName: meta.fileName,
+@@ -206,7 +213,12 @@ export class AutosaveManager {
+     this.cancelTimers();
+     this.onStatus?.({ state: 'saving', reason });
+     try {
++      // [hwpxxx-android] 암호 표시는 바이트를 만들기 전과 후에 같아야 한다(보호 상태가 바뀌는 사이에 평문이 암호 복구본으로
++      // 표시되거나 그 반대가 되면 안 된다). 둘 다 같은 동기 구간이라 어긋나면 안 되는 일이지만, 어긋나면 저장하지 않는다.
++      const encryptedBefore = this.isEncrypted();
+       const bytes = this.exportBytes();
++      const encrypted = this.isEncrypted();
++      if (encrypted !== encryptedBefore) throw new Error('복구본을 만드는 사이 보호 상태가 바뀌어 저장하지 않았습니다.');
+       const savedAt = this.now();
+       const generationAtStart = this.discardGeneration;
+       let draft: AutosaveDraft = {
+@@ -217,6 +229,9 @@ export class AutosaveManager {
+         byteLength: bytes.byteLength,
+         data: new Uint8Array(bytes),
+         dirtyReason: reason,
++        ...(encrypted ? { encrypted: true } : {}),
++        // [hwpxxx-android] 내용 손실 보고가 있는 복구본은 완전한 사본으로 보이지 않도록 표시한다.
++        ...((bytes as { lossy?: boolean }).lossy === true ? { lossy: true } : {}),
+       };
+       if (this.protectDraft) draft = await this.protectDraft(draft);
+       if (this.discardGeneration !== generationAtStart || this.current !== current) return;
+diff --git a/rhwp-studio/src/recovery/autosave-store.ts b/rhwp-studio/src/recovery/autosave-store.ts
+index 82f1291..d785c28 100644
+--- a/rhwp-studio/src/recovery/autosave-store.ts
++++ b/rhwp-studio/src/recovery/autosave-store.ts
+@@ -5,6 +5,8 @@
+  * IndexedDB를 사용할 수 없는 테스트/제한 환경에서는 메모리 저장소로 폴백한다.
+  */
+ 
++import { getAndroidRecoveryStore } from '../hwpxxx/android-host.ts';
++import { packProtectedDraftData, unpackProtectedDraftData } from '../hwpxxx/android-draft-envelope.ts';
+ import type { RecoveryEnvelope } from './recovery-crypto.ts';
+ 
+ const DB_NAME = 'rhwpStudioAutosave';
+@@ -20,9 +22,19 @@ export interface AutosaveDraft {
+   byteLength: number;
+   data: Uint8Array;
+   dirtyReason?: string;
++  /** [hwpxxx-android] 비밀번호로 암호화된 복구본인가(비밀번호는 저장하지 않는다). */
++  encrypted?: boolean;
++  /**
++   * [hwpxxx-android] 엔진이 '이 복구본은 일부 개체가 빠졌다'고 보고했는가(내용 손실 보고). 옛 Android 작업기의 `lossy` 와 같다.
++   * 복구본을 완전한 사본처럼 보이게 하지 않으려는 표시이며, 이 표시를 저장·복원할 수 있다고 알린 셸에만 저장한다.
++   */
++  lossy?: boolean;
+   protection?: RecoveryEnvelope;
+ }
+ 
++/** 복구용으로 내보낸 바이트. 내용 손실 보고가 있으면 `lossy` 가 true 다(바이트 자체는 그대로). */
++export type RecoveryBytes = Uint8Array & { lossy?: boolean };
++
+ type DraftRow = Omit<AutosaveDraft, 'data'> & { data?: ArrayBuffer };
+ 
+ const memory = new Map<string, AutosaveDraft>();
+@@ -41,6 +53,37 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+   return copy.buffer as ArrayBuffer;
+ }
+ 
++/**
++ * [hwpxxx-android] 셸 저장소와 주고받는 복구본은 알려진 필드만 담는다 — 호출한 쪽이 실수로 덧붙인 값(비밀번호 등)이 비공개 저장소의
++ * 메타데이터로 가지 않게 한다. `encrypted` 는 정확히 true 일 때만 남긴다.
++ */
++function sanitizeDraft(draft: AutosaveDraft): AutosaveDraft {
++  // 셸이 데이터를 주지 않은(손상된) 항목은 빈 데이터로 돌려 목록에서 걸러지게 한다(목록 전체가 실패하지 않게).
++  const data = draft.data instanceof Uint8Array ? draft.data : new Uint8Array(0);
++  // upstream 의 보호 복구본은 봉투를 암호문 앞에 붙여 한 덩어리로 보관한다(셸 저장소에는 봉투 자리가 없다).
++  const packed = draft.protection ? packProtectedDraftData(data, draft.protection) : data;
++  return {
++    id: draft.id,
++    fileName: draft.fileName,
++    sourceFormat: draft.sourceFormat,
++    savedAt: draft.savedAt,
++    byteLength: packed.byteLength,
++    data: cloneBytes(packed),
++    ...(typeof draft.dirtyReason === 'string' ? { dirtyReason: draft.dirtyReason } : {}),
++    ...(draft.encrypted === true || draft.protection ? { encrypted: true } : {}),
++    ...(draft.lossy === true ? { lossy: true } : {}),
++  };
++}
++
++/** 셸 저장소에서 읽은 복구본: 포장된 봉투가 있으면 풀어 `protection` 으로 되돌린다. */
++function fromAndroidDraft(stored: AutosaveDraft): AutosaveDraft {
++  const draft = sanitizeDraft(stored);
++  if (draft.encrypted !== true) return draft;
++  const unpacked = unpackProtectedDraftData(draft.data);
++  if (!unpacked) return draft;
++  return { ...draft, data: unpacked.data, byteLength: unpacked.data.byteLength, protection: unpacked.protection };
++}
++
+ function cloneDraft(draft: AutosaveDraft): AutosaveDraft {
+   return { ...draft, data: cloneBytes(draft.data),
+     ...(draft.protection ? { protection: structuredClone(draft.protection) } : {}) };
+@@ -123,7 +166,28 @@ export function createAutosaveDraftId(): string {
+   return globalThis.crypto?.randomUUID?.() ?? `draft_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+ }
+ 
++/**
++ * [hwpxxx-android] 셸(`rhwpAndroidHost`)이 있으면 복구본은 셸의 비공개(암호화) 저장소로만 간다.
++ * 저장소가 없으면 IndexedDB·메모리에도 평문을 남기지 않는다(저장은 실패, 목록은 비어 있음).
++ */
++function androidRecoveryStore() {
++  return getAndroidRecoveryStore();
++}
++
+ export async function saveAutosaveDraft(draft: AutosaveDraft): Promise<void> {
++  const android = androidRecoveryStore();
++  if (android === null) throw new Error('비공개 복구 저장소가 없어 복구본을 저장하지 않습니다.');
++  if (android) {
++    // 내용이 빠졌을 수 있는 복구본은 그 사실을 저장·표시할 수 있다고 알린 셸에만 맡긴다. 아니면 '완전한 복구본'처럼 보이게 되므로
++    // 보이는 실패로 멈춘다(평문으로 돌리지도, 표시 없이 저장하지도 않는다).
++    if (draft.lossy === true && (android as { supportsLossyDrafts?: unknown }).supportsLossyDrafts !== true) {
++      throw new Error('일부 개체가 빠졌을 수 있는 복구본이라 표시할 수 없어 복구용 자동 저장을 하지 않았습니다.');
++    }
++    await android.saveDraft(sanitizeDraft(draft));
++    return;
++  }
++  // 암호화된 복구본은 셸의 비공개 저장소 전용이다. IndexedDB·메모리에는 두지 않는다.
++  if (draft.encrypted === true) throw new Error('암호화된 복구본은 비공개 복구 저장소에만 저장할 수 있습니다.');
+   const normalized = cloneDraft({
+     ...draft,
+     byteLength: draft.data.byteLength,
+@@ -147,6 +211,12 @@ export async function saveAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+ }
+ 
+ export async function getAutosaveDraft(id: string): Promise<AutosaveDraft | null> {
++  const android = androidRecoveryStore();
++  if (android === null) return null;
++  if (android) {
++    const found = await android.getDraft(id);
++    return found ? fromAndroidDraft(found) : null;
++  }
+   const mem = memory.get(id);
+   if (mem) return cloneDraft(mem);
+ 
+@@ -166,6 +236,9 @@ export async function getAutosaveDraft(id: string): Promise<AutosaveDraft | null
+ }
+ 
+ export async function listAutosaveDrafts(): Promise<AutosaveDraft[]> {
++  const android = androidRecoveryStore();
++  if (android === null) return [];
++  if (android) return (await android.listDrafts()).map(fromAndroidDraft).sort((a, b) => b.savedAt - a.savedAt);
+   return withDb(
+     async (db) =>
+       new Promise<AutosaveDraft[]>((resolve, reject) => {
+@@ -182,6 +255,12 @@ export async function listAutosaveDrafts(): Promise<AutosaveDraft[]> {
+ }
+ 
+ export async function deleteAutosaveDraft(id: string): Promise<void> {
++  const android = androidRecoveryStore();
++  if (android === null) return;
++  if (android) {
++    await android.deleteDraft(id);
++    return;
++  }
+   memory.delete(id);
+   await withDb(
+     async (db) =>
+@@ -196,6 +275,12 @@ export async function deleteAutosaveDraft(id: string): Promise<void> {
+ }
+ 
+ export async function clearAutosaveDrafts(): Promise<void> {
++  const android = androidRecoveryStore();
++  if (android === null) return;
++  if (android) {
++    await android.clearDrafts();
++    return;
++  }
+   memory.clear();
+   await withDb(
+     async (db) =>
+diff --git a/rhwp-studio/src/recovery/recovery-ui.ts b/rhwp-studio/src/recovery/recovery-ui.ts
+index 6cca89b..32c59ab 100644
+--- a/rhwp-studio/src/recovery/recovery-ui.ts
++++ b/rhwp-studio/src/recovery/recovery-ui.ts
+@@ -2,17 +2,57 @@ import { ModalDialog } from '@/ui/dialog';
+ import type { AutosaveDraft } from './autosave-store.ts';
+ import { describeDraft } from './recovery-format.ts';
+ 
++/**
++ * [hwpxxx-android] 엔진이 '이 복구본은 일부 개체가 빠졌다'고 보고한 복구본(`draft.lossy === true`)에만 보이는 안내.
++ * 옛 Android 작업기의 "일부 개체가 빠졌을 수 있어요"와 같은 뜻이다. 손실 보고가 없는 복구본에는 어떤 안내도 붙이지 않는다.
++ */
++export const LOSSY_DRAFT_NOTICE = '일부 개체가 빠졌을 수 있어요. 복구한 문서를 원본과 비교한 뒤 저장하세요.';
++/** 암호 문서의 복구본(`draft.encrypted === true`)에만 보이는 안내 — 열 때 비밀번호를 다시 묻는다. */
++export const ENCRYPTED_DRAFT_NOTICE = '암호 문서 복구본이에요. 복구할 때 비밀번호를 입력해야 해요.';
++/** 셸의 복구 저장소가 '일부 개체가 빠졌을 수 있음' 표시를 저장하지 못해 자동 저장을 거절했을 때(0107 저장소의 거절 사유) 상태 줄 문구. */
++const LOSSY_UNSUPPORTED_STATUS = '일부 개체가 빠졌을 수 있어 복구용 자동 저장을 하지 않습니다 (이 기기의 복구 저장소가 이 표시를 지원하지 않아요)';
++const AUTOSAVE_FAILED_STATUS = '복구용 자동 저장 실패';
++
++/** 자동 저장 오류를 상태 줄 문구로. 손실 표시를 못 담는 저장소의 거절만 따로 알리고, 나머지는 기존 문구 그대로다. */
++export function autosaveErrorMessage(error: unknown): string {
++  const text = String((error as { message?: unknown } | null)?.message ?? error ?? '');
++  return text.includes('복구본이라 표시할 수 없어') ? LOSSY_UNSUPPORTED_STATUS : AUTOSAVE_FAILED_STATUS;
++}
++
++export interface RestoredDraftToast {
++  message: string;
++  durationMs: number;
++  confirmLabel?: string;
++}
++
++/**
++ * 복구본을 연 뒤의 안내. 손실 보고가 있는 복구본은 닫기를 눌러야 사라지게 해 놓치지 않게 하고, 그렇지 않은 복구본은 이전과 같다.
++ * 파일 이름은 안내 문구에 그대로(텍스트로) 들어가므로 호출한 쪽은 textContent 로만 그린다(showToast 가 그렇다).
++ */
++export function restoredDraftToast(fileName: string, draft: Pick<AutosaveDraft, 'lossy'>): RestoredDraftToast {
++  if (draft.lossy === true) {
++    return {
++      message: `"${fileName}" 복구본을 열었습니다.\n${LOSSY_DRAFT_NOTICE}\n원본 파일은 자동으로 덮어쓰지 않습니다.`,
++      durationMs: 0,
++      confirmLabel: '확인',
++    };
++  }
++  return { message: `"${fileName}" 복구본을 열었습니다.\n원본 파일은 자동으로 덮어쓰지 않습니다.`, durationMs: 5000 };
++}
++
+ export type AutosaveRecoveryChoice =
+   | { action: 'restore'; draftId: string }
+   | { action: 'delete-all' }
+   | { action: 'later' };
+ 
+-class AutosaveRecoveryDialog extends ModalDialog {
++export class AutosaveRecoveryDialog extends ModalDialog {
+   private resolve!: (choice: AutosaveRecoveryChoice) => void;
+   private selectedDraftId: string;
++  private readonly drafts: AutosaveDraft[];
+ 
+-  constructor(private readonly drafts: AutosaveDraft[]) {
++  constructor(drafts: AutosaveDraft[]) {
+     super('문서 복구', 520);
++    this.drafts = drafts;
+     this.selectedDraftId = drafts[0]?.id ?? '';
+   }
+ 
+@@ -76,6 +116,9 @@ class AutosaveRecoveryDialog extends ModalDialog {
+       meta.style.fontSize = '12px';
+       meta.style.color = 'var(--text-muted, #8b95a1)';
+       text.append(title, meta);
++      // [hwpxxx-android] 실제로 표시가 있는 복구본에만 안내를 붙인다(텍스트로만 그린다).
++      if (draft.encrypted === true) text.appendChild(this.notice(ENCRYPTED_DRAFT_NOTICE, 'recovery-draft-encrypted', 'var(--text-muted, #8b95a1)'));
++      if (draft.lossy === true) text.appendChild(this.notice(LOSSY_DRAFT_NOTICE, 'recovery-draft-lossy', 'var(--warning, #b45309)'));
+ 
+       label.append(radio, text);
+       list.appendChild(label);
+@@ -85,6 +128,18 @@ class AutosaveRecoveryDialog extends ModalDialog {
+     return body;
+   }
+ 
++  private notice(message: string, className: string, color: string): HTMLElement {
++    const line = document.createElement('div');
++    line.classList.add(className);
++    line.setAttribute('role', 'note');
++    line.textContent = message;
++    line.style.fontSize = '12px';
++    line.style.marginTop = '4px';
++    line.style.color = color;
++    line.style.fontWeight = '600';
++    return line;
++  }
++
+   protected onConfirm(): boolean {
+     this.resolve({ action: 'restore', draftId: this.selectedDraftId });
+     return true;
+diff --git a/rhwp-studio/src/ui/char-shape-dialog.ts b/rhwp-studio/src/ui/char-shape-dialog.ts
+index e07866a..f705c8e 100644
+--- a/rhwp-studio/src/ui/char-shape-dialog.ts
++++ b/rhwp-studio/src/ui/char-shape-dialog.ts
+@@ -30,7 +30,7 @@ import type { WasmBridge } from '@/core/wasm-bridge';
+ import type { EventBus } from '@/core/event-bus';
+ import type { CharProperties } from '@/core/types';
+ import { REGISTERED_FONTS } from '@/core/font-loader';
+-import { getLocalFonts } from '@/core/local-fonts';
++import { getFontPickerNames } from '@/core/local-fonts';
+ import { enableDialogDrag } from './dialog-drag';
+ import { populateFillSelection, updateFillControls } from './fill-selection';
+ 
+@@ -335,7 +335,7 @@ export class CharShapeDialog {
+     this.fontSelect.appendChild(webGroup);
+ 
+     // 로컬 글꼴 optgroup (감지된 경우에만)
+-    const localFonts = getLocalFonts().sort(compareFontNames);
++    const localFonts = getFontPickerNames().sort(compareFontNames);   // [hwpxxx-android] 가져온 호스트 글꼴 포함 + v0.9.0 정렬
+     if (localFonts.length > 0) {
+       const localGroup = document.createElement('optgroup');
+       localGroup.label = '로컬 글꼴';
+diff --git a/rhwp-studio/src/ui/font-set-edit-dialog.ts b/rhwp-studio/src/ui/font-set-edit-dialog.ts
+index b938e6d..5c4f968 100644
+--- a/rhwp-studio/src/ui/font-set-edit-dialog.ts
++++ b/rhwp-studio/src/ui/font-set-edit-dialog.ts
+@@ -8,7 +8,7 @@ import { ModalDialog } from './dialog';
+ import { LANG_LABELS } from '@/core/user-settings';
+ import type { FontSet } from '@/core/user-settings';
+ import { REGISTERED_FONTS } from '@/core/font-loader';
+-import { getLocalFonts } from '@/core/local-fonts';
++import { getFontPickerNames } from '@/core/local-fonts';
+ 
+ import { t } from '../i18n/index.ts';
+ /** 웹폰트 목록 (중복 제거 + 정렬) */
+@@ -35,7 +35,7 @@ export class FontSetEditDialog extends ModalDialog {
+     const body = document.createElement('div');
+     body.className = 'fse-body';
+     const webFonts = getWebFonts();
+-    const localFonts = getLocalFonts().sort(compareFontNames);
++    const localFonts = getFontPickerNames().sort(compareFontNames);   // [hwpxxx-android] 가져온 호스트 글꼴 포함 + v0.9.0 정렬
+     const langKeys: (keyof Omit<FontSet, 'name'>)[] = [
+       'korean', 'english', 'chinese', 'japanese', 'other', 'symbol', 'user',
+     ];
+diff --git a/rhwp-studio/src/ui/history-dialog.ts b/rhwp-studio/src/ui/history-dialog.ts
+index 8db9d4f..7515b6a 100644
+--- a/rhwp-studio/src/ui/history-dialog.ts
++++ b/rhwp-studio/src/ui/history-dialog.ts
+@@ -30,6 +30,7 @@ import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '@/com
+ import type { CompareSessionStore } from '@/compare/session';
+ import type { CompareOptions, DiffItem, DiffKind } from '@/compare/types';
+ import { clearHistory, deleteHistorySnapshot, getHistoryPayload, listHistoryMeta, saveHistoryIrSnapshot } from '@/history/idb-store';
++import { historyVolatileNotice, historyVolatileReason } from '@/hwpxxx/android-state';
+ import type { DocHistoryEntryMeta } from '@/history/types';
+ 
+ import { t } from '../i18n/index.ts';
+@@ -190,10 +191,14 @@ export class HistoryDialog {
+     try {
+       const label = this.labelInput.value.trim() || new Date().toLocaleString('ko-KR');
+       const snap = buildSnapshotFromWasm(wasm, label, HISTORY_COMPARE_OPTS);
+-      await saveHistoryIrSnapshot(label, wasm.fileName, snap);
++      const saved = await saveHistoryIrSnapshot(label, wasm.fileName, snap, { encrypted: wasm.requiresPasswordForSave });
+       this.labelInput.value = '';
+       await this.refreshList();
+-      this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xf2c8ca');
++      // [hwpxxx-android] 디스크에 두지 않은 이력(암호 문서·비공개 저장소 없음)은 그 사실을 알린다.
++      const volatile = historyVolatileReason(saved.id);
++      this.resultMetaEl.textContent = volatile
++        ? `${t('dialog.history.resultMetaEl.text.xf2c8ca')} ${historyVolatileNotice(volatile)}`
++        : t('dialog.history.resultMetaEl.text.xf2c8ca');
+     } catch (err) {
+       const msg = err instanceof Error ? err.message : String(err);
+       this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xa25915', { p1: msg });
+diff --git a/rhwp-studio/tests/toolbar-local-font-options.test.ts b/rhwp-studio/tests/toolbar-local-font-options.test.ts
+index 20e20fb..7f00dc1 100644
+--- a/rhwp-studio/tests/toolbar-local-font-options.test.ts
++++ b/rhwp-studio/tests/toolbar-local-font-options.test.ts
+@@ -17,9 +17,10 @@ test('글꼴 메뉴는 문서 글꼴을 기본으로 열고 시스템 글꼴은
+ 
+   assert.match(initMethod, /this\.fontMenuCategory = this\.fontMenuDocumentFonts\.length > 0 \? 'document' : 'current'/);
+   assert.match(source, /event\.preventDefault\(\);\s*this\.toggleFontMenu\(\);/);
+-  assert.match(entriesMethod, /case 'system':\s*return getLocalFonts\(\)/);
+-  assert.match(entriesMethod, /case 'all':[\s\S]*getLocalFonts\(\)/);
+-  assert.doesNotMatch(entriesMethod.slice(0, entriesMethod.indexOf("case 'system':")), /getLocalFonts\(\)/);
++  // [hwpxxx-android] 같은 규칙(시스템·모든 글꼴 범주에서만 조회, 그 앞에서는 조회하지 않음). 호출 이름만 호스트 글꼴을 합친 getFontPickerNames 로 바뀌었다.
++  assert.match(entriesMethod, /case 'system':\s*return getFontPickerNames\(\)/);
++  assert.match(entriesMethod, /case 'all':[\s\S]*getFontPickerNames\(\)/);
++  assert.doesNotMatch(entriesMethod.slice(0, entriesMethod.indexOf("case 'system':")), /getFontPickerNames\(\)|getLocalFonts\(\)/);
+ });
+ 
+ test('한컴형 글꼴 메뉴는 범주 목록과 기존 글꼴 적용 이벤트를 함께 사용한다', () => {
+diff --git a/rhwp-studio/vite.config.ts b/rhwp-studio/vite.config.ts
+index 58c83bd..c3b65ad 100644
+--- a/rhwp-studio/vite.config.ts
++++ b/rhwp-studio/vite.config.ts
+@@ -20,6 +20,14 @@ const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
+  * `studio-plugin` 청크 자체가 남지 않는다. studio 만 떼어 배포할 때 쓴다.
+  */
+ const withHwpctrl = process.env.RHWP_WITHOUT_HWPCTRL !== '1';
++/**
++ * [hwpxxx-android] PWA(서비스 워커·매니페스트) 포함 여부.
++ *
++ * Android 앱은 자산을 네이티브 인터셉터로만 제공하고 서비스 워커를 쓰지 않는다 — 매니페스트의
++ * `/rhwp/` 범위와 file_handlers 는 이 앱에 맞지 않고, 서비스 워커가 자산을 따로 캐시하면
++ * 앱 업데이트 뒤 낡은 번들이 남는다. `RHWP_DISABLE_PWA=1` 이면 플러그인을 넣지 않는다.
++ */
++const withPwa = process.env.RHWP_DISABLE_PWA !== '1';
+ /**
+  * AI 도우미 포함 여부. `RHWP_WITHOUT_AI=1` 이면 `main.ts` 의 동적 import 분기가 tree-shake 되어
+  * AI 청크와 제공자 SDK 가 산출물에 남지 않는다.
+@@ -146,7 +154,7 @@ export default defineConfig({
+         });
+       },
+     },
+-    VitePWA({
++    ...(withPwa ? [VitePWA({
+       registerType: 'autoUpdate',
+       includeAssets: ['favicon.ico', 'icons/*.png'],
+       manifest: {
+@@ -197,6 +205,6 @@ export default defineConfig({
+       devOptions: {
+         enabled: false,
+       },
+-    }),
++    })] : []),
+   ],
+ });

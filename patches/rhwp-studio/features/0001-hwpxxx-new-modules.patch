@@ -1,0 +1,1371 @@
+diff --git a/rhwp-studio/src/command/chord-map.ts b/rhwp-studio/src/command/chord-map.ts
+new file mode 100644
+index 0000000..85fb854
+--- /dev/null
++++ b/rhwp-studio/src/command/chord-map.ts
+@@ -0,0 +1,57 @@
++// [hwpxxx] 연속 키 표 — 입력 처리(engine/input-handler-keyboard)와 툴팁이 함께 쓴다(원래 input-handler-keyboard 안에 있던 표).
++
++/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+K,? 형태) */
++export const chordMapK: Record<string, string> = {
++  h: 'insert:hyperlink',
++  ㅗ: 'insert:hyperlink', // 한글 IME 상태
++  b: 'insert:bookmark',
++  ㅠ: 'insert:bookmark', // 한글 IME 상태
++  n: 'format:para-num-shape',
++  ㅜ: 'format:para-num-shape', // 한글 IME 상태
++  e: 'insert:field', // [hwpxxx] 누름틀 넣기 — 안내(Ctrl+K,E)는 있었으나 연결이 없었다
++};
++
++/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+M,? 형태)
++ *
++ * 한컴 표준 영역 영역 Ctrl+N 영역 영역 chord 시작 영역 영역 Chrome 영역 영역 reserved shortcut
++ * (새 창) 영역 영역 JS 차단 불가 영역 영역 Ctrl+M 영역 영역 변경 (PR #786 후속 정정).
++ */
++export const chordMapM: Record<string, string> = {
++  a: 'table:split',   // 한컴 Ctrl+N,A — Chrome 이 Ctrl+N 을 차단해 Ctrl+M 계열로 이관
++  ㅁ: 'table:split',  // 한글 IME
++  z: 'table:attach',  // 한컴 Ctrl+N,Z
++  ㅋ: 'table:attach', // 한글 IME
++  n: 'insert:footnote',
++  ㅜ: 'insert:footnote', // 한글 IME
++  s: 'page:hide',
++  ㄴ: 'page:hide', // 한글 IME
++  m: 'insert:equation',
++  ㅡ: 'insert:equation', // 한글 IME
++  k: 'field:edit',    // [hwpxxx] 누름틀 고치기 — 안내(Ctrl+M,K)는 있었으나 연결이 없었다
++  f: 'table:formula', // [hwpxxx] 계산식 — 안내(Ctrl+M,F)는 있었으나 연결이 없었다
++};
++
++/** 코드 단축키 → 커맨드 ID 매핑 (Alt+V,? 형태 — 보기 메뉴) */
++export const chordMapV: Record<string, string> = {
++  t: 'view:border-transparent',
++  ㅅ: 'view:border-transparent', // 한글 IME
++};
++
++/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+G,? 형태 — 보기/조판 메뉴) */
++export const chordMapG: Record<string, string> = {
++  c: 'view:ctrl-mark',        // 조판 부호
++  ㅊ: 'view:ctrl-mark',       // 한글 IME
++  t: 'view:para-mark',        // 문단 부호
++  ㅅ: 'view:para-mark',       // 한글 IME
++  p: 'view:zoom-fit-page',    // 쪽 맞춤
++  ㅍ: 'view:zoom-fit-page',   // 한글 IME
++  w: 'view:zoom-fit-width',   // 폭 맞춤
++  ㅈ: 'view:zoom-fit-width',  // 한글 IME
++  q: 'view:zoom-100',         // 100%
++  ㅂ: 'view:zoom-100',        // 한글 IME
++};
++
++/** [hwpxxx] 연속 키 표 — 툴팁이 실제로 처리되는 키를 안내하도록 같은 표를 공개한다. */
++export const chordShortcutTables: ReadonlyArray<readonly [string, Readonly<Record<string, string>>]> = [
++  ['Ctrl+K', chordMapK], ['Ctrl+M', chordMapM], ['Ctrl+G', chordMapG], ['Alt+V', chordMapV],
++];
+diff --git a/rhwp-studio/src/command/commands/memo.ts b/rhwp-studio/src/command/commands/memo.ts
+new file mode 100644
+index 0000000..aaf6e4b
+--- /dev/null
++++ b/rhwp-studio/src/command/commands/memo.ts
+@@ -0,0 +1,53 @@
++// [hwpxxx] 메모 명령 — 실제 동작은 hwpxxx/memo-panel.ts 에 있다.
++import type { CommandDef } from '../types';
++import { memoPanel } from '@/hwpxxx/memo-panel';
++import { takeContextMemo } from '@/hwpxxx/memo-context';
++import { memoMarks } from '@/hwpxxx/memo-marks';
++
++export const memoInsertCommand: CommandDef = {
++  id: 'insert:memo',
++  label: '메모 삽입',
++  canExecute: ctx => ctx.hasDocument && ctx.isEditable && !ctx.isFormMode,
++  execute(services) {
++    memoPanel(services).beginCompose();
++  },
++};
++
++export const memoPanelCommand: CommandDef = {
++  id: 'view:memo-panel',
++  label: '메모 창',
++  canExecute: ctx => ctx.hasDocument,
++  execute(services) {
++    memoPanel(services).toggle();
++  },
++};
++
++export const memoDeleteContextCommand: CommandDef = {
++  id: 'memo:delete-context',
++  label: '메모 삭제',
++  canExecute: ctx => ctx.hasDocument && ctx.isEditable && !ctx.isFormMode,
++  execute(services) {
++    const id = takeContextMemo();
++    if (id !== null) void memoPanel(services).deleteById(id);
++  },
++};
++
++export const memoShowCommand: CommandDef = {
++  id: 'view:memo-show',
++  label: '메모 보이기/숨기기',
++  canExecute: ctx => ctx.hasDocument,
++  execute(services) {
++    const marks = memoMarks(services);
++    marks.setShown(!marks.isShown());
++  },
++};
++
++export const memoGuideCommand: CommandDef = {
++  id: 'view:memo-guide',
++  label: '메모 안내선 표시',
++  canExecute: ctx => ctx.hasDocument,
++  execute(services) {
++    const marks = memoMarks(services);
++    marks.setGuide(!marks.isGuideShown());
++  },
++};
+diff --git a/rhwp-studio/src/core/lineseg-autoreflow.ts b/rhwp-studio/src/core/lineseg-autoreflow.ts
+new file mode 100644
+index 0000000..c59ca85
+--- /dev/null
++++ b/rhwp-studio/src/core/lineseg-autoreflow.ts
+@@ -0,0 +1,16 @@
++// [hwpxxx] 줄 정보(linesegarray)가 없는 HWPX 의 열기 보정.
++//
++// 다른 도구(예: AI 가 만든 HWPX)가 저장한 문서는 본문 문단에 linesegarray 가 없을 수 있다. 화면 글자는
++// 렌더 단계에서 다시 줄바꿈되지만, 선택 영역·줄 이동·줄 수 조회는 저장 줄 정보를 쓰므로 여러 줄 문단이
++// "한 줄"로 취급되어 첫 줄만 선택된 것처럼 보인다. 경고가 전부 '줄 배열 없음'일 때만 열면서 한 번 계산한다.
++// 한컴이 계산해 둔 줄 정보(LinesegTextRunReflow 등)가 섞인 문서는 쪽 수가 바뀔 수 있으므로 건드리지 않는다.
++export interface ValidationReportLike {
++  count: number;
++  warnings?: Array<{ kind?: string }>;
++}
++
++export function onlyEmptyLinesegWarnings(report: ValidationReportLike | null | undefined): boolean {
++  if (!report || report.count <= 0) return false;
++  const warnings = report.warnings ?? [];
++  return warnings.length > 0 && warnings.every(w => w.kind === 'LinesegArrayEmpty');
++}
+diff --git a/rhwp-studio/src/hwpxxx/memo-context.ts b/rhwp-studio/src/hwpxxx/memo-context.ts
+new file mode 100644
+index 0000000..cd6016a
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/memo-context.ts
+@@ -0,0 +1,74 @@
++// [hwpxxx] 우클릭 메뉴용 메모 판별: 글자를 선택했으면 '메모 삽입', 메모가 달린 글자 위면 '메모 삭제'.
++import type { ContextMenuItem } from '@/ui/context-menu';
++import type { MemoEntry } from '@/core/memo';
++
++let pending: number | null = null;
++/** 우클릭 메뉴의 '메모 삭제' 가 가리키는 메모 id 를 한 번만 꺼낸다. */
++export function takeContextMemo(): number | null {
++  const id = pending;
++  pending = null;
++  return id;
++}
++
++/** 클릭 위치(hitTest 결과)와 같은 문단·칸 경로에 있는 메모만 고른다. */
++function memosAt(entries: MemoEntry[], hit: any): MemoEntry[] {
++  const path: Array<{ controlIndex: number; cellIndex?: number; cellParaIndex: number }> = hit.cellPath?.length
++    ? hit.cellPath
++    : hit.parentParaIndex !== undefined ? [{ controlIndex: hit.controlIndex, cellIndex: hit.cellIndex, cellParaIndex: hit.cellParaIndex }] : [];
++  const top = hit.parentParaIndex ?? hit.paragraphIndex;
++  return entries.filter(entry => {
++    if (entry.sectionIndex !== hit.sectionIndex || entry.paraIndex !== top) return false;
++    const where = entry.path ?? [];
++    return where.length === path.length && where.every((step, at) => step.controlIndex === path[at].controlIndex && step.paraIndex === path[at].cellParaIndex
++      && (step.type === 'textbox' || step.cellIndex === path[at].cellIndex));
++  });
++}
++
++/** 마우스 아래 글자가 메모 범위 안이면 그 메모를 돌려준다. */
++function memoAtPointer(self: any, e: MouseEvent): MemoEntry | null {
++  const content = self.container.querySelector('#scroll-content');
++  if (!content) return null;
++  const box = content.getBoundingClientRect();
++  const x = e.clientX - box.left, y = e.clientY - box.top;
++  const page = self.virtualScroll.getPageAtPoint(x, y);
++  if (page < 0 || page >= self.wasm.pageCount) return null;
++  const zoom = self.viewportManager.getZoom();
++  const px = (x - self.virtualScroll.getPageLeftResolved(page, content.clientWidth)) / zoom;
++  const py = (y - self.virtualScroll.getPageOffset(page)) / zoom;
++  const hit = self.wasm.hitTest(page, px, py);
++  const offset: number = hit.charOffset;
++  const candidates = memosAt(self.wasm.getMemoList(), hit)
++    .filter(entry => entry.startCharIdx !== null && entry.endCharIdx !== null && offset >= entry.startCharIdx && offset <= entry.endCharIdx)
++    .sort((a, b) => ((a.endCharIdx ?? 0) - (a.startCharIdx ?? 0)) - ((b.endCharIdx ?? 0) - (b.startCharIdx ?? 0)));
++  for (const entry of candidates) {
++    const from = entry.startCharIdx ?? 0, to = entry.endCharIdx ?? 0;
++    // 글자 오른쪽 절반을 누르면 다음 offset 이 나오므로, 실제로 그 글자 영역 위에 있는지 한 번 더 본다(하이퍼링크와 같은 방식).
++    let over: boolean;
++    try {
++      const steps: Array<{ controlIndex: number; cellIndex?: number; cellParaIndex: number }> = hit.cellPath?.length
++        ? hit.cellPath
++        : hit.parentParaIndex !== undefined ? [{ controlIndex: hit.controlIndex, cellIndex: hit.cellIndex, cellParaIndex: hit.cellParaIndex }] : [];
++      const rects = steps.length
++        ? self.wasm.getSelectionRectsInCellByPath(hit.sectionIndex, hit.parentParaIndex, JSON.stringify(steps), steps[steps.length - 1].cellParaIndex, from, steps[steps.length - 1].cellParaIndex, to)
++        : self.wasm.getSelectionRects(hit.sectionIndex, hit.paragraphIndex, from, hit.paragraphIndex, to);
++      over = rects.some((r: any) => r.pageIndex === page && px >= r.x && px <= r.x + r.width && py >= r.y && py <= r.y + r.height);
++    } catch { over = offset >= from && offset < to; }
++    if (over) return entry;
++  }
++  return null;
++}
++
++export function memoContextItems(self: any, e: MouseEvent): ContextMenuItem[] {
++  pending = null;
++  try {
++    if (!self.wasm?.hasLoadedDocument?.() || !self.canEditHyperlink?.()) return [];
++    const memo = memoAtPointer(self, e);
++    if (memo) {
++      if (!memo.editable) return [];
++      pending = memo.id;
++      return [{ type: 'separator' }, { type: 'command', commandId: 'memo:delete-context', label: '메모 삭제' }];
++    }
++    if (self.hasSelection?.()) return [{ type: 'separator' }, { type: 'command', commandId: 'insert:memo', label: '메모 삽입' }];
++  } catch { /* 메모 판별이 안 되는 위치는 일반 메뉴만 보인다 */ }
++  return [];
++}
+diff --git a/rhwp-studio/src/hwpxxx/memo-marks.ts b/rhwp-studio/src/hwpxxx/memo-marks.ts
+new file mode 100644
+index 0000000..04a5aaa
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/memo-marks.ts
+@@ -0,0 +1,240 @@
++// [hwpxxx] 문서 화면의 메모 표시: 한글처럼 메모가 달린 글자를 초록색 [ ] 로 칠하고, 용지 오른쪽 여백의 메모 상자와 점선 안내선으로 잇는다.
++// 보기 > 메모 보이기/숨기기, 메모 안내선 표시로 켜고 끈다. 화면에만 그리는 표시라 문서 내용·저장 파일에는 영향이 없다.
++import '@/styles/hwpxxx-memo.css';
++import type { CommandServices } from '@/command/types';
++import type { MemoEntry } from '@/core/memo';
++import { memoPanel } from '@/hwpxxx/memo-panel';
++
++const SHOW_KEY = 'hwpxxx.memoShow';
++const GUIDE_KEY = 'hwpxxx.memoGuide';
++const read = (key: string): boolean => { try { return localStorage.getItem(key) !== '0'; } catch { return true; } };
++const write = (key: string, value: boolean): void => { try { localStorage.setItem(key, value ? '1' : '0'); } catch { /* 저장소를 못 쓰면 이번 실행에서만 유지한다 */ } };
++// 한글은 작성 시각을 현지 시각에 Z 를 붙여 기록한다.
++const when = (value: string | null): string => typeof value !== 'string' ? '' : /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(value) ? value.slice(0, 16).replace('T', ' ') : value;
++
++const BOX_WIDTH = 228;
++const BOX_GAP = 16;
++const BOX_SPACING = 4;
++const SVG_NS = 'http://www.w3.org/2000/svg';
++
++interface Rect { pageIndex: number; x: number; y: number; width: number; height: number }
++interface Mark { memo: MemoEntry; rects: Rect[] }
++interface MarkView { content: HTMLElement; scroll: { getPageOffset(i: number): number; getPageWidth(i: number): number; getPageLeftResolved(i: number, w: number): number }; zoom: number }
++type Step = { controlIndex: number; cellIndex: number; cellParaIndex: number };
++
++export class MemoMarks {
++  private show = read(SHOW_KEY);
++  private guide = read(GUIDE_KEY);
++  private layer: HTMLDivElement | null = null;
++  private svg: SVGSVGElement | null = null;
++  private marks: Mark[] = [];
++  private timer: number | undefined;
++  private editingId: number | null = null;
++
++  constructor(private readonly services: CommandServices) {
++    const later = () => this.schedule();
++    for (const name of ['document-swapped', 'document-changed', 'document-layout-refreshed', 'document-view-loaded', 'document-view-changed', 'document-page-invalidated', 'zoom-changed', 'viewport-resize'])
++      services.eventBus.on(name, later);
++    window.addEventListener('resize', later);
++    this.syncMenu();
++  }
++
++  isShown(): boolean { return this.show; }
++  isGuideShown(): boolean { return this.guide; }
++  setShown(value: boolean): void { this.show = value; write(SHOW_KEY, value); this.syncMenu(); this.update(); }
++  setGuide(value: boolean): void { this.guide = value; write(GUIDE_KEY, value); this.syncMenu(); this.update(); }
++
++  private syncMenu(): void {
++    document.querySelectorAll('[data-cmd="view:memo-show"]').forEach(el => el.classList.toggle('active', this.show));
++    document.querySelectorAll('[data-cmd="view:memo-guide"]').forEach(el => el.classList.toggle('active', this.guide));
++  }
++
++  private schedule(): void {
++    window.clearTimeout(this.timer);
++    this.timer = window.setTimeout(() => this.update(), 120);
++  }
++
++  private view(): MarkView | null {
++    const handler = this.services.getInputHandler() as unknown as { container?: HTMLElement; virtualScroll?: MarkView['scroll'] } | null;
++    const content = handler?.container?.querySelector<HTMLElement>('#scroll-content');
++    const scroll = handler?.virtualScroll;
++    const zoom = this.services.getViewportManager()?.getZoom();
++    if (!content || !scroll || !zoom) return null;
++    return { content, scroll, zoom };
++  }
++
++  private ensureLayer(content: HTMLElement): HTMLDivElement {
++    if (!this.layer) {
++      this.layer = document.createElement('div');
++      this.layer.className = 'hwpxxx-memo-marks';
++      this.svg = document.createElementNS(SVG_NS, 'svg');
++      this.svg.setAttribute('class', 'hwpxxx-memo-guides');
++      this.layer.append(this.svg);
++    }
++    if (this.layer.parentElement !== content) content.append(this.layer);
++    return this.layer;
++  }
++
++  private clear(): void {
++    this.layer?.remove();
++    this.marks = [];
++  }
++
++  /** 문서에서 메모와 글자 위치를 다시 읽어 그린다. */
++  update(): void {
++    const wasm = this.services.wasm;
++    const view = this.view();
++    if (!view || !this.show || !wasm.hasLoadedDocument()) { this.clear(); return; }
++    let memos: MemoEntry[];
++    try { memos = wasm.getMemoList(); } catch { this.clear(); return; }
++    this.marks = [];
++    for (const memo of memos) {
++      const rects = this.rectsOf(memo);
++      if (rects.length) this.marks.push({ memo, rects });
++    }
++    if (!this.marks.length) { this.clear(); return; }
++    this.draw(view);
++  }
++
++  /** 메모가 달린 글자의 쪽 안 좌표. 본문과 표 칸 안의 메모만 알 수 있다(글상자·꼬리 영역은 표시하지 않는다). */
++  private rectsOf(memo: MemoEntry): Rect[] {
++    if (memo.paraIndex === null || memo.startCharIdx === null || memo.endCharIdx === null || memo.endCharIdx <= memo.startCharIdx) return [];
++    const path = memo.path ?? [];
++    if (path.some(step => step.type !== 'cell')) return [];
++    try {
++      const wasm = this.services.wasm;
++      if (!path.length) return wasm.getSelectionRects(memo.sectionIndex, memo.paraIndex, memo.startCharIdx, memo.paraIndex, memo.endCharIdx);
++      const steps: Step[] = path.map(step => ({ controlIndex: step.controlIndex, cellIndex: step.type === 'cell' ? step.cellIndex : 0, cellParaIndex: step.paraIndex }));
++      const last = steps[steps.length - 1];
++      return wasm.getSelectionRectsInCellByPath(memo.sectionIndex, memo.paraIndex, JSON.stringify(steps), last.cellParaIndex, memo.startCharIdx, last.cellParaIndex, memo.endCharIdx);
++    } catch { return []; }
++  }
++
++  private draw(view: MarkView): void {
++    const { content, scroll, zoom } = view;
++    const layer = this.ensureLayer(content);
++    const svg = this.svg!;
++    for (const child of Array.from(layer.children)) if (child !== svg) child.remove();
++    svg.replaceChildren();
++    const width = content.clientWidth;
++    const page = (index: number) => ({ left: scroll.getPageLeftResolved(index, width), top: scroll.getPageOffset(index), width: scroll.getPageWidth(index) });
++
++    // 쪽마다 메모 상자를 글자가 있는 줄의 높이에 놓고, 겹치면 아래로 민다.
++    const byPage = new Map<number, Mark[]>();
++    for (const mark of this.marks) {
++      const first = mark.rects[0];
++      const list = byPage.get(first.pageIndex) ?? [];
++      list.push(mark);
++      byPage.set(first.pageIndex, list);
++    }
++    const guides: string[] = [];
++    for (const [pageIndex, list] of byPage) {
++      const box = page(pageIndex);
++      list.sort((a, b) => a.rects[0].y - b.rects[0].y || (a.memo.startCharIdx ?? 0) - (b.memo.startCharIdx ?? 0));
++      const boxLeft = box.left + box.width + BOX_GAP;
++      let nextTop = -Infinity;
++      for (const mark of list) {
++        const first = mark.rects[0];
++        const top = Math.max(box.top + first.y * zoom, nextTop);
++        const element = this.box(mark.memo);
++        element.style.left = `${boxLeft}px`;
++        element.style.top = `${top}px`;
++        layer.append(element);
++        nextTop = top + Math.max(element.offsetHeight, 24) + BOX_SPACING;
++        const lineMid = box.top + (first.y + first.height / 2) * zoom;
++        // 안내선: 메모가 달린 글자 끝에서 용지 오른쪽 가장자리를 지나 메모 상자 왼쪽 가운데로.
++        const last = mark.rects[mark.rects.length - 1];
++        const endX = page(last.pageIndex).left + (last.x + last.width) * zoom;
++        const endY = page(last.pageIndex).top + (last.y + last.height / 2) * zoom;
++        const boxMid = top + Math.min(element.offsetHeight, 40) / 2;
++        const edge = box.left + box.width - 4;
++        if (last.pageIndex === pageIndex && endX < edge) guides.push(`M${endX} ${endY} L${edge} ${endY} L${boxLeft} ${boxMid}`);
++        else guides.push(`M${edge} ${lineMid} L${boxLeft} ${boxMid}`);
++        this.highlight(layer, mark, page, zoom);
++      }
++    }
++    const height = Number.parseFloat(content.style.height) || content.scrollHeight;
++    svg.setAttribute('width', String(Math.max(width, content.scrollWidth)));
++    svg.setAttribute('height', String(height));
++    svg.style.display = this.guide ? '' : 'none';
++    if (this.guide) for (const d of guides) {
++      const path = document.createElementNS(SVG_NS, 'path');
++      path.setAttribute('d', d);
++      svg.append(path);
++    }
++  }
++
++  /** 메모가 달린 글자 위의 초록 칠과 앞뒤 [ ] 표시. 문서의 글자는 그대로 보이게 투명하게 칠한다. */
++  private highlight(layer: HTMLElement, mark: Mark, page: (i: number) => { left: number; top: number }, zoom: number): void {
++    mark.rects.forEach((rect, at) => {
++      const origin = page(rect.pageIndex);
++      const fill = document.createElement('div');
++      fill.className = 'hwpxxx-memo-fill';
++      fill.style.left = `${origin.left + rect.x * zoom}px`;
++      fill.style.top = `${origin.top + rect.y * zoom}px`;
++      fill.style.width = `${Math.max(1, rect.width * zoom)}px`;
++      fill.style.height = `${rect.height * zoom}px`;
++      layer.append(fill);
++      const bracket = (side: 'start' | 'end') => {
++        const mark = document.createElement('div');
++        mark.className = `hwpxxx-memo-bracket ${side}`;
++        mark.style.left = `${origin.left + (side === 'start' ? rect.x : rect.x + rect.width) * zoom}px`;
++        mark.style.top = `${origin.top + rect.y * zoom}px`;
++        mark.style.height = `${rect.height * zoom}px`;
++        layer.append(mark);
++      };
++      if (at === 0) bracket('start');
++      if (at === mark.rects.length - 1) bracket('end');
++    });
++  }
++
++  private box(memo: MemoEntry): HTMLElement {
++    const box = document.createElement('div');
++    box.className = 'hwpxxx-memo-box';
++    box.style.width = `${BOX_WIDTH}px`;
++    box.dataset.memoId = String(memo.id);
++    const head = document.createElement('div');
++    head.className = 'hwpxxx-memo-box-head';
++    head.textContent = `[메모 ${memo.index}] ${memo.author}  ${when(memo.date)}`.trimEnd();
++    box.append(head);
++    if (this.editingId === memo.id && memo.editable) {
++      const text = document.createElement('textarea');
++      text.value = memo.text;
++      text.rows = 3;
++      const done = (save: boolean) => {
++        this.editingId = null;
++        if (save && text.value.trim() && text.value !== memo.text) memoPanel(this.services).saveFromBox(memo.id, text.value);
++        else this.update();
++      };
++      text.addEventListener('keydown', event => {
++        event.stopPropagation();
++        if (event.key === 'Escape') { event.preventDefault(); done(false); }
++        else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); done(true); }
++      });
++      text.addEventListener('blur', () => done(true));
++      box.append(text);
++      queueMicrotask(() => text.focus());
++    } else {
++      const body = document.createElement('div');
++      body.className = 'hwpxxx-memo-box-body';
++      body.textContent = memo.text;
++      box.append(body);
++      box.title = memo.editable ? '누르면 메모가 달린 글자를 선택합니다. 두 번 누르면 메모 내용을 고칩니다.' : (memo.readOnlyReason ?? '이 메모는 고칠 수 없습니다.');
++    }
++    // 글자 입력·선택을 처리하는 문서 창으로 이벤트가 넘어가 캐럿이 옮겨 가지 않게 막는다.
++    for (const type of ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel'] as const)
++      box.addEventListener(type, event => { if (type !== 'wheel') event.stopPropagation(); });
++    box.addEventListener('click', () => { if (this.editingId !== memo.id) memoPanel(this.services).selectAnchor(memo); });
++    box.addEventListener('dblclick', () => {
++      if (!memo.editable) return;
++      this.editingId = memo.id;
++      this.update();
++    });
++    return box;
++  }
++}
++
++let marks: MemoMarks | null = null;
++export const memoMarks = (services: CommandServices): MemoMarks => (marks ??= new MemoMarks(services));
++/** main.ts 가 서비스를 만든 직후 한 번 부른다: 문서를 열 때마다 메모 표시가 따라 그려진다. */
++export const installMemoMarks = (services: CommandServices): MemoMarks => memoMarks(services);
+diff --git a/rhwp-studio/src/hwpxxx/memo-panel.ts b/rhwp-studio/src/hwpxxx/memo-panel.ts
+new file mode 100644
+index 0000000..64c4214
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/memo-panel.ts
+@@ -0,0 +1,286 @@
++// [hwpxxx] 메모 창: 문서의 한글 메모(HWP·HWPX)를 보고, 선택한 글자에 달고, 고치고, 지운다.
++// 엔진의 메모 API(getMemoList / insertMemo / setMemoText / removeMemo)를 편집 작업(snapshot)으로 부르므로
++// 문서를 다시 불러오지 않고, 되돌리기(Ctrl+Z)로 취소할 수 있다.
++import '@/styles/hwpxxx-memo.css';
++import type { CommandServices } from '@/command/types';
++import type { InputHandler } from '@/engine/input-handler';
++import { hyperlinkRange, type HyperlinkTarget } from '@/core/hyperlink';
++import type { MemoEntry } from '@/core/memo';
++import { showToast } from '@/ui/toast';
++import { showConfirm } from '@/ui/confirm-dialog';
++
++const AUTHOR_KEY = 'hwpxxx.memoAuthor';
++const readAuthor = (): string => { try { return localStorage.getItem(AUTHOR_KEY) || 'hwpxxx'; } catch { return 'hwpxxx'; } };
++const saveAuthor = (value: string): void => { try { localStorage.setItem(AUTHOR_KEY, value); } catch { /* 저장소를 못 쓰면 이번 실행에서만 기억한다 */ } };
++const trim = (text: string, max: number): string => { const chars = Array.from(text); return chars.length > max ? chars.slice(0, max).join('') + '…' : text; };
++// 한글은 작성 시각을 현지 시각에 Z 를 붙여 기록한다.
++const when = (value: string | null): string => typeof value !== 'string' ? '' : /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(value) ? value.slice(0, 16).replace('T', ' ') : value;
++const cellPathOf = (memo: MemoEntry): [number, number, number][] =>
++  (memo.path ?? []).map(step => [step.controlIndex, step.type === 'cell' ? step.cellIndex : 0, step.paraIndex]);
++
++interface Draft {
++  target: HyperlinkTarget;
++  start: number;
++  end: number;
++  find: string;
++}
++type PanelMemo = MemoEntry & { anchor: string };
++
++function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
++  const node = document.createElement(tag);
++  if (className) node.className = className;
++  if (text !== undefined) node.textContent = text;
++  return node;
++}
++
++export class MemoPanel {
++  private readonly root = element('aside');
++  private readonly head = element('div', 'hm-head');
++  private readonly title = element('span', 'hm-title', '메모');
++  private readonly body = element('div');
++  private readonly list = element('div', 'hm-list');
++  private memos: PanelMemo[] = [];
++  private draft: Draft | null = null;
++  private editing: number | null = null;
++  private notice: { text: string; warn: boolean } | null = null;
++  private refreshTimer: number | undefined;
++
++  constructor(private readonly services: CommandServices) {
++    this.root.id = 'hwpxxx-memo-panel';
++    this.root.setAttribute('aria-label', '메모 창');
++    const refresh = element('button', undefined, '새로고침');
++    refresh.title = '문서에서 메모 목록을 다시 읽습니다';
++    refresh.addEventListener('click', () => this.refresh());
++    const close = element('button', undefined, '닫기');
++    close.addEventListener('click', () => this.hide());
++    this.head.append(this.title, refresh, close);
++    this.body.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0';
++    this.root.append(this.head, this.body);
++    document.body.append(this.root);
++    window.addEventListener('resize', () => this.place());
++    // 문서를 바꾸거나 고칠 때(되돌리기 포함) 목록의 위치가 어긋나지 않게 다시 읽는다.
++    const later = () => { if (!this.isOpen()) return; window.clearTimeout(this.refreshTimer); this.refreshTimer = window.setTimeout(() => this.refresh(), 250); };
++    services.eventBus.on('document-swapped', later);
++    services.eventBus.on('document-changed', later);
++  }
++
++  isOpen(): boolean { return this.root.classList.contains('open'); }
++  toggle(): void { if (this.isOpen()) this.hide(); else this.show(); }
++  show(): void {
++    this.root.classList.add('open');
++    document.body.classList.add('hwpxxx-memo-open');
++    this.place();
++    this.refresh();
++  }
++  hide(): void {
++    this.root.classList.remove('open');
++    document.body.classList.remove('hwpxxx-memo-open');
++  }
++  private place(): void {
++    const area = document.getElementById('editor-area')?.getBoundingClientRect();
++    if (!area) return;
++    this.root.style.top = `${Math.round(area.top)}px`;
++    this.root.style.height = `${Math.round(area.height)}px`;
++  }
++
++  /** 선택한 글자에 메모를 달기 위한 작성 상자를 연다. */
++  beginCompose(): void {
++    if (!this.isOpen()) this.show();
++    try {
++      this.draft = this.captureSelection();
++      this.notice = null;
++    } catch (error) {
++      this.draft = null;
++      this.say(error instanceof Error ? error.message : String(error), true);
++    }
++    this.render();
++    this.root.querySelector<HTMLTextAreaElement>('.hm-compose textarea')?.focus();
++  }
++
++  private captureSelection(): Draft {
++    const handler = this.services.getInputHandler();
++    if (!handler) throw new Error('문서를 먼저 열어 주세요.');
++    if (!handler.hasSelection()) throw new Error('메모를 달 글자를 먼저 선택해 주세요.');
++    const { target, start, end } = hyperlinkRange(handler.getCursorPosition(), structuredClone(handler.getSelection()));
++    if (start === end) throw new Error('메모를 달 글자를 먼저 선택해 주세요.');
++    const find = Array.from(this.services.wasm.getHyperlinkContext(target).text).slice(start, end).join('');
++    return { target, start, end, find };
++  }
++
++  /** 문서에서 메모 목록을 다시 읽는다. */
++  refresh(): void {
++    const wasm = this.services.wasm;
++    if (!wasm.hasLoadedDocument()) { this.memos = []; this.render(); return; }
++    try {
++      this.memos = wasm.getMemoList().map(memo => ({ ...memo, anchor: this.anchorText(memo) }));
++    } catch (error) {
++      this.memos = [];
++      this.say('메모 목록을 읽지 못했습니다: ' + (error instanceof Error ? error.message : String(error)), true);
++    }
++    this.render();
++  }
++
++  private anchorText(memo: MemoEntry): string {
++    if (memo.paraIndex === null || memo.startCharIdx === null || memo.endCharIdx === null) return '';
++    try {
++      const context = this.services.wasm.getHyperlinkContext({ section: memo.sectionIndex, para: memo.paraIndex, cellPath: cellPathOf(memo) });
++      return Array.from(context.text).slice(memo.startCharIdx, memo.endCharIdx).join('');
++    } catch { return ''; }
++  }
++
++  private say(text: string, warn = false): void {
++    this.notice = { text, warn };
++    if (!this.isOpen()) showToast({ message: text });
++  }
++
++  /** 편집 작업(snapshot)으로 실행한다: 실패하면 문서는 바뀌지 않고, 성공하면 되돌리기로 취소할 수 있다. */
++  private apply(type: string, run: (wasm: CommandServices['wasm']) => void): boolean {
++    const handler: InputHandler | null = this.services.getInputHandler();
++    if (!handler) { this.say('문서를 먼저 열어 주세요.', true); return false; }
++    if (!this.services.getContext().isEditable) { this.say('이 문서는 편집할 수 없는 상태입니다.', true); return false; }
++    const position = structuredClone(handler.getCursorPosition());
++    try {
++      handler.executeOperation({ kind: 'snapshot', operationType: type, operation: wasm => { run(wasm); return position; } });
++      this.notice = null;
++      return true;
++    } catch (error) {
++      this.say(error instanceof Error ? error.message : String(error), true);
++      return false;
++    }
++  }
++
++  private submitDraft(text: string, author: string): void {
++    const draft = this.draft;
++    if (!draft) return;
++    if (!text.trim()) { this.say('메모 내용을 입력해 주세요.', true); this.render(); return; }
++    const name = author.trim() || 'hwpxxx';
++    saveAuthor(name);
++    const { target, start, end } = draft;
++    const ok = this.apply('insertMemo', wasm => {
++      if (target.cellPath.length) wasm.insertMemoByPath(target.section, target.para, target.cellPath, start, end, name, text);
++      else wasm.insertMemo(target.section, target.para, start, end, name, text);
++    });
++    if (ok) this.draft = null;
++    this.refresh();
++  }
++
++  private saveEdit(id: number, text: string): void {
++    if (!text.trim()) { this.say('메모 내용을 입력해 주세요.', true); this.render(); return; }
++    if (this.apply('setMemoText', wasm => wasm.setMemoText(id, text))) this.editing = null;
++    this.refresh();
++  }
++
++  private async remove(memo: PanelMemo): Promise<void> {
++    if (!await showConfirm('메모 삭제', `메모 ${memo.index}을(를) 삭제할까요?\n메모가 달려 있던 본문 글자는 그대로 남습니다.\n(삭제는 되돌리기로 취소할 수 있습니다.)`)) return;
++    this.apply('removeMemo', wasm => wasm.removeMemo(memo.id));
++    this.refresh();
++  }
++
++  /** 우클릭 메뉴의 '메모 삭제'. */
++  async deleteById(id: number): Promise<void> {
++    if (!this.memos.some(item => item.id === id)) this.refresh();
++    const memo = this.memos.find(item => item.id === id);
++    if (!memo) { showToast({ message: '삭제할 메모를 문서에서 찾지 못했습니다.' }); return; }
++    await this.remove(memo);
++  }
++
++  /** 메모가 달린 글자로 이동하고 그 글자를 선택한다. 본문과 표 칸 안의 메모만 이동한다. */
++  selectAnchor(memo: MemoEntry): void { this.goTo(memo as PanelMemo); }
++
++  /** 문서 화면의 메모 상자에서 고친 내용을 저장한다. */
++  saveFromBox(id: number, text: string): void {
++    if (!text.trim()) return;
++    this.apply('setMemoText', wasm => wasm.setMemoText(id, text));
++    this.refresh();
++  }
++
++  private goTo(memo: PanelMemo): void {
++    try {
++      const path = memo.path ?? [];
++      if (memo.paraIndex === null || memo.startCharIdx === null || memo.endCharIdx === null) throw new Error('이 메모는 위치로 이동할 수 없습니다.');
++      if (path.length > 1 || path.some(step => step.type !== 'cell')) throw new Error('글상자나 중첩된 표 안의 메모는 위치 이동을 지원하지 않습니다.');
++      const handler = this.services.getInputHandler();
++      if (!handler) return;
++      const cell = path[0];
++      const base = cell && cell.type === 'cell'
++        ? { sectionIndex: memo.sectionIndex, paragraphIndex: memo.paraIndex, charOffset: memo.startCharIdx, parentParaIndex: memo.paraIndex, controlIndex: cell.controlIndex, cellIndex: cell.cellIndex, cellParaIndex: cell.paraIndex }
++        : { sectionIndex: memo.sectionIndex, paragraphIndex: memo.paraIndex, charOffset: memo.startCharIdx };
++      const cursor = (handler as unknown as { cursor?: { clearSelection(): void; moveTo(pos: unknown): void; setAnchor(): void } }).cursor;
++      if (cell) { cursor?.clearSelection(); cursor?.moveTo(base); } else handler.moveCursorTo(base);
++      cursor?.setAnchor();
++      cursor?.moveTo({ ...base, charOffset: memo.endCharIdx });
++      (handler as unknown as { updateCaret?: () => void }).updateCaret?.();
++    } catch (error) {
++      showToast({ message: error instanceof Error ? error.message : String(error) });
++    }
++  }
++
++  private render(): void {
++    this.title.textContent = `메모 (${this.memos.length})`;
++    this.body.replaceChildren();
++    if (this.notice) this.body.append(element('div', this.notice.warn ? 'hm-notice warn' : 'hm-notice', this.notice.text));
++    if (this.draft) this.body.append(this.composeBox(this.draft));
++    else {
++      const add = element('button', 'hm-add hm-primary', '선택한 글자에 메모 삽입');
++      add.disabled = !this.services.wasm.hasLoadedDocument();
++      add.addEventListener('click', () => this.beginCompose());
++      this.body.append(add);
++    }
++    this.list.replaceChildren();
++    if (!this.memos.length) this.list.append(element('div', 'hm-empty', '이 문서에는 메모가 없습니다.'));
++    for (const memo of this.memos) this.list.append(this.card(memo));
++    this.body.append(this.list, element('div', 'hm-foot', '메모를 달거나 고치거나 지우는 일은 되돌리기(Ctrl+Z)로 취소할 수 있습니다. 저장하기 전까지 파일에는 반영되지 않습니다.'));
++  }
++
++  private composeBox(draft: Draft): HTMLElement {
++    const box = element('div', 'hm-compose');
++    const target = element('div', 'hm-target', `대상 글자: “${trim(draft.find, 60)}”`);
++    const author = element('input');
++    author.type = 'text'; author.value = readAuthor(); author.maxLength = 40; author.placeholder = '작성자'; author.setAttribute('aria-label', '작성자');
++    const text = element('textarea');
++    text.placeholder = '메모 내용을 입력하세요 (Ctrl+Enter: 삽입)';
++    const ok = element('button', 'hm-primary', '삽입');
++    const cancel = element('button', undefined, '취소');
++    ok.addEventListener('click', () => this.submitDraft(text.value, author.value));
++    cancel.addEventListener('click', () => { this.draft = null; this.render(); });
++    text.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this.submitDraft(text.value, author.value); } });
++    const row = element('div', 'hm-row'); row.append(cancel, ok);
++    box.append(target, author, text, row);
++    return box;
++  }
++
++  private card(memo: PanelMemo): HTMLElement {
++    const card = element('div', 'hm-card');
++    const meta = element('div', 'hm-meta');
++    meta.append(element('b', undefined, `#${memo.index}`), element('span', undefined, memo.author), ...(memo.date ? [element('span', undefined, when(memo.date))] : []));
++    card.append(meta);
++    if (memo.anchor) {
++      const anchor = element('button', 'hm-anchor', `“${trim(memo.anchor, 40)}”`);
++      anchor.title = '본문의 해당 글자로 이동';
++      anchor.addEventListener('click', () => this.goTo(memo));
++      card.append(anchor);
++    }
++    if (this.editing === memo.id && memo.editable) {
++      const text = element('textarea'); text.value = memo.text;
++      const save = element('button', 'hm-primary', '저장'), cancel = element('button', undefined, '취소');
++      save.addEventListener('click', () => this.saveEdit(memo.id, text.value));
++      cancel.addEventListener('click', () => { this.editing = null; this.render(); });
++      text.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); this.saveEdit(memo.id, text.value); } });
++      const row = element('div', 'hm-row'); row.append(cancel, save);
++      card.append(text, row);
++    } else {
++      const actions = element('div', 'hm-actions');
++      const edit = element('button', undefined, '수정'), del = element('button', 'hm-danger', '삭제');
++      edit.disabled = del.disabled = !memo.editable;
++      if (!memo.editable) edit.title = del.title = memo.readOnlyReason ?? '이 메모는 고칠 수 없습니다.';
++      edit.addEventListener('click', () => { this.editing = memo.id; this.render(); });
++      del.addEventListener('click', () => { void this.remove(memo); });
++      actions.append(edit, del);
++      card.append(element('div', 'hm-text', memo.text), actions);
++    }
++    return card;
++  }
++}
++
++let panel: MemoPanel | null = null;
++export const memoPanel = (services: CommandServices): MemoPanel => (panel ??= new MemoPanel(services));
+diff --git a/rhwp-studio/src/styles/hwpxxx-memo.css b/rhwp-studio/src/styles/hwpxxx-memo.css
+new file mode 100644
+index 0000000..879fb1d
+--- /dev/null
++++ b/rhwp-studio/src/styles/hwpxxx-memo.css
+@@ -0,0 +1,57 @@
++/* hwpxxx 메모 창: 편집 영역 오른쪽에 붙는 패널. 색은 앱 토큰을 따라 밝은/어두운 테마에서 함께 바뀐다. */
++body.hwpxxx-memo-open #editor-area { margin-right: 320px; }
++#hwpxxx-memo-panel {
++  position: fixed;
++  right: 0;
++  width: 320px;
++  box-sizing: border-box;
++  display: none;
++  flex-direction: column;
++  background: var(--ui-bg-light);
++  color: var(--ui-text);
++  border-left: 1px solid var(--ui-border);
++  font-size: 13px;
++  z-index: 50;
++}
++#hwpxxx-memo-panel.open { display: flex; }
++#hwpxxx-memo-panel .hm-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--ui-border-light); background: var(--ui-surface-raised); font-weight: 600; }
++#hwpxxx-memo-panel .hm-head .hm-title { flex: 1; }
++#hwpxxx-memo-panel button { font: inherit; color: var(--ui-text); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 3px; padding: 3px 8px; cursor: pointer; }
++#hwpxxx-memo-panel button:hover:not(:disabled) { background: var(--ui-hover); }
++#hwpxxx-memo-panel button:disabled { color: var(--ui-text-disabled); cursor: default; }
++#hwpxxx-memo-panel button.hm-primary { background: var(--ui-menu-open); border-color: var(--ui-menu-open-border); color: var(--ui-text-on-accent); }
++#hwpxxx-memo-panel button.hm-danger { color: var(--ui-danger-strong); }
++#hwpxxx-memo-panel .hm-add { margin: 8px 10px 0; }
++#hwpxxx-memo-panel .hm-notice { margin: 8px 10px 0; padding: 6px 8px; background: var(--ui-note-bg); border: 1px solid var(--ui-note-border); color: var(--ui-note-text); border-radius: 3px; line-height: 1.45; }
++#hwpxxx-memo-panel .hm-notice.warn { background: var(--ui-warning-bg); border-color: var(--ui-warning-border); color: var(--ui-warning-text); }
++#hwpxxx-memo-panel .hm-compose { margin: 8px 10px 0; padding: 8px; background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 3px; display: grid; gap: 6px; }
++#hwpxxx-memo-panel .hm-target { color: var(--ui-text-secondary); word-break: break-all; }
++#hwpxxx-memo-panel textarea, #hwpxxx-memo-panel input[type="text"] { font: inherit; color: var(--ui-text); background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: 3px; padding: 4px 6px; box-sizing: border-box; width: 100%; }
++#hwpxxx-memo-panel textarea { min-height: 72px; resize: vertical; }
++#hwpxxx-memo-panel .hm-row { display: flex; gap: 6px; justify-content: flex-end; }
++#hwpxxx-memo-panel .hm-list { flex: 1; overflow-y: auto; padding: 8px 10px 10px; display: grid; gap: 8px; align-content: start; }
++#hwpxxx-memo-panel .hm-empty { color: var(--ui-text-hint); padding: 12px 2px; }
++#hwpxxx-memo-panel .hm-card { background: var(--ui-surface); border: 1px solid var(--ui-border); border-left: 3px solid var(--ui-menu-open); border-radius: 3px; padding: 6px 8px; display: grid; gap: 4px; }
++#hwpxxx-memo-panel .hm-meta { color: var(--ui-text-muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; }
++#hwpxxx-memo-panel .hm-anchor { text-align: left; background: var(--ui-accent-bg-light); border: 0; padding: 2px 6px; color: var(--ui-link); word-break: break-all; }
++#hwpxxx-memo-panel .hm-text { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
++#hwpxxx-memo-panel .hm-actions { display: flex; gap: 6px; justify-content: flex-end; }
++#hwpxxx-memo-panel .hm-foot { padding: 6px 10px; border-top: 1px solid var(--ui-border-light); color: var(--ui-text-hint); font-size: 12px; line-height: 1.4; }
++
++/* hwpxxx 문서 화면의 메모 표시: 글자 칠 + [ ] + 오른쪽 여백의 메모 상자와 점선 안내선 (한글의 메모 보이기 모양) */
++.hwpxxx-memo-marks { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 8; pointer-events: none; }
++.hwpxxx-memo-guides { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
++.hwpxxx-memo-guides path { fill: none; stroke: #6f8f5f; stroke-width: 1; stroke-dasharray: 2 3; }
++.hwpxxx-memo-fill { position: absolute; background: rgba(140, 220, 70, 0.38); mix-blend-mode: multiply; pointer-events: none; }
++.hwpxxx-memo-bracket { position: absolute; width: 0; pointer-events: none; border-left: 1.5px solid #2e7d1c; }
++.hwpxxx-memo-bracket::before, .hwpxxx-memo-bracket::after { content: ''; position: absolute; left: -1.5px; width: 3px; border-top: 1.5px solid #2e7d1c; }
++.hwpxxx-memo-bracket::before { top: 0; }
++.hwpxxx-memo-bracket::after { bottom: 0; }
++.hwpxxx-memo-bracket.end { border-left: 0; border-right: 1.5px solid #2e7d1c; }
++.hwpxxx-memo-bracket.end::before, .hwpxxx-memo-bracket.end::after { left: auto; right: -1.5px; }
++.hwpxxx-memo-box { position: absolute; box-sizing: border-box; pointer-events: auto; cursor: pointer; background: #d4f3b6; color: #1c2b12; border: 1px solid #5d9a3a; font-size: 11px; line-height: 1.4; padding: 3px 5px; box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.18); }
++.hwpxxx-memo-box:hover { background: #dcf7c4; }
++.hwpxxx-memo-box-head { font-weight: 600; font-size: 10px; color: #335a1d; border-bottom: 1px solid #8fc06a; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.hwpxxx-memo-box-body { white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: hidden; }
++.hwpxxx-memo-box textarea { width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: #f2fce6; border: 1px solid #5d9a3a; resize: vertical; }
++@media print { .hwpxxx-memo-marks { display: none; } }
+diff --git a/rhwp-studio/src/ui/command-tooltip.ts b/rhwp-studio/src/ui/command-tooltip.ts
+new file mode 100644
+index 0000000..6157704
+--- /dev/null
++++ b/rhwp-studio/src/ui/command-tooltip.ts
+@@ -0,0 +1,185 @@
++/**
++ * [hwpxxx] 도구 막대 버튼 툴팁 — 기능 이름 + 실제 단축키.
++ *
++ * 이름과 단축키는 명령 등록부(CommandRegistry)의 label·shortcutLabel을 그대로 쓴다. 메뉴의 단축키
++ * 표시(menu-shortcut-labels)와 같은 원천이라 따로 하드코딩하지 않는다. 명령이 연결되지 않은 버튼은
++ * 기존 title 문구를 이름으로 쓴다. 브라우저 기본 title 도움말과 겹치지 않도록 hover/focus 동안 title을
++ * 잠시 비워 두고, 사라질 때 되돌린다(언어 전환이 title을 다시 쓰는 경로를 그대로 둔다).
++ */
++import type { CommandRegistry } from '../command/registry';
++import type { CommandDispatcher } from '../command/dispatcher';
++import { formatShortcutLabel } from '../engine/navigation-keymap.ts';
++import { shortcutLabelsFor } from '../command/shortcut-map.ts';
++import { chordShortcutTables } from '../command/chord-map.ts';
++
++const TARGETS = [
++  '#icon-toolbar button', '#style-bar button', '#style-bar select', '#style-bar input',
++  '.tb-btn', '.sb-btn', '.sb-arrow', '[data-cmd]:not(.md-item)',
++].join(',');
++// 메뉴 항목·대화상자 안 요소는 자체 표시가 있으므로 제외한다.
++const EXCLUDED = '.md-item, .md-dropdown, .dialog, [role="dialog"], .sb-dropdown-item';
++const SHOW_DELAY = 500;
++
++// data-cmd 가 없는 기존 버튼이 실제로 실행하는 명령.
++const COMMAND_BY_ID: Record<string, string> = {
++  'btn-bold': 'format:bold', 'btn-italic': 'format:italic', 'btn-underline': 'format:underline',
++  'btn-strike': 'format:strikethrough',
++  'btn-size-up': 'format:font-size-increase', 'btn-size-down': 'format:font-size-decrease',
++  'btn-ls-up': 'format:line-spacing-increase', 'btn-ls-down': 'format:line-spacing-decrease',
++  'btn-align-left': 'format:align-left', 'btn-align-center': 'format:align-center',
++  'btn-align-right': 'format:align-right', 'btn-align-justify': 'format:align-justify',
++  'btn-align-distribute': 'format:align-distribute', 'btn-align-split': 'format:align-split',
++  'btn-ratio-up': 'format:char-ratio-increase', 'btn-ratio-down': 'format:char-ratio-decrease',
++  'btn-spacing-up': 'format:char-spacing-increase', 'btn-spacing-down': 'format:char-spacing-decrease',
++};
++const COMMAND_BY_SPRITE: Record<string, string> = {
++  'icon-cut': 'edit:cut', 'icon-copy': 'edit:copy', 'icon-paste': 'edit:paste',
++};
++
++/** 'Ctrl+M,K' → ['Ctrl+M', 'K'] — 연속 키는 순서대로 배지를 나눈다. */
++export function shortcutParts(label: string): string[] {
++  return label.split(/\s*,\s*/).map(part => formatShortcutLabel(part.trim())).filter(Boolean);
++}
++
++/**
++ * 명령의 단축키 — 등록부 안내(shortcutLabel)가 있으면 그것, 없으면 실제 키 처리 표(기본 단축키 표 →
++ * 연속 키 표)에서 찾는다. 표에 없는 키를 지어내지 않는다.
++ */
++export function commandShortcut(commandId: string, registryLabel?: string): string | undefined {
++  if (registryLabel) return registryLabel;
++  const direct = shortcutLabelsFor(commandId)[0];
++  if (direct) return direct;
++  for (const [prefix, map] of chordShortcutTables) {
++    const letter = Object.keys(map).find(key => /^[a-z]$/.test(key) && map[key] === commandId);
++    if (letter) return prefix + ',' + letter.toUpperCase();
++  }
++  return undefined;
++}
++
++/** title 끝의 "(Ctrl+X)" 같은 단축키 표기. 없으면 undefined. */
++export function shortcutFromTitle(title: string): string | undefined {
++  return /\(((?:Ctrl|Alt|Shift|Cmd)\+[^)]+|F\d+)\)\s*$/i.exec(title)?.[1];
++}
++
++/** 기존 title 의 끝에 붙은 "(Ctrl+X)" 같은 단축키 표기를 떼어 낸 이름. */
++export function nameFromTitle(title: string): string {
++  return title.replace(/\s*\((?:Ctrl|Alt|Shift|Cmd|F\d)[^)]*\)\s*$/i, '').trim();
++}
++
++function commandOf(el: HTMLElement): string | undefined {
++  if (el.dataset.cmd) return el.dataset.cmd;
++  if (el.id && COMMAND_BY_ID[el.id]) return COMMAND_BY_ID[el.id];
++  const sprite = el.querySelector('.tb-sprite');
++  if (sprite) for (const cls of sprite.classList) if (COMMAND_BY_SPRITE[cls]) return COMMAND_BY_SPRITE[cls];
++  return undefined;
++}
++
++export function initCommandTooltips(registry: CommandRegistry, dispatcher: CommandDispatcher): void {
++  const tip = document.createElement('div');
++  tip.id = 'hwpxxx-command-tooltip';
++  tip.className = 'hwpxxx-tooltip';
++  tip.setAttribute('role', 'tooltip');
++  tip.hidden = true;
++  document.body.appendChild(tip);
++
++  let target: HTMLElement | null = null;
++  let timer = 0;
++  let stashedTitle: string | null = null;
++
++  const restoreTitle = () => {
++    if (target && stashedTitle !== null && !target.getAttribute('title')) target.setAttribute('title', stashedTitle);
++    stashedTitle = null;
++  };
++  const hide = () => {
++    window.clearTimeout(timer);
++    if (target) { restoreTitle(); if (target.getAttribute('aria-describedby') === tip.id) target.removeAttribute('aria-describedby'); }
++    target = null;
++    tip.classList.remove('visible');
++    tip.hidden = true;
++  };
++
++  const render = (el: HTMLElement): boolean => {
++    const commandId = commandOf(el);
++    const def = commandId ? registry.get(commandId) : undefined;
++    const title = stashedTitle ?? el.getAttribute('title') ?? '';
++    const name = (def?.label && def.label.trim()) || nameFromTitle(title) || el.getAttribute('aria-label') || '';
++    if (!name) return false;
++    const disabled = el.matches(':disabled, .disabled, [aria-disabled="true"]')
++      || (!!def && !!commandId && !dispatcher.isEnabled(commandId));
++    tip.replaceChildren();
++    const label = document.createElement('span');
++    label.className = 'hwpxxx-tooltip-name';
++    label.textContent = name;
++    tip.appendChild(label);
++    // 실제로 실행할 수 없는 상태에서는 단축키를 정상 지원처럼 보이지 않게 한다.
++    const shortcut = (commandId && commandShortcut(commandId, def?.shortcutLabel)) || shortcutFromTitle(title);
++    if (shortcut && !disabled) {
++      const keys = document.createElement('span');
++      keys.className = 'hwpxxx-tooltip-keys';
++      shortcutParts(shortcut).forEach((part, index) => {
++        if (index) keys.append(' → ');
++        const kbd = document.createElement('kbd');
++        kbd.textContent = part;
++        keys.appendChild(kbd);
++      });
++      tip.appendChild(keys);
++    }
++    if (disabled) {
++      const reason = document.createElement('span');
++      reason.className = 'hwpxxx-tooltip-reason';
++      reason.textContent = '지금은 사용할 수 없습니다';
++      tip.appendChild(reason);
++    }
++    return true;
++  };
++
++  const place = (el: HTMLElement) => {
++    const r = el.getBoundingClientRect();
++    tip.style.left = '0px'; tip.style.top = '0px';
++    const t = tip.getBoundingClientRect();
++    const margin = 6, vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
++    let top = r.bottom + margin;
++    if (top + t.height > vh - margin) top = Math.max(margin, r.top - margin - t.height);
++    const left = Math.min(Math.max(margin, r.left + r.width / 2 - t.width / 2), vw - t.width - margin);
++    tip.style.left = Math.round(left) + 'px';
++    tip.style.top = Math.round(top) + 'px';
++  };
++
++  const arm = (el: HTMLElement, immediate = false) => {
++    if (el === target) return;
++    hide();
++    target = el;
++    stashedTitle = el.getAttribute('title');
++    if (stashedTitle !== null) el.removeAttribute('title');
++    timer = window.setTimeout(() => {
++      if (target !== el || !el.isConnected || !render(el)) return;
++      tip.hidden = false;
++      place(el);
++      el.setAttribute('aria-describedby', tip.id);
++      requestAnimationFrame(() => tip.classList.add('visible'));
++    }, immediate ? 0 : SHOW_DELAY);
++  };
++
++  const find = (node: EventTarget | null): HTMLElement | null => {
++    const el = node instanceof Element ? node.closest(TARGETS) as HTMLElement | null : null;
++    return el && !el.closest(EXCLUDED) ? el : null;
++  };
++
++  // 비활성 버튼은 마우스 이벤트를 받지 못하므로 좌표로 버튼을 찾는다.
++  document.addEventListener('pointermove', e => {
++    if (e.pointerType === 'touch') return;
++    const el = find(document.elementFromPoint(e.clientX, e.clientY));
++    if (el) arm(el); else if (target && document.activeElement !== target) hide();
++  }, { passive: true });
++  document.addEventListener('focusin', e => {
++    const el = find(e.target);
++    if (el && el.matches(':focus-visible')) arm(el, false);
++  });
++  document.addEventListener('focusout', e => { if (e.target === target) hide(); });
++  document.addEventListener('pointerdown', hide, true);
++  document.addEventListener('keydown', e => { if (e.key === 'Escape' || target && e.target !== target) hide(); }, true);
++  document.addEventListener('wheel', hide, { passive: true, capture: true });
++  window.addEventListener('blur', hide);
++  window.addEventListener('resize', hide);
++  document.addEventListener('pointerleave', hide);
++}
+diff --git a/rhwp-studio/src/ui/format-copy-dialog.ts b/rhwp-studio/src/ui/format-copy-dialog.ts
+new file mode 100644
+index 0000000..72ecbed
+--- /dev/null
++++ b/rhwp-studio/src/ui/format-copy-dialog.ts
+@@ -0,0 +1,151 @@
++import { ModalDialog } from './dialog';
++
++/** [hwpxxx] 모양 복사 옵션 — 한/글 Alt+C 대화상자(모양 복사)와 같은 구성 */
++export interface FormatCopyOptions {
++  /** 본문 모양 복사: 글자 모양 / 문단 모양 / 둘 다 / 글자 스타일 / 문단 스타일 */
++  body: 'char' | 'para' | 'both' | 'charStyle' | 'paraStyle';
++  /** 셀 모양 복사 (표 안에서만) */
++  cellAttr: boolean;
++  cellBorder: boolean;
++  cellBackground: boolean;
++  /** 표에서 적용 대상: 본문 모양과 셀 모양 둘 다 / 셀 모양만 */
++  tableTarget: 'both' | 'cellOnly';
++}
++
++export const DEFAULT_FORMAT_COPY_OPTIONS: FormatCopyOptions = {
++  body: 'char',
++  cellAttr: false,
++  cellBorder: false,
++  cellBackground: false,
++  tableTarget: 'both',
++};
++
++export interface FormatCopyContext {
++  /** 커서가 표 셀 안에 있는가 (셀 모양 항목 활성화) */
++  inCell: boolean;
++  /** 글자 스타일 복사를 쓸 수 있는가 (엔진이 글자 스타일 위치를 알려주지 않아 현재는 항상 false) */
++  charStyleAvailable: boolean;
++}
++
++const BODY_OPTIONS: ReadonlyArray<{ value: FormatCopyOptions['body']; label: string }> = [
++  { value: 'char', label: '글자 모양' },
++  { value: 'para', label: '문단 모양' },
++  { value: 'both', label: '글자 모양과 문단 모양 둘 다 복사' },
++  { value: 'charStyle', label: '글자 스타일' },
++  { value: 'paraStyle', label: '문단 스타일' },
++];
++
++/** 모양 복사 대화상자 — 커서 위치에서 복사할 서식 범위를 고른다 */
++export class FormatCopyDialog extends ModalDialog {
++  private bodyRadios: HTMLInputElement[] = [];
++  private cellBoxes: Record<'cellAttr' | 'cellBorder' | 'cellBackground', HTMLInputElement> | null = null;
++  private targetRadios: HTMLInputElement[] = [];
++
++  constructor(
++    private context: FormatCopyContext,
++    private onCopy: (options: FormatCopyOptions) => void,
++  ) {
++    super('모양 복사', 300);
++  }
++
++  protected createBody(): HTMLElement {
++    const body = document.createElement('div');
++    body.appendChild(this.section('본문 모양 복사', this.buildBody()));
++    body.appendChild(this.section('셀 모양 복사', this.buildCells()));
++    body.appendChild(this.section('표에서 적용 대상', this.buildTarget()));
++    this.syncTarget();
++    return body;
++  }
++
++  private section(title: string, content: HTMLElement): HTMLElement {
++    const section = document.createElement('div');
++    section.style.marginBottom = '10px';
++    const heading = document.createElement('div');
++    heading.textContent = title;
++    heading.style.cssText = 'font-weight:bold;border-bottom:1px solid #99a;margin-bottom:4px;color:#335';
++    section.appendChild(heading);
++    section.appendChild(content);
++    return section;
++  }
++
++  private option(input: HTMLInputElement, label: string): HTMLLabelElement {
++    const lbl = document.createElement('label');
++    lbl.appendChild(input);
++    lbl.appendChild(document.createTextNode(label));
++    // 라디오·체크박스는 입력 칸으로 취급돼 Enter 가 확인 버튼까지 닿지 않는다.
++    input.addEventListener('keydown', (e) => {
++      if (e.key !== 'Enter') return;
++      e.preventDefault();
++      this.dialog.querySelector<HTMLButtonElement>('.dialog-btn-primary')?.click();
++    });
++    return lbl;
++  }
++
++  private buildBody(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    for (const { value, label } of BODY_OPTIONS) {
++      const input = document.createElement('input');
++      input.type = 'radio';
++      input.name = 'format-copy-body';
++      input.value = value;
++      input.checked = value === DEFAULT_FORMAT_COPY_OPTIONS.body;
++      input.disabled = value === 'charStyle' && !this.context.charStyleAvailable;
++      group.appendChild(this.option(input, label));
++      this.bodyRadios.push(input);
++    }
++    return group;
++  }
++
++  private buildCells(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    const make = (label: string): HTMLInputElement => {
++      const input = document.createElement('input');
++      input.type = 'checkbox';
++      input.disabled = !this.context.inCell;
++      input.addEventListener('change', () => this.syncTarget());
++      group.appendChild(this.option(input, label));
++      return input;
++    };
++    this.cellBoxes = { cellAttr: make('셀 속성'), cellBorder: make('셀 테두리'), cellBackground: make('셀 배경') };
++    return group;
++  }
++
++  private buildTarget(): HTMLElement {
++    const group = document.createElement('div');
++    group.className = 'dialog-radio-group';
++    for (const [value, label] of [['both', '본문 모양과 셀 모양 둘 다'], ['cellOnly', '셀 모양만']] as const) {
++      const input = document.createElement('input');
++      input.type = 'radio';
++      input.name = 'format-copy-target';
++      input.value = value;
++      input.checked = value === DEFAULT_FORMAT_COPY_OPTIONS.tableTarget;
++      group.appendChild(this.option(input, label));
++      this.targetRadios.push(input);
++    }
++    return group;
++  }
++
++  /** 셀 모양 항목을 하나라도 골라야 표 적용 대상을 고를 수 있다 */
++  private syncTarget(): void {
++    const any = this.cellBoxes !== null && Object.values(this.cellBoxes).some((box) => box.checked);
++    for (const radio of this.targetRadios) radio.disabled = !any;
++  }
++
++  show(): void {
++    super.show();
++    (this.bodyRadios.find((r) => r.checked) ?? this.bodyRadios[0])?.focus();
++  }
++
++  protected onConfirm(): void {
++    const boxes = this.cellBoxes;
++    this.onCopy({
++      body: (this.bodyRadios.find((r) => r.checked)?.value ?? DEFAULT_FORMAT_COPY_OPTIONS.body) as FormatCopyOptions['body'],
++      cellAttr: boxes?.cellAttr.checked ?? false,
++      cellBorder: boxes?.cellBorder.checked ?? false,
++      cellBackground: boxes?.cellBackground.checked ?? false,
++      tableTarget: (this.targetRadios.find((r) => r.checked)?.value ?? DEFAULT_FORMAT_COPY_OPTIONS.tableTarget) as FormatCopyOptions['tableTarget'],
++    });
++  }
++}
+diff --git a/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
+new file mode 100644
+index 0000000..b8b9de1
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
+@@ -0,0 +1,92 @@
++// [hwpxxx] 데스크톱 보강 회귀 시험 — 한글 입력 상태 단축키, 연속 키 글자, 툴팁 단축키 표기, 저장 중 편집 보호.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import { defaultShortcuts, matchShortcut, chordLetter } from '../src/command/shortcut-map.ts';
++import { EventBus } from '../src/core/event-bus.ts';
++import { DocumentDirtyState } from '../src/core/document-dirty-state.ts';
++import { shortcutParts, nameFromTitle, commandShortcut, shortcutFromTitle } from '../src/ui/command-tooltip.ts';
++
++function key(input: Partial<KeyboardEvent>): KeyboardEvent {
++  return {
++    key: input.key ?? '', code: input.code ?? '',
++    shiftKey: input.shiftKey ?? false, ctrlKey: input.ctrlKey ?? false,
++    metaKey: input.metaKey ?? false, altKey: input.altKey ?? false,
++  } as KeyboardEvent;
++}
++const command = (input: Partial<KeyboardEvent>) => matchShortcut(key(input), defaultShortcuts, 'other');
++
++test('한글 입력 상태의 Ctrl 조합은 물리 키로 맞춘다', () => {
++  // 0.8.7 배포본에서는 아래 셋이 null 이었다(Ctrl+S·Ctrl+B 무반응).
++  assert.equal(command({ key: 'ㄴ', code: 'KeyS', ctrlKey: true }), 'file:save');
++  assert.equal(command({ key: 'ㅠ', code: 'KeyB', ctrlKey: true }), 'format:bold');
++  assert.equal(command({ key: 'Process', code: 'KeyB', ctrlKey: true }), 'format:bold');
++  assert.equal(command({ key: 'Process', code: 'KeyZ', ctrlKey: true }), 'edit:undo');
++  assert.equal(command({ key: 'Process', code: 'KeyY', ctrlKey: true }), 'edit:redo');
++  assert.equal(command({ key: 'Process', code: 'KeyI', ctrlKey: true }), 'format:italic');
++  assert.equal(command({ key: 'Process', code: 'KeyU', ctrlKey: true }), 'format:underline');
++  assert.equal(command({ key: 'Process', code: 'Equal', ctrlKey: true }), 'view:zoom-in');
++});
++
++test('영문 입력과 수정키 없는 입력은 그대로 둔다', () => {
++  assert.equal(command({ key: 's', code: 'KeyS', ctrlKey: true }), 'file:save');
++  // 다른 배열(예: 물리 KeyS 가 다른 글자)에서 영문 글자가 오면 글자 기준이 우선한다.
++  assert.equal(command({ key: 'o', code: 'KeyS', ctrlKey: true }), 'file:open');
++  // 수정키 없는 한글 입력은 단축키로 가로채지 않는다.
++  assert.equal(command({ key: 'ㄴ', code: 'KeyS' }), null);
++  // Shift 가 다르면 맞추지 않는다.
++  assert.equal(command({ key: 'Process', code: 'KeyB', ctrlKey: true, shiftKey: true }), null);
++});
++
++test('연속 키 두 번째 글자는 한글·조합 중에도 영문 글자로 읽는다', () => {
++  assert.equal(chordLetter(key({ key: 'ㄷ', code: 'KeyE' })), 'e');
++  assert.equal(chordLetter(key({ key: 'Process', code: 'KeyK' })), 'k');
++  assert.equal(chordLetter(key({ key: 'F', code: 'KeyF' })), 'f');
++  assert.equal(chordLetter(key({ key: 'Escape', code: 'Escape' })), 'escape');
++});
++
++test('툴팁 단축키 표기는 연속 키를 나누고 title 의 단축키를 뗀다', () => {
++  assert.deepEqual(shortcutParts('Ctrl+M,K'), ['Ctrl+M', 'K']);
++  assert.deepEqual(shortcutParts('Ctrl+K,E'), ['Ctrl+K', 'E']);
++  assert.deepEqual(shortcutParts('Ctrl+B'), ['Ctrl+B']);
++  assert.equal(nameFromTitle('오려두기 (Ctrl+X)'), '오려두기');
++  assert.equal(nameFromTitle('줄 간격 증가 (+5%)'), '줄 간격 증가 (+5%)');
++});
++
++test('저장 중에 생긴 편집은 저장 완료 후에도 변경 상태로 남는다', () => {
++  const state = new DocumentDirtyState(new EventBus());
++  state.markDirty('edit');
++  const revision = state.getRevision();
++  state.markDirty('edit-during-save');
++  assert.equal(state.markClean('save', revision), false);
++  assert.equal(state.isDirty(), true);
++  assert.equal(state.markClean('save', state.getRevision()), true);
++  assert.equal(state.isDirty(), false);
++  // revision 없이 부르는 기존 경로(문서 초기화 등)는 그대로 clean 으로 만든다.
++  state.markDirty('edit');
++  assert.equal(state.markClean('document-initialized'), true);
++  assert.equal(state.isDirty(), false);
++});
++
++test('툴팁 단축키는 실제 키 처리 표에서 찾는다', () => {
++  // 등록부에 안내 문구가 없어도 실제로 배정된 키를 보여 준다(1.3.0 초판에서는 이름만 나왔다).
++  assert.equal(commandShortcut('format:para-shape'), 'Alt+T');
++  assert.equal(commandShortcut('format:char-shape'), 'Alt+L');
++  assert.equal(commandShortcut('format:align-left'), 'Ctrl+Shift+L');
++  assert.equal(commandShortcut('format:align-center'), 'Alt+Shift+C');
++  assert.equal(commandShortcut('format:font-size-increase'), 'Alt+Shift+E');
++  assert.equal(commandShortcut('insert:footnote'), 'Ctrl+M,N');
++  assert.equal(commandShortcut('insert:hyperlink'), 'Ctrl+K,H');
++  assert.equal(commandShortcut('view:ctrl-mark'), 'Ctrl+G,C');
++  assert.equal(commandShortcut('edit:find'), 'Ctrl+F');
++  // 등록부 안내가 있으면 그것이 우선이고, 배정이 없는 명령은 지어내지 않는다.
++  assert.equal(commandShortcut('format:bold', 'Ctrl+B'), 'Ctrl+B');
++  assert.equal(commandShortcut('insert:image'), undefined);
++  assert.equal(shortcutFromTitle('찾기 (Ctrl+F)'), 'Ctrl+F');
++  // 숫자 키패드 -/+ 는 수준 증가/감소, 일반 -/+ 는 문서 배율.
++  assert.equal(command({ key: '-', code: 'NumpadSubtract', ctrlKey: true }), 'format:level-increase');
++  assert.equal(command({ key: '+', code: 'NumpadAdd', ctrlKey: true }), 'format:level-decrease');
++  assert.equal(command({ key: '-', code: 'Minus', ctrlKey: true }), 'view:zoom-out');
++  assert.equal(command({ key: '=', code: 'Equal', ctrlKey: true }), 'view:zoom-in');
++  assert.equal(shortcutFromTitle('줄 간격 증가 (+5%)'), undefined);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
+new file mode 100644
+index 0000000..eb15f1a
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
+@@ -0,0 +1,32 @@
++// [hwpxxx] 형광펜 분할 단추: 본체 단추는 현재 색으로 즉시 형광펜(블록이 있으면 칠하고, 없으면 연속 모드 진입)이고,
++// 오른쪽 ▾ 단추만 팔레트를 연다. 소스 구조 보호 시험(DOM 실행 없이 연결이 유지되는지 확인한다).
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
++
++test('마크업: 본체 단추와 팔레트 단추가 따로 있고, 팔레트 단추가 접근성 속성을 가진다', () => {
++  const html = source('index.html');
++  const body = html.match(/<button id="btn-highlight"[^>]*>/)?.[0] ?? '';
++  const arrow = html.match(/<button id="btn-highlight-palette"[^>]*>/)?.[0] ?? '';
++  assert.ok(body && !body.includes('sb-has-arrow'), '본체 단추에는 ▾ 가 붙지 않는다');
++  assert.ok(arrow.includes('aria-haspopup="true"') && arrow.includes('aria-expanded="false"'));
++  assert.ok(html.indexOf('id="btn-highlight"') < html.indexOf('id="btn-highlight-palette"'), '팔레트 단추는 본체 오른쪽이다');
++  assert.ok(html.indexOf('id="btn-highlight-palette"') < html.indexOf('id="highlight-palette"'));
++});
++
++test('동작 연결: 본체 클릭은 즉시 highlight-pick(현재 색)·활성이면 종료, ▾ 클릭만 팔레트를 토글한다', () => {
++  const toolbar = source('src/ui/toolbar.ts');
++  const setup = toolbar.slice(toolbar.indexOf('private setupHighlightPicker'), toolbar.indexOf('/** 문단 정렬 버튼'));
++  const bodyClick = setup.slice(setup.indexOf("this.btnHighlight.addEventListener('click'"), setup.indexOf("this.btnHighlightPalette.addEventListener('mousedown'"));
++  assert.match(bodyClick, /emit\('highlight-pen-exit'\)/);
++  assert.match(bodyClick, /emit\('highlight-pick', this\.highlightColor\)/);
++  assert.ok(!bodyClick.includes("toggle('open')"), '본체 클릭은 팔레트를 토글하지 않는다');
++  const arrowClick = setup.slice(setup.indexOf("this.btnHighlightPalette.addEventListener('click'"));
++  assert.match(arrowClick, /classList\.toggle\('open'\)/);
++});
++
++test('i18n: 새 단추 설명이 ko/en 모두에 있다', () => {
++  for (const locale of ['ko', 'en']) assert.match(source(`src/i18n/locales/${locale}.ts`), /"ui\.btnHighlightPalette\.tooltip":/);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
+new file mode 100644
+index 0000000..6c39eb5
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
+@@ -0,0 +1,14 @@
++// [hwpxxx] 줄 정보 없는 HWPX 열기 보정의 적용 조건.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import { onlyEmptyLinesegWarnings } from '../src/core/lineseg-autoreflow.ts';
++
++test('경고가 전부 줄 배열 없음일 때만 보정한다', () => {
++  assert.equal(onlyEmptyLinesegWarnings({ count: 2, warnings: [{ kind: 'LinesegArrayEmpty' }, { kind: 'LinesegArrayEmpty' }] }), true);
++  // 한컴이 계산한 줄 정보가 섞이면 쪽 수가 바뀔 수 있어 그대로 둔다.
++  assert.equal(onlyEmptyLinesegWarnings({ count: 2, warnings: [{ kind: 'LinesegArrayEmpty' }, { kind: 'LinesegTextRunReflow' }] }), false);
++  assert.equal(onlyEmptyLinesegWarnings({ count: 0, warnings: [] }), false);
++  assert.equal(onlyEmptyLinesegWarnings({ count: 3 }), false);
++  assert.equal(onlyEmptyLinesegWarnings(null), false);
++});
+diff --git a/rhwp-studio/tests/support/studio-alias-hooks.mjs b/rhwp-studio/tests/support/studio-alias-hooks.mjs
+new file mode 100644
+index 0000000..cd705a3
+--- /dev/null
++++ b/rhwp-studio/tests/support/studio-alias-hooks.mjs
+@@ -0,0 +1,36 @@
++// 시험용 모듈 해석 훅: Vite 처럼 별칭(`@/` → src/, `@wasm/` → ../pkg/)과 확장자 없는 상대 경로를 Node 가 따라가게 한다. 시험 전용이다.
++import { fileURLToPath, pathToFileURL } from 'node:url';
++import { existsSync, statSync } from 'node:fs';
++import path from 'node:path';
++const src = fileURLToPath(new URL('../../src/', import.meta.url));
++const pkg = fileURLToPath(new URL('../../../pkg/', import.meta.url));
++const isFile = (p) => existsSync(p) && statSync(p).isFile();
++function withExtension(base) {
++  for (const candidate of [base, `${base}.ts`, path.join(base, 'index.ts')]) if (isFile(candidate)) return candidate;
++  return null;
++}
++export async function resolve(specifier, context, next) {
++  let base = null;
++  if (specifier.startsWith('@wasm/')) base = pkg + specifier.slice(6);
++  else if (specifier.startsWith('@/')) base = src + specifier.slice(2);
++  else if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:') && !path.extname(specifier)) {
++    base = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier);
++  }
++  if (base) {
++    const found = withExtension(base);
++    if (found) return next(pathToFileURL(found).href, context);
++  }
++  return next(specifier, context);
++}
++
++// Vite 가 채우는 `import.meta.env` 를 프로덕션 값으로 대신한다(DEV 아님).
++export async function load(url, context, next) {
++  const result = await next(url, context);
++  if (url.includes('/rhwp-studio/src/') && result.source != null) {
++    const text = result.source.toString();
++    if (text.includes('import.meta.env')) {
++      return { ...result, source: text.replaceAll('import.meta.env', '({ DEV: false, PROD: true, MODE: "production", BASE_URL: "/studio/" })') };
++    }
++  }
++  return result;
++}

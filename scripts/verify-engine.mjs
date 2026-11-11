@@ -16,10 +16,8 @@ export function verifyEngine({root,assets='app/src/main/assets/engine',lock='con
  const read=(p)=>{try{return fs.readFileSync(p);}catch{return null;}};
  const lockBytes=read(at(lock));if(!lockBytes)return {errors:[`Missing ${lock}`]};
  let pinned;try{pinned=JSON.parse(lockBytes);}catch(e){return {errors:[`${lock} is not valid JSON: ${e.message}`]};}
- for(const k of ['upstream','commit','version','patch','patchSha256','rust','wasmBindgen','rustFlags','buildStd'])if(pinned[k]===undefined)errors.push(`${lock} lacks "${k}"`);
- // 1. The patch that is in the repository is the pinned one.
- const patch=pinned.patch&&read(at(pinned.patch));
- if(!patch)errors.push(`Missing engine patch ${pinned.patch}`);else if(sha256(patch)!==pinned.patchSha256)errors.push(`Engine patch ${pinned.patch} does not match the pinned patchSha256`);
+ for(const k of ['upstream','commit','version','rust','wasmBindgen','rustFlags','buildStd'])if(pinned[k]===undefined)errors.push(`${lock} lacks "${k}"`);
+ // 1. (The engine is unmodified upstream rhwp, built with the Android WebView flags; there is no engine patch to pin.)
  // 2. build-info.json is required and carries the same pins.
  const infoBytes=read(at(assets+'/build-info.json'));
  if(!infoBytes){errors.push(`Missing ${assets}/build-info.json: the engine was not produced by scripts/build-engine.sh + install-engine.mjs. Build it first: bash scripts/build-engine.sh <rhwp-checkout>`);return {errors};}
@@ -35,7 +33,7 @@ export function verifyEngine({root,assets='app/src/main/assets/engine',lock='con
  }
  // 4. The glue has the memo API and the binary is WebAssembly.
  const glue=read(at(`${assets}/rhwp.js`));
- if(glue){const text=glue.toString('utf8');for(const m of MEMO_API)if(!text.includes(m+'('))errors.push(`rhwp.js lacks the memo API ${m}(): build the memo engine first`);}
+ if(glue){const text=glue.toString('utf8');for(const m of MEMO_API)if(!text.includes(m+'('))errors.push(`rhwp.js lacks the memo API ${m}(): the engine must be upstream rhwp v0.9.0 or newer`);}
  const wasm=read(at(`${assets}/rhwp_bg.wasm`));
  if(wasm&&(wasm.length<1_000_000||wasm.readUInt32BE(0)!==0x0061736d||wasm.readUInt32LE(4)!==1))errors.push('rhwp_bg.wasm is not a WebAssembly (version 1) binary of plausible size');
  return {errors,info,pinned};
@@ -60,5 +58,5 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
  const {errors,info}=verifyEngine({root});
  if(errors.length){console.error('Engine integrity check FAILED:\n - '+errors.join('\n - '));process.exit(1);}
- console.log(`Engine OK: ${info.version} (upstream ${info.commit.slice(0,10)}, patch ${info.patchSha256.slice(0,10)}); rhwp.js ${info.hashes['rhwp.js'].slice(0,12)}, rhwp_bg.wasm ${info.hashes['rhwp_bg.wasm'].slice(0,12)}`);
+ console.log(`Engine OK: ${info.version} (upstream ${info.commit.slice(0,10)}); rhwp.js ${info.hashes['rhwp.js'].slice(0,12)}, rhwp_bg.wasm ${info.hashes['rhwp_bg.wasm'].slice(0,12)}`);
 }

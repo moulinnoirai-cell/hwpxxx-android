@@ -31,16 +31,22 @@ jobs:
         id: memo-engine
         with:
           path: .build/engine
-          key: rhwp-memo-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'patches/rhwp-engine/*.patch', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
-      # The pinned upstream checkout is needed on EVERY run: the engine build (cache miss only) and the desktop Studio build (always;
+          key: rhwp-engine-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
+      # The pinned upstream checkout is needed on EVERY run: the engine build (cache miss only) and the Studio build (always;
       # scripts/build-studio.mjs reads rhwp-studio, assets/fonts, assets/logo and the licence files via `git archive` of this commit).
       - uses: actions/checkout@v4
         with:
           repository: edwardkim/rhwp
-          ref: 1a76570e833917d15817415a53c09ad61ab3203f
+          ref: c9095c5f67632e6721e800ccc7fb43ea49d26682
           path: .build/rhwp
           sparse-checkout: |
             rhwp-studio
+            rhwp-shared
+            data
+            mydocs/manual
+            mydocs/tech
+            packaging/crates-io
+            tests
             src
             crates
             tools
@@ -61,7 +67,7 @@ jobs:
         if: steps.memo-engine.outputs.cache-hit != 'true'
         with:
           workspaces: .build/rhwp
-          key: android-memo-v2
+          key: android-engine-v3
           cache-on-failure: true
       - name: Install pinned wasm-bindgen CLI
         if: steps.memo-engine.outputs.cache-hit != 'true'
@@ -84,7 +90,7 @@ jobs:
         with:
           path: .build/engine
           key: ${{ steps.memo-engine.outputs.cache-primary-key }}
-      - name: Build the desktop Studio frontend (11 PC patches + Android patches, npm ci, strict-CSP production bundle for /studio/)
+      - name: Build the Studio frontend (feature patches + Android patches, npm ci, strict-CSP production bundle for /studio/)
         run: |
           node scripts/build-studio.mjs --upstream .build/rhwp --run-tests
           node scripts/verify-studio.mjs
