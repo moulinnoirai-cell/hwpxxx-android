@@ -166,7 +166,7 @@ public class MainActivity extends Activity {
     private JSONObject snapshot(EditorSession self)throws JSONException {
         if(legacyTests)return obj("enabled",false);
         JSONArray tabs=new JSONArray();for(WorkspaceModel.Tab tab:workspace.snapshot().tabs())tabs.put(obj("id",tab.id,"title",tab.title,"dirty",tab.dirty,"encrypted",tab.encrypted,"ready",tab.ready));
-        return obj("enabled",true,"selfId",self.tabId,"tabs",tabs,"activeId",workspace.activeId(),"primaryId",workspace.primaryId(),"secondaryId",workspace.secondaryId()==null?JSONObject.NULL:workspace.secondaryId(),"split",workspace.secondaryId()!=null,"maxTabs",8);
+        return obj("enabled",true,"selfId",self.tabId,"tabs",tabs,"activeId",workspace.activeId(),"primaryId",workspace.primaryId(),"secondaryId",workspace.secondaryId()==null?JSONObject.NULL:workspace.secondaryId(),"split",workspace.secondaryId()!=null,"maxTabs",WorkspaceModel.MAX_TABS);
     }
     private void persistWorkspace(){
         if(legacyTests||workspaceState==null||workspace==null||workspace.persistentRevision()==savedWorkspaceRevision)return;
