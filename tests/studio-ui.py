@@ -736,7 +736,9 @@ def encrypted_document_open_save_recovery_failclosed(h):
     assert s.state()['fileName'] == '새 문서.hwp', ('wrong password must not open the document', s.state())
     s.page.locator('.dialog-wrap input[type=password]').first.fill(PASSWORD)
     s.page.keyboard.press('Enter')
-    s.wait_state(hasDocument=True)
+    # A blank document is already open, so hasDocument is true at once: wait for the encrypted document itself (opening derives the session
+    # recovery key from the password, which takes a moment).
+    s.wait_state(encrypted=True)
     assert s.state()['encrypted'] is True, s.state()
     s.click_document()
     s.page.keyboard.type('암호편집 ')
@@ -750,9 +752,14 @@ def encrypted_document_open_save_recovery_failclosed(h):
         for draft in drafts:
             probe.write_bytes(bytes(draft['data']))
             assert draft['encrypted'] is True and inspect_file(probe)['openError'], 'draft marked/stored as encrypted must really be ciphertext'
-            assert '암호편집' in inspect_file(probe, PASSWORD)['text']
+            # Recovery follows upstream rhwp: the draft is sealed with a key derived from the document password (PBKDF2 + AES-GCM envelope),
+            # not an HWP file the password opens. It must hold no plaintext of the edit in any common encoding; unlocking it needs the password
+            # (round trip covered by tests/hwpxxx-android-save-safety.test.ts with the real cipher).
+            raw = bytes(draft['data'])
+            for encoding in ('utf-16-le', 'utf-8'):
+                assert '암호편집'.encode(encoding) not in raw, ('plaintext of the edit found in the encrypted draft', encoding)
         probe.unlink()
-        RESULTS['encryptedRecovery'] = 'encrypted ciphertext draft'
+        RESULTS['encryptedRecovery'] = 'sealed ciphertext draft (session recovery key)'
     else:
         assert flush.get('ok') is not True, flush
         RESULTS['encryptedRecovery'] = 'blocked (fail-closed): ' + json.dumps(flush)
