@@ -42,9 +42,16 @@ public class WorkspaceStateStoreTest {
         yes(!t.contains("hwp") && !t.contains("sdcard") && !t.contains("secret") && !t.contains("/") && !t.contains("비밀"), "no names/paths: " + t);
         for (String line : t.split("\n")) yes(line.matches("HWPXXX-WORKSPACE 1|(active|primary|secondary|tab|recent) [0-9a-f-]{36}|secondary -|split [01]|sum [0-9a-f]{64}"), "only opaque line shapes: " + line);
         yes(f.length() < WorkspaceStateStore.MAX_BYTES, "bounded size");
-        // 8-tab worst case fits
+        // 5-tab worst case fits (the current limit)
         WorkspaceModel full = new WorkspaceModel(); for (int i = 1; i <= 8; i++) full.createTab(u(i)); full.setSplit(true, full.activeId());
-        s.save(full); yes(f.length() <= WorkspaceStateStore.MAX_BYTES, "8 tabs fit: " + f.length()); eq(s.load().model.size(), 8, "8 tabs reload");
+        eq(full.size(), WorkspaceModel.MAX_TABS, "limit is five");
+        s.save(full); yes(f.length() <= WorkspaceStateStore.MAX_BYTES, "5 tabs fit: " + f.length()); eq(s.load().model.size(), 5, "5 tabs reload");
+        // A workspace written by an older build with 6-8 tabs is loaded whole (nothing dropped); more is invalid.
+        List<String> legacy = new ArrayList<>(); for (int i = 1; i <= 8; i++) legacy.add(id(i));
+        Files.write(f.toPath(), WorkspaceStateStore.encode(new WorkspaceModel.State(legacy, id(1), id(1), null, false, null)));
+        WorkspaceStateStore.Loaded old = s.load();
+        yes(old.status == WorkspaceStateStore.Status.OK && old.model.size() == 8 && old.model.isOverLimit(), "legacy 8-tab workspace restored whole");
+        s.save(full); // later checks continue with the current-limit workspace
         // ids stable across a process restart: new store instance on same file
         eq(new WorkspaceStateStore(f).load().model.tabIds(), full.tabIds(), "stable ids after restart");
         // overwrite keeps working and replaces

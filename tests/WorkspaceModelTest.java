@@ -14,7 +14,7 @@ public class WorkspaceModelTest {
     static void invariants(WorkspaceModel m, String when) {
         List<String> ids = m.tabIds();
         eq(new HashSet<>(ids).size(), ids.size(), when + ": unique ids");
-        yes(ids.size() <= WorkspaceModel.MAX_TABS, when + ": cap");
+        yes(ids.size() <= WorkspaceModel.RESTORE_MAX_TABS, when + ": cap");
         if (m.isEmpty()) { yes(m.activeId() == null && m.primaryId() == null && m.secondaryId() == null && !m.isSplit(), when + ": empty clean"); return; }
         yes(m.contains(m.primaryId()) && m.contains(m.activeId()), when + ": primary/active exist");
         yes(m.isVisible(m.activeId()), when + ": active visible");
@@ -181,21 +181,39 @@ public class WorkspaceModelTest {
 
     static void cap() {
         WorkspaceModel m = new WorkspaceModel();
-        for (int i = 1; i <= 8; i++) yes(m.createTab(u(i)), "create " + i);
-        m.setSplit(true, id(8)); m.moveBefore(id(8), id(1)); m.update(id(3), "keep", true, false, true);
+        for (int i = 1; i <= 5; i++) yes(m.createTab(u(i)), "create " + i);
+        m.setSplit(true, id(5)); m.moveBefore(id(5), id(1)); m.update(id(3), "keep", true, false, true);
         String act = m.activeId(), pri = m.primaryId(), sec = m.secondaryId(); List<String> order = m.tabIds(), mru = m.recentIds();
         long rev = m.persistentRevision();
-        yes(!m.canCreateTab(), "cannot create 9th"); yes(!m.createTab(u(9)), "9th refused"); yes(!m.createTab(u(9), id(1)), "9th refused with origin");
-        eq(m.size(), 8, "size 8"); eq(m.tabIds(), order, "cap leaves order"); eq(m.activeId(), act, "cap leaves active");
+        yes(!m.canCreateTab(), "cannot create 6th"); yes(!m.createTab(u(6)), "6th refused"); yes(!m.createTab(u(6), id(1)), "6th refused with origin");
+        eq(m.size(), 5, "size 5"); eq(m.tabIds(), order, "cap leaves order"); eq(m.activeId(), act, "cap leaves active");
         eq(m.primaryId(), pri, "cap leaves primary"); eq(m.secondaryId(), sec, "cap leaves secondary"); eq(m.recentIds(), mru, "cap leaves mru");
         yes(m.tab(id(3)).dirty && m.tab(id(3)).title.equals("keep"), "cap leaves metadata"); eq(m.persistentRevision(), rev, "cap no revision");
         invariants(m, "cap");
-        m.removeConfirmed(id(2)); yes(m.canCreateTab() && m.createTab(u(9)), "slot reusable after close"); eq(m.size(), 8, "back at 8");
-        WorkspaceModel one = new WorkspaceModel(); for (int i = 1; i <= 8; i++) one.createTab(u(i));
+        m.removeConfirmed(id(2)); yes(m.canCreateTab() && m.createTab(u(6)), "slot reusable after close"); eq(m.size(), 5, "back at 5");
+        WorkspaceModel one = new WorkspaceModel(); for (int i = 1; i <= 5; i++) one.createTab(u(i));
         // single-tab split cannot hit the cap; at cap with two tabs minimum there is always another tab
         yes(!one.isSplit() && one.setSplit(true, one.activeId()) == WorkspaceModel.SplitResult.CHANGED, "split at cap uses existing tab");
         // visibility never exceeds 2 across many operations
-        for (int i = 0; i < 30; i++) { one.select(one.tabIds().get(i % 8), one.activeId()); invariants(one, "loop " + i); }
+        for (int i = 0; i < 30; i++) { one.select(one.tabIds().get(i % 5), one.activeId()); invariants(one, "loop " + i); }
+    }
+
+    /** A workspace saved by an older build (limit 8) is restored whole: no tab is dropped, new tabs wait until enough are closed. */
+    static void legacyWorkspaceRestore() {
+        eq(WorkspaceModel.MAX_TABS, 5, "limit is five");
+        List<String> ids = new ArrayList<>(); for (int i = 1; i <= 8; i++) ids.add(id(i));
+        WorkspaceModel r = WorkspaceModel.restore(new WorkspaceModel.State(ids, id(2), id(2), id(7), true, Arrays.asList(id(2), id(7), id(8))));
+        eq(r.size(), 8, "all eight tabs kept"); eq(r.tabIds(), ids, "order kept"); yes(r.isSplit() && r.isVisible(id(7)), "split kept");
+        yes(r.isOverLimit(), "over the limit"); yes(!r.canCreateTab() && !r.createTab(u(9)) && !r.createTab(u(9), id(2)), "no new tab while over the limit");
+        invariants(r, "legacy restore");
+        for (int closed = 1; closed <= 4; closed++) {
+            yes(r.removeConfirmed(id(2 + closed == 7 ? 8 : 2 + closed)), "close " + closed);
+            invariants(r, "legacy close " + closed);
+        }
+        eq(r.size(), 4, "four left"); yes(!r.isOverLimit() && r.canCreateTab() && r.createTab(u(9)), "a slot opens below the limit"); eq(r.size(), 5, "five again");
+        yes(!r.createTab(u(10)), "still capped at five");
+        try { WorkspaceModel.restore(new WorkspaceModel.State(Arrays.asList(id(1), id(2), id(3), id(4), id(5), id(6), id(7), id(8), id(9)), id(1), id(1), null, false, null)); throw new AssertionError("nine tabs accepted"); }
+        catch (IllegalArgumentException expected) { checks++; }
     }
 
     static void restoreValidation() {
@@ -243,7 +261,7 @@ public class WorkspaceModelTest {
         WorkspaceModel.Snapshot snap = m.snapshot();
         List<String> order = m.tabIds(), mru = m.recentIds(); String act = m.activeId(), pri = m.primaryId(), sec = m.secondaryId();
         Map<String, Object> map = snap.toMap(id(3));
-        eq(map.get("enabled"), Boolean.TRUE, "enabled"); eq(map.get("selfId"), id(3), "selfId"); eq(map.get("maxTabs"), 8, "maxTabs");
+        eq(map.get("enabled"), Boolean.TRUE, "enabled"); eq(map.get("selfId"), id(3), "selfId"); eq(map.get("maxTabs"), 5, "maxTabs");
         eq(map.get("activeId"), act, "map active"); eq(map.get("primaryId"), pri, "map primary"); eq(map.get("secondaryId"), sec, "map secondary"); eq(map.get("split"), Boolean.TRUE, "map split");
         List<?> tabs = (List<?>) map.get("tabs"); eq(tabs.size(), 3, "map tabs");
         Map<?, ?> first = (Map<?, ?>) tabs.get(0);
@@ -267,7 +285,7 @@ public class WorkspaceModelTest {
         WorkspaceModel j = new WorkspaceModel(); j.createTab(u(1)); j.update(id(1), "q\"\\ /\u0001", false, true, false);
         String json = j.snapshot().toJson(id(1));
         yes(json.startsWith("{\"enabled\":true,\"selfId\":\"" + id(1) + "\",\"tabs\":[{\"id\":\"" + id(1) + "\""), "json prefix " + json);
-        yes(json.contains("\"secondaryId\":null") && json.contains("\"split\":false") && json.endsWith("\"maxTabs\":8}"), "json suffix " + json);
+        yes(json.contains("\"secondaryId\":null") && json.contains("\"split\":false") && json.endsWith("\"maxTabs\":5}"), "json suffix " + json);
         yes(json.indexOf(' ') < 0 && json.indexOf('\u0001') < 0, "json has no raw separators/controls");
         yes(json.contains("\\\"") && json.contains("\\\\"), "json escapes quotes/backslashes");
     }
@@ -295,7 +313,7 @@ public class WorkspaceModelTest {
     }
 
     public static void main(String[] args) {
-        createAndSelect(); splitSwapFocusCollapse(); splitNeedsNewTab(); reorder(); closeFlow(); metadataIndependence(); cap(); restoreValidation(); snapshots(); sequence();
+        createAndSelect(); splitSwapFocusCollapse(); splitNeedsNewTab(); reorder(); closeFlow(); metadataIndependence(); cap(); legacyWorkspaceRestore(); restoreValidation(); snapshots(); sequence();
         System.out.println("WorkspaceModelTest OK (" + checks + " checks)");
     }
 }

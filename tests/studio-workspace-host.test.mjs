@@ -107,7 +107,7 @@ import {createServer} from ${JSON.stringify(viteEntry)};
 const root=${JSON.stringify(studioSrc)};
 const stub={name:'hwpctrl-stub',resolveId(id){return id==='@rhwp/hwpctrl/studio-plugin'?'\\0hwpctrl-stub':null},load(id){return id==='\\0hwpctrl-stub'?'export const hwpctrlStudioPlugin=null':null}};
 const server=await createServer({configFile:false,plugins:[stub],root,cacheDir:${JSON.stringify(cache)},
- define:{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false'},
+ define:{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false',__RHWP_AI__:'false'},
  resolve:{alias:{'@':root+'/src','@wasm':root+'/../pkg'}},
  optimizeDeps:{noDiscovery:true,entries:[],include:['canvaskit-wasm']},
  server:{host:'127.0.0.1',port:${port},strictPort:true,fs:{allow:[root,root+'/../pkg']}}});
@@ -136,7 +136,7 @@ after(async () => {
 
 /** Contract-shaped test double of the native workspace (docs/DEX-WORKSPACE.md). NOT the Java WorkspaceModel. */
 class FakeNative {
-  constructor({workspace = true, maxTabs = 8} = {}) {
+  constructor({workspace = true, maxTabs = 5} = {}) {
     this.workspace = workspace; this.maxTabs = maxTabs; this.tabs = []; this.activeId = null; this.primaryId = null; this.secondaryId = null; this.split = false;
     this.pending = new Map(); this.views = new Map(); this.log = []; this.closeWaiters = new Map(); this.finished = false; this.mru = [];
     this.onTabAdded = null; this.recents = [];
@@ -313,7 +313,7 @@ async function openView(native, tabId, {target = 'fake', width = 1280, height = 
   const view = {
     tabId, page, errors, consoleErrors, context,
     emit: (name, data) => page.evaluate(([n, d]) => window.NativeEvent(n, d), [name, data]),
-    callClose: token => page.evaluate(token => { void window.AndroidWorkspaceCloseRequest(token); }, token),
+    callClose: async token => { await page.waitForFunction(() => typeof window.AndroidWorkspaceCloseRequest === 'function', null, {timeout: 30000}); return page.evaluate(token => { void window.AndroidWorkspaceCloseRequest(token); }, token); },
     strip: () => page.locator('#menu-bar .ws-tabs'),
     tab: id => page.locator(`#menu-bar .ws-tabwrap[data-tab-id="${id}"]`),
     order: () => page.$$eval('#menu-bar .ws-tabwrap', nodes => nodes.map(node => node.dataset.tabId)),
@@ -326,7 +326,7 @@ async function until(fn, message, timeout = 8000) {
   const end = Date.now() + timeout; let last;
   for (;;) { last = await fn(); if (last) return last; if (Date.now() > end) assert.fail('timeout: ' + message); await new Promise(resolve => setTimeout(resolve, 50)); }
 }
-async function startWorkspace({target = 'fake', width = 1280, views = 1, workspace = true, maxTabs = 8, capability, init} = {}) {
+async function startWorkspace({target = 'fake', width = 1280, views = 1, workspace = true, maxTabs = 5, capability, init} = {}) {
   const native = new FakeNative({workspace, maxTabs});
   const first = native.add(null);
   const opened = [await openView(native, first, {target, width, capability, init})];
@@ -385,10 +385,10 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) {
       try {
         const {page} = world.views[0];
         // many long-titled tabs: only the strip may scroll
-        for (let i = 0; i < 7; i++) world.native.add(null);
+        for (let i = 0; i < 4; i++) world.native.add(null); // five tabs: the current limit
         world.native.tabs.forEach((tab, i) => { tab.title = '아주 긴 문서 이름 ' + i + ' '.padEnd(60, '가'); });
         await world.native.broadcast();
-        await until(async () => (await world.views[0].order()).length === 8, '8 tabs rendered');
+        await until(async () => (await world.views[0].order()).length === 5, '5 tabs rendered');
         const geometry = await page.evaluate(() => {
           const bar = document.getElementById('menu-bar'), strip = bar.querySelector('.ws-tabs'), list = bar.querySelector('.ws-tablist'), tool = bar.querySelector('.menu-item[data-menu="tool"]');
           const rect = node => { const r = node.getBoundingClientRect(); return {left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height}; };
@@ -396,7 +396,7 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) {
             prev: strip.previousElementSibling === tool, next: strip.nextElementSibling?.id, barScroll: [bar.scrollWidth, bar.clientWidth, bar.scrollHeight, bar.clientHeight],
             listOverflows: list.scrollWidth > list.clientWidth, tabs: [...bar.querySelectorAll('.ws-tabwrap, .ws-btn')].map(rect), actions: [...bar.querySelectorAll('.ws-btn')].map(rect), children: bar.children.length};
         });
-        t.diagnostic(`${target}@${width}: strip ${Math.round(geometry.strip.width)}px (tablist ${Math.round(geometry.list.width)}px, 8 tabs), row ${geometry.bar.height}px`);
+        t.diagnostic(`${target}@${width}: strip ${Math.round(geometry.strip.width)}px (tablist ${Math.round(geometry.list.width)}px, 5 tabs), row ${geometry.bar.height}px`);
         assert.ok(geometry.prev, 'immediately after the Tools menu'); assert.equal(geometry.next, 'toolbox-basic-toggle');
         assert.equal(geometry.bar.height, barHeight, 'menu row height unchanged');
         assert.deepEqual([geometry.barScroll[2], geometry.barScroll[3]], [barScrollBaseline[2], barScrollBaseline[3]], 'menu row scroll/client height identical to the legacy row ' + JSON.stringify(geometry));
@@ -464,6 +464,9 @@ for (const [target, skip] of [['fake', browserSkip], ['studio', studioSkip]]) wi
   await until(async () => (await a.order()).length === 4, 'four tabs');
   const [t0, t1, t2, t3] = native.tabs.map(tab => tab.id);
   const state = () => JSON.stringify([native.activeId, native.primaryId, native.secondaryId, native.split, native.tabs.map(tab => [tab.id, tab.title, tab.dirty])]);
+  // Each tab's real Studio reports its own title/dirty state asynchronously while its document opens ('여는 중…' -> '새 문서' -> '새 문서.hwp').
+  // The drag must be compared against a settled state, so wait until the native model has stayed unchanged for three consecutive polls.
+  { let stable = 0, last = state(); for (let i = 0; i < 80 && stable < 3; i++) { await a.page.waitForTimeout(500); const now = state(); if (now === last) stable++; else { stable = 0; last = now; } } assert.ok(stable >= 3, 'native workspace state settled before the drag'); }
   const before = JSON.parse(state());
   await a.page.evaluate(() => { window.__drag = []; document.addEventListener('dragstart', event => { window.__drag.push({types: [...event.dataTransfer.types], plain: event.dataTransfer.getData('text/plain')}); }, false); });
   // indicator while hovering, then drop t3 before t1
@@ -564,7 +567,7 @@ withWorkspace('keyboard: roving tabindex/ARIA, Enter selects, Ctrl+Tab cycles, C
   await until(() => native.ops('workspaceClose', a.tabId).length === 1 && native.ops('workspaceCloseResult', a.tabId).length === 1, 'Ctrl+W round trip');
   assert.deepEqual(native.ops('workspaceClose', a.tabId)[0].args, {id: a.tabId});
   assert.equal(native.ops('workspaceCloseResult', a.tabId)[0].args.allow, true);
-  assert.equal(native.tabs.some(tab => tab.id === a.tabId), false, 'closed after allow');
+  await until(() => !native.tabs.some(tab => tab.id === a.tabId), 'closed after allow'); // the native model drops the tab after it records the close result
   void b;
 });
 

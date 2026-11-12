@@ -1,0 +1,18 @@
+#!/bin/sh
+# Legacy-fallback suites first (unchanged baseline), then the shared-Studio suite on its own so it cannot disturb them.
+# Both always run; the job fails if either failed. The legacy suites drive real system UI (pickers, permission pages) on a 2-core CI emulator and can
+# fail on timing alone, so they get one more attempt; a real regression fails both attempts.
+node tests/legacy-webview-driver.cjs || exit 1
+legacy=1
+for attempt in 1 2; do
+  node tests/android-suites.cjs && { legacy=0; break; }
+  echo "EMULATOR_LEGACY_ATTEMPT_FAILED attempt=$attempt"
+  # The suites assume a fresh device (permission denied, no Termux): give the retry one.
+  adb uninstall kr.offline.hwp.preview >/dev/null 2>&1
+  adb shell rm -rf /sdcard/Download/hwpxxx-qa >/dev/null 2>&1   # the first attempt leaves its output files; a leftover name would collide in the second
+  adb uninstall com.termux >/dev/null 2>&1
+done
+node tests/android-studio-suite.cjs
+studio=$?
+echo "EMULATOR_SUITES legacy=$legacy studio=$studio"
+[ "$legacy" -eq 0 ] && [ "$studio" -eq 0 ]

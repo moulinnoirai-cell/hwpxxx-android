@@ -1,57 +1,38 @@
 {
   "format": 1,
-  "note": "The Android editor is the desktop Studio (upstream rhwp-studio + hwpxxx PC patches 0001-0011) rebuilt by scripts/build-studio.mjs, then patched for the Android host by patches/rhwp-studio/android. Built files are not stored in Git.",
+  "note": "The Android editor is upstream rhwp-studio (rhwp v0.9.0) plus the hwpxxx patch series in patches/rhwp-studio (features/ = editor features shared with the former PC edition, android/ = Android host integration), rebuilt by scripts/build-studio.mjs. This repository owns the whole series; the PC edition is not tracked. Keep upstream behavior where it overlaps and carry only hwpxxx-specific additions. Nothing generated is tracked.",
   "upstream": "https://github.com/edwardkim/rhwp",
-  "upstreamTag": "v0.8.7",
-  "commit": "1a76570e833917d15817415a53c09ad61ab3203f",
-  "desktopVersion": "1.6.1",
-  "desktopRepoCommit": "fc87e2af24a98a25b6abac17144d167e1576e505",
+  "upstreamTag": "v0.9.0",
+  "commit": "c9095c5f67632e6721e800ccc7fb43ea49d26682",
   "engineConfig": "config/android-engine.json",
   "sourcePaths": [
     "rhwp-studio",
+    "rhwp-shared",
+    "vendor/npm/ajv",
+    "src/renderer/square_gradient.sksl",
     "assets/fonts",
     "assets/logo",
     "LICENSE",
     "THIRD_PARTY_LICENSES.md"
   ],
-  "packageLockSha256": "400d43cd0a7311c8e29b7a87308d6dbdd1750dddc295e7474c0142c82143689c",
-  "desktopPatchDir": "patches/rhwp-studio/desktop",
+  "packageLockSha256": "61993c57784ad01524554d9c637395a65f1a2430b945a34b59e25a3d501678a2",
+  "featurePatchDir": "patches/rhwp-studio/features",
   "androidPatchDir": "patches/rhwp-studio/android",
-  "desktopPatches": {
-    "0001-hwpxxx-desktop.patch": "159f0cb27a05b50e16365c07ae93cbd41dc9f7f67e784a2958a70f7e633d373a",
-    "0002-hwpxxx-tooltip-shortcuts.patch": "116c00c9d62a6bb312eb892411c0554eb7ec4ffe0226617765bc3cd39a4f5c55",
-    "0003-hwpxxx-char-spacing-fields.patch": "a533e3c00dba4b1791c2e4475c9676883383e1a924ae08b4bc6080ea6859e2d5",
-    "0004-hwpxxx-spacing-before-ratio.patch": "36d4502449c091b81e25ca2a73f0fa30d05bcc121a1b6391202481a1859e42a1",
-    "0005-hwpxxx-lineseg-autoreflow.patch": "cda8531d1940236fd3c3fbb1af3f58a24e109206378857124d3198359b9ecf7c",
-    "0006-rhwp-pr8269-memo-studio.patch": "b658d7ea55d99c1d2c4e9ea92cdf39bf6738507c22914c3c4c103eca62a84c60",
-    "0007-hwpxxx-memo.patch": "d64b2f39d0777d284337d14597d7be8054a4722cf4369dd775ef72e00be9cec1",
-    "0008-hwpxxx-highlighter.patch": "b9eff4104498ec542573b19fe83b19a42f51254b01d10ce4d4920d4d99049305",
-    "0009-hwpxxx-desktop-paragraph-above-below-spacing-uses-1-.patch": "e42d49e365948222e8916d0f1f28c657c5ad4a00aa208cffb30a87ae1f8866f0",
-    "0010-hwpxxx-desktop-format-painter-dialog-Alt-C-with-body.patch": "dac9e6b250029050886b11320053ad47a908c04c21df50265d4c56ebe43acf46",
-    "0011-hwpxxx-desktop-merged-cell-block-range-and-in-cell-paste.patch": "7899aed4af7e874005e6e6876308c52bec2e14a34dd53052e2c07c43a715f82f"
+  "featurePatches": {
+    "0001-hwpxxx-new-modules.patch": "67144cb006935886f8161c85bdaa883affcf5b51e7e83d8fb04c6387d1acdea9",
+    "0002-hwpxxx-editor-hooks.patch": "87e731c429bd15ec5fd75f9cb9df434848df031078ddc28609d079ea0d81a9ef"
   },
   "androidPatches": {
-    "0101-android-offline-build-without-pwa.patch": "8daea16f13a1a1e32778eeea17635bc356e56caf213b7c7071db307fd6d605a6",
-    "0102-android-host-bridge.patch": "d89b8e4175e681d2a32bb9299bd157478a96b07216db1e17905d42a480462c22",
-    "0103-android-private-recovery-store.patch": "7556e85dba50009abf908758df4b3b14ce3adac40598e9d7880351788809cddd",
-    "0104-android-fail-closed-save-and-export.patch": "008db7206cb1b9a6555cc83cde08e61e2b204f916b0bcf79bcea8e7bdd7cde02",
-    "0105-android-host-contract-print-export-ready.patch": "ade17ad2bfb3a0b919cc10bcb95cfea7e4c4d8e76ac2e88ea2346f09e755271e",
-    "0106-android-save-verification-private-password-recovery.patch": "5833a636db075c97534d6c54644bd9aaa1d02c47a67c5f84e664374ec072e6b4",
-    "0107-android-save-recovery-hardening.patch": "ad00608c885ed04fd613eb9042a3937f1cb3fc3f1db7344d43f185849d00a1b8",
-    "0108-android-rendered-print.patch": "14982164350362626b06a01d8a48d43c819727ddc34b8208ba49c38ccd862a76",
-    "0109-android-private-history-recent.patch": "fad2019e9281788489348392b263cc56e7b8a829ada82bfb13248db9dfb6a975",
-    "0111-android-recovery-ui-state.patch": "8ae5012a6a01a8a761b0d322c551be61a20858c38083a8df49c6d18f8d8f9ba1",
-    "0112-android-field-save-verification.patch": "5a0cbfbdf548e5d4995fda0980dbfee3cabdd58b2fb3be628fad71d1459a24c1",
-    "0113-android-imported-font-picker.patch": "0c15d5f93f4e314669d89dcc8337cd2c165f3da74c09ac5e33fa42bc10a2267e",
-    "0114-android-field-evidence-compatibility.patch": "ec18b1b232da8d7049b0c39267f8e2213ea787940c08778fc7226aa9e43e58d6",
-    "0115-android-workspace-document-routing.patch": "fab44a34991c4311a0e0daa99d2057a6889c2d1e1457855d4e749d22a819ab3c"
+    "0101-android-new-modules.patch": "7b50a63eef6791c5fab6242b413327eb76f301e519f3c6ab2cba9a4b73afe0a1",
+    "0102-android-host-hooks.patch": "74bd2e7ec752590e88cc2d5b5a1a08d2194ac33360661198a84e0aa547a74383"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",
   "env": {
     "RHWP_WITHOUT_HWPCTRL": "1",
     "RHWP_DISABLE_EXTERNAL_WEBFONTS": "1",
-    "RHWP_DISABLE_PWA": "1"
+    "RHWP_DISABLE_PWA": "1",
+    "RHWP_WITHOUT_AI": "1"
   },
-  "csp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  "csp": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' blob:; connect-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
 }

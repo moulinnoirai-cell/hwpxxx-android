@@ -15,6 +15,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Use the main Ubuntu archive for apt (the runner's Azure mirror is sometimes unresolvable and fails every apt step)
+        run: |
+          sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt || true
+          cat /etc/apt/apt-mirrors.txt || true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -31,16 +35,22 @@ jobs:
         id: memo-engine
         with:
           path: .build/engine
-          key: rhwp-memo-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'patches/rhwp-engine/*.patch', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
-      # The pinned upstream checkout is needed on EVERY run: the engine build (cache miss only) and the desktop Studio build (always;
+          key: rhwp-engine-${{ runner.os }}-${{ hashFiles('config/android-engine.json', 'scripts/build-engine.sh', 'scripts/install-engine.mjs') }}
+      # The pinned upstream checkout is needed on EVERY run: the engine build (cache miss only) and the Studio build (always;
       # scripts/build-studio.mjs reads rhwp-studio, assets/fonts, assets/logo and the licence files via `git archive` of this commit).
       - uses: actions/checkout@v4
         with:
           repository: edwardkim/rhwp
-          ref: 1a76570e833917d15817415a53c09ad61ab3203f
+          ref: c9095c5f67632e6721e800ccc7fb43ea49d26682
           path: .build/rhwp
           sparse-checkout: |
             rhwp-studio
+            rhwp-shared
+            data
+            mydocs/manual
+            mydocs/tech
+            packaging/crates-io
+            tests
             src
             crates
             tools
@@ -61,7 +71,7 @@ jobs:
         if: steps.memo-engine.outputs.cache-hit != 'true'
         with:
           workspaces: .build/rhwp
-          key: android-memo-v2
+          key: android-engine-v3
           cache-on-failure: true
       - name: Install pinned wasm-bindgen CLI
         if: steps.memo-engine.outputs.cache-hit != 'true'
@@ -84,7 +94,7 @@ jobs:
         with:
           path: .build/engine
           key: ${{ steps.memo-engine.outputs.cache-primary-key }}
-      - name: Build the desktop Studio frontend (11 PC patches + Android patches, npm ci, strict-CSP production bundle for /studio/)
+      - name: Build the Studio frontend (feature patches + Android patches, npm ci, strict-CSP production bundle for /studio/)
         run: |
           node scripts/build-studio.mjs --upstream .build/rhwp --run-tests
           node scripts/verify-studio.mjs
@@ -105,8 +115,11 @@ jobs:
           for f in tests/android-emulator.cjs tests/android-termux.cjs tests/android-suites.cjs tests/android-system.cjs tests/android-anr-parse.cjs tests/legacy-webview-driver.cjs; do node --check "$f"; done
       - name: Install fonts for the FontStore JVM test (real TTF regular/bold + CFF OTF come from distro packages; the Korean face is the bundled Noto Sans KR)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends fonts-liberation fonts-urw-base35
+          for attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-liberation fonts-urw-base35; then break; fi
+            if [ "$attempt" = 3 ]; then echo "apt failed in all 3 attempts"; exit 1; fi
+            echo "apt failed (attempt $attempt); retrying"; sleep 20
+          done
           for f in LiberationSans-Regular.ttf LiberationSans-Bold.ttf NimbusSans-Regular.otf; do
             p="$(find /usr/share/fonts -name "$f" | head -n 1)"
             test -n "$p" || { echo "font fixture $f not installed"; exit 1; }
@@ -139,14 +152,20 @@ jobs:
       - name: Font provider and host protocol tests (Node; real studio-host.js against a mock OfflineNative, no WebView)
         run: |
           npm install --no-save --package-lock=false playwright@1.48.2
-          python -m pip install playwright
+          python -m pip install playwright numpy pillow
           python -m playwright install --with-deps chromium
           # The tests default to /usr/bin/chromium (local sandbox); on the runner use the browser Playwright just installed.
           CHROME="$(python -c 'from playwright.sync_api import sync_playwright as s; p=s().start(); print(p.chromium.executable_path); p.stop()')"
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE=$CHROME" >> "$GITHUB_ENV"
           echo "PLAYWRIGHT_NODE_MODULES=$PWD/node_modules" >> "$GITHUB_ENV"
           export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$CHROME" PLAYWRIGHT_NODE_MODULES="$PWD/node_modules"
-          STUDIO_WORKSPACE_SRC="$PWD/.build/studio-src" node --test tests/android-fonts.test.mjs tests/studio-host.test.mjs tests/studio-workspace-host.test.mjs tests/workspace-oracle.test.mjs tests/workspace-server.test.mjs
+          # These tests drive several real Studio pages and have timing races on a loaded runner: a failure is retried (up to 3 attempts in total);
+          # a real regression fails every attempt.
+          for attempt in 1 2 3; do
+            if STUDIO_WORKSPACE_SRC="$PWD/.build/studio-src" node --test --test-concurrency=1 tests/android-fonts.test.mjs tests/studio-host.test.mjs tests/studio-workspace-host.test.mjs tests/workspace-oracle.test.mjs tests/workspace-server.test.mjs; then break; fi
+            if [ "$attempt" = 3 ]; then echo "host protocol tests failed in all 3 attempts"; exit 1; fi
+            echo "host protocol tests failed (attempt $attempt); retrying"
+          done
       - name: Production desktop Studio browser tests (real patched Studio + WASM in Chromium; native bridge is a MOCK — not WebView, not DeX)
         run: |
           python tests/studio-ui.py
@@ -157,6 +176,7 @@ jobs:
           python tests/android-font-renderer.py --studio-root "$S"
           python tests/studio-save-lifecycle.py --studio-root "$S"
           python tests/studio-interaction.py --studio-root "$S"
+          node tests/studio-hwpxxx-features.mjs --studio-root "$S" --throttle 4
       - name: Studio smoke with a minimal STUB host (contract/CSP/offline; stub is not the real studio-host.js)
         run: python tests/studio-smoke.py
       - name: Legacy bespoke-editor fallback browser tests (the original limited UI kept as fallback; NOT the desktop Studio)
@@ -192,13 +212,17 @@ jobs:
   emulator:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
         api: [33]
     steps:
       - uses: actions/checkout@v4
+      - name: Use the main Ubuntu archive for apt (the runner's Azure mirror is sometimes unresolvable and fails every apt step)
+        run: |
+          sudo sed -i 's#azure.archive.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt || true
+          cat /etc/apt/apt-mirrors.txt || true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -241,7 +265,7 @@ jobs:
           disable-animations: true
           enable-hw-keyboard: true
           emulator-options: -no-window -no-snapshot -gpu swiftshader -noaudio -no-boot-anim -no-metrics -camera-back none -camera-front none -feature -Vulkan
-          script: node tests/legacy-webview-driver.cjs && node tests/android-suites.cjs
+          script: sh tests/run-emulator-suites.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

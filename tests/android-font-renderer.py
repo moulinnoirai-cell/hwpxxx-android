@@ -45,7 +45,7 @@ server_script = f"""
 import {{createServer}} from {json.dumps(vite)};
 const root={json.dumps(str(studio))};
 const server=await createServer({{configFile:false,root,cacheDir:{json.dumps(cache_dir.name)},
- define:{{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false'}},
+ define:{{__APP_VERSION__:'"test"',__RHWP_DISABLE_EXTERNAL_WEBFONTS__:'true',__RHWP_HWPCTRL__:'false',__RHWP_AI__:'false'}},
  resolve:{{alias:{{'@':root+'/src','@wasm':root+'/../pkg'}}}},
  optimizeDeps:{{noDiscovery:true,entries:[],include:['canvaskit-wasm']}},
  server:{{host:'127.0.0.1',port:{port},strictPort:true,fs:{{allow:[root,root+'/../pkg']}}}}}});

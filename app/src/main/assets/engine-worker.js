@@ -429,7 +429,9 @@ async function operation(op,a){await ready;
   // Same check as the PC app: export with the engine's content-loss report and refuse to save if anything would be dropped.
   // Encrypted documents stay encrypted with the password they were opened with.
   const {bytes,loss}=engineExport(a.format);
-  if(loss.count||loss.losses?.length){const what=(loss.losses||[]).slice(0,3).map(x=>x.kind||x.type||x.item||x.reason||'').filter(Boolean).join(', ');throw new Error(`저장하면 문서 일부${what?`(${what})`:''}가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.`);}
+  // Only losses of user content block the save; `metadataReduced` (rhwp v0.9.0: e.g. the latent row grid of merged tables) does not. Unknown codes and bare counts block.
+  const blocking=(loss.losses||[]).filter(x=>x?.code!=='metadataReduced');
+  if(blocking.length||(loss.count||0)>(loss.losses?.length||0)){const what=blocking.slice(0,3).map(x=>x.kind||x.type||x.item||x.reason||'').filter(Boolean).join(', ');throw new Error(`저장하면 문서 일부${what?`(${what})`:''}가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.`);}
   if(bytes.length>32*1024*1024)throw new Error('저장 결과가 32MB를 넘어요.');
   const verify=openBytes(bytes);try {const t=JSON.parse(verify.getTextFileUnicode());if(t.replace(/\r\n/g,'\n')!==text().replace(/\r\n/g,'\n'))throw new Error('저장 전후의 문서 내용이 달라요. 원본은 변경하지 않았어요.');const count=verify.pageCount();if(!count||count>500)throw new Error('저장 결과의 페이지 수를 확인하지 못했어요.');verify.renderPageSvg(0);if(count>1)verify.renderPageSvg(count-1);verifyFormats(verify);if(typeof doc.getMemoList==='function'&&JSON.stringify(memoSignature(verify))!==JSON.stringify(memoSignature(doc)))throw new Error('저장 전후의 메모 내용이 달라요. 원본은 변경하지 않았어요.');}finally{verify.free();}
   exported={rev,text:text(),bytes:bytes.slice()};return {bytes,rev};

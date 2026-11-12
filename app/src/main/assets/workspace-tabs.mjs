@@ -25,7 +25,7 @@ export function normalizeSnapshot(raw) {
   const activeId = known(value.activeId), primaryId = known(value.primaryId), secondaryId = known(value.secondaryId ?? null);
   if (activeId === undefined || primaryId === undefined || secondaryId === undefined) return null;
   const selfId = isTabId(value.selfId) && seen.has(value.selfId) ? value.selfId : null;
-  const maxTabs = Number.isInteger(value.maxTabs) && value.maxTabs >= 1 && value.maxTabs <= 64 ? value.maxTabs : 8;
+  const maxTabs = Number.isInteger(value.maxTabs) && value.maxTabs >= 1 && value.maxTabs <= 64 ? value.maxTabs : 5;
   const revision = Number.isSafeInteger(value.revision) ? value.revision : null;
   return {enabled: true, selfId, tabs, activeId, primaryId, secondaryId, split: value.split === true && secondaryId !== null, maxTabs, revision};
 }

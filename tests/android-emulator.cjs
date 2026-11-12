@@ -12,7 +12,8 @@ const adb=(...args)=>execFileSync('adb',args,{encoding:'utf8',timeout:60000}).tr
 const sh=(...args)=>adb('shell',...args);
 const checks=[],errors=[];let permissionGrant='settings-switch',permissionRevocation='not-run',backInputDismissals=0;let page,browser;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
-async function until(fn,ms=20000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
+// Waits were 20 s; the legacy editor now boots the larger rhwp v0.9.0 engine (27 MB WASM) on a 2-core CI emulator, so scenarios were timing out one at a time.
+async function until(fn,ms=45000){const end=Date.now()+ms;let err;while(Date.now()<end){try{const r=await fn();if(r)return r;}catch(e){err=e;}await pause(200);}throw err||new Error('Condition timed out');}
 let anrGuard=null,textZoomProbe=null;
 // After every scenario (also the ones driven only over CDP, which keep passing while an ANR dialog covers the screen) the focused window and the system log are checked.
 async function record(name,fn){const started=Date.now();try{await fn();anrCheck();}catch(e){e.scenario=name;throw e;}checks.push({name,passed:true,durationMs:Date.now()-started});console.log('PASS',name);screenshot(`${qa}/${String(checks.length).padStart(2,'0')}.png`);}
@@ -22,7 +23,7 @@ async function connect(){
  const deadline=Date.now()+60000;let error;
  while(Date.now()<deadline)try{
   await disconnect();const pid=sh('pidof',pkg).split(/\s+/)[0];assert(pid,'App process is unavailable');adb('forward','tcp:9222','localabstract:webview_devtools_remote_'+pid);
-  browser=await chromium.connectOverCDP('http://127.0.0.1:9222',{timeout:10000});page=browser.contexts()[0]?.pages()[0];if(!page)throw new Error('WebView target is not ready');page.setDefaultTimeout(20000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();return;
+  browser=await chromium.connectOverCDP('http://127.0.0.1:9222',{timeout:10000});page=browser.contexts()[0]?.pages()[0];if(!page)throw new Error('WebView target is not ready');page.setDefaultTimeout(45000);page.on('pageerror',e=>{errors.push(e.message);console.error('WEBVIEW_ERROR',e.message);});await page.locator('#content').waitFor();return;
  }catch(e){error=e;await disconnect();await pause(500);}
  throw error||new Error('Unable to connect to installed WebView');
 }
@@ -179,10 +180,13 @@ async function rotate(n){sh('settings','put','system','accelerometer_rotation','
   await open('qa-edit.hwpx');await edit();
   await record('Android input dispatcher types through the installed WebView',async()=>{
    const t=page.locator('#text-editor');await t.click();
-   // Wait for the keyboard/viewport transition before computing a native tap.
-   await pause(1000);const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);
-   if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');
-   await until(()=>t.evaluate(t=>document.activeElement===t));await pause(1000);
+   // Wait for the keyboard/viewport transition before computing a native tap. The tap is computed from the editor's bounds, which move while the soft
+   // keyboard animates in, so a tap can miss on a slow emulator: recompute and tap again (up to three times) before judging the focus.
+   const nativeTap=async()=>{await pause(1000);const b=await t.boundingBox(),dpr=await page.evaluate(()=>devicePixelRatio),view=sh('dumpsys','activity','top').split('\n').find(l=>l.includes('android.webkit.WebView{')),frame=view?.match(/\s(-?\d+),(-?\d+)-(-?\d+),(-?\d+)/);
+    if(frame){sh('input','mouse','tap',String(Math.round(+frame[1]+(b.x+b.width/2)*dpr)),String(Math.round(+frame[2]+(b.y+b.height/2)*dpr)));console.log('INPUT_FOCUS_METHOD','Android mouse tap using native WebView bounds');}else console.log('INPUT_FOCUS_METHOD','CDP mouse focus; Android key dispatcher');};
+   await nativeTap();
+   for(let attempt=1;attempt<=3;attempt++){try{await until(()=>t.evaluate(t=>document.activeElement===t),attempt<3?12000:45000);break;}catch(e){if(attempt===3)throw e;console.log('INPUT_FOCUS_RETRY',attempt);await t.click().catch(()=>{});await nativeTap();}}
+   await pause(1000);
    const before=await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd}));
    sh('input','text','DEX_OS_KEYS');
    try{await until(async()=>(await t.inputValue())===before.text.slice(0,before.start)+'DEX_OS_KEYS'+before.text.slice(before.end));}catch(e){console.error('NATIVE_INPUT_DIAGNOSTIC',JSON.stringify({before,after:await t.evaluate(t=>({text:t.value,start:t.selectionStart,end:t.selectionEnd,active:document.activeElement===t,connected:t.isConnected}))}));throw e;}

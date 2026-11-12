@@ -19,7 +19,7 @@ export function* walk(dir,base=dir){for(const e of fs.readdirSync(dir,{withFileT
 /** The in-repository patch files are exactly the pinned ones (names, order, bytes). Returns error strings. */
 export function verifyPatches(repo,config){
  const errors=[];
- for(const [dirKey,mapKey] of [['desktopPatchDir','desktopPatches'],['androidPatchDir','androidPatches']]){
+ for(const [dirKey,mapKey] of [['featurePatchDir','featurePatches'],['androidPatchDir','androidPatches']]){
   const dir=path.join(repo,config[dirKey]),pins=config[mapKey]||{};
   let present=[];try{present=fs.readdirSync(dir).filter(n=>n.endsWith('.patch')).sort();}catch{errors.push(`Missing patch directory ${config[dirKey]}`);continue;}
   const pinned=Object.keys(pins).sort();
@@ -31,7 +31,7 @@ export function verifyPatches(repo,config){
 
 export function readConfig(repo=root){
  const config=readJson(path.join(repo,CONFIG));
- for(const k of ['format','upstream','commit','desktopVersion','desktopRepoCommit','packageLockSha256','sourcePaths','desktopPatchDir','androidPatchDir','desktopPatches','androidPatches','base','env','csp','engineConfig'])if(config[k]===undefined)throw new Error(`${CONFIG} lacks "${k}"`);
+ for(const k of ['format','upstream','commit','packageLockSha256','sourcePaths','featurePatchDir','androidPatchDir','featurePatches','androidPatches','base','env','csp','engineConfig'])if(config[k]===undefined)throw new Error(`${CONFIG} lacks "${k}"`);
  return config;
 }
 

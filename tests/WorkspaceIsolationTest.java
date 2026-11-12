@@ -240,9 +240,9 @@ public class WorkspaceIsolationTest {
         yes(store.load().status==WorkspaceStateStore.Status.INVALID,"corrupt state detected");
         File kept=store.quarantineInvalid();yes(kept!=null&&kept.isFile()&&!file.exists()&&Arrays.equals(Files.readAllBytes(kept.toPath()),"garbage".getBytes("UTF-8")),"corrupt state preserved aside");
         yes(store.load().status==WorkspaceStateStore.Status.ABSENT,"next start begins empty after quarantine");
-        // The 9th tab is refused; unrelated tabs stay.
+        // The 6th tab is refused; unrelated tabs stay.
         WorkspaceModel full=new WorkspaceModel();for(int i=0;i<WorkspaceModel.MAX_TABS;i++)full.createTab(UUID.randomUUID());
-        yes(!full.canCreateTab()&&!full.createTab(UUID.randomUUID())&&full.size()==WorkspaceModel.MAX_TABS,"eight tab cap");
+        yes(!full.canCreateTab()&&!full.createTab(UUID.randomUUID())&&full.size()==WorkspaceModel.MAX_TABS,"five tab cap");
     }
 
     // ---- orphan recovery discovery: opaque UUIDs only, read-only, never touches records -------------------
@@ -317,6 +317,8 @@ public class WorkspaceIsolationTest {
     static void mainActivitySourceChecks(Path source)throws Exception {
         String t=new String(Files.readAllBytes(source),"UTF-8");
         yes(!t.contains("pauseTimers")&&!t.contains("resumeTimers"),"no process-global WebView timer pause");
+        // The strip disables its new/open controls from the snapshot's maxTabs: it must be the model's limit, never a literal (it was a hard-coded 8 after the limit became 5).
+        yes(t.contains("\"maxTabs\",WorkspaceModel.MAX_TABS")&&!t.contains("\"maxTabs\",8"),"workspace snapshot sends WorkspaceModel.MAX_TABS as maxTabs");
         yes(!t.toLowerCase().contains("<iframe")&&t.contains("frame-src 'none'")&&!t.contains("frame-src 'self'")&&!t.contains("setAllowFileAccess(true)")&&!t.contains("setBlockNetworkLoads(false)"),"CSP frame-src none and WebView lockdown unchanged");
         String editorRegion=t.substring(t.indexOf("private final class EditorSession"));
         // Late/foreign callbacks: replies and events are bound to the owning session and dropped once it is not the live one for its tab.

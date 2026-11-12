@@ -520,7 +520,10 @@
     if (typeof studio.android?.setSaveGuard === 'function') studio.android.setSaveGuard(({bytes, format, contentLoss}) => {
       if (!bytes?.length || bytes.length > MAX_BYTES) throw new Error('저장 결과의 크기를 확인하지 못했어요.');
       if (!['hwp', 'hwpx', 'hml'].includes(format)) throw new Error('저장 형식을 확인하지 못했어요.');
-      if (contentLoss?.count || contentLoss?.losses?.length) throw new Error('저장하면 문서 일부가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.');
+      // Only losses of user content block the save; `metadataReduced` (rhwp v0.9.0: e.g. the latent row grid of merged tables) does not.
+      // Anything else, a report without a code, or a bare count blocks (unknown means refuse).
+      const losses = Array.isArray(contentLoss?.losses) ? contentLoss.losses : [];
+      if (losses.some(loss => loss?.code !== 'metadataReduced') || (contentLoss?.count ?? 0) > losses.length) throw new Error('저장하면 문서 일부가 빠질 수 있어 저장을 멈췄어요. 원본은 변경하지 않았어요.');
     });
     try { const fonts = await import('/android-fonts.mjs'); fontIntegration = await fonts.installAndroidFonts(studio, request); }
     catch (error) { announce('글꼴을 등록하지 못했어요: ' + error.message); }

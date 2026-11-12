@@ -1,8 +1,8 @@
-// Build the desktop Studio frontend (rhwp-studio + the 11 hwpxxx PC patches + Android patches) for the Android app.
+// Build the Studio frontend (upstream rhwp-studio + the hwpxxx feature patches + Android host patches) for the Android app.
 //   node scripts/build-studio.mjs [--upstream .build/rhwp] [--core app/src/main/assets/engine] [--work .build/studio-src]
 //        [--out app/src/main/assets/studio] [--node-modules <dir with a matching npm ci result>] [--run-tests] [--print-pins] [--check-paths]
 // --work/--out are DELETED before each build, so they must be below .build/ (out may also be the generated asset directory); anything else is refused.
-// Inputs are all pinned in config/android-studio.json: upstream commit, PC patch hashes, Android patch hashes, package-lock hash and the
+// Inputs are all pinned in config/android-studio.json: upstream commit, feature patch hashes, Android patch hashes, package-lock hash and the
 // engine core (verified by scripts/verify-engine.mjs). Nothing generated is tracked; the output goes to app/src/main/assets/studio (ignored).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,11 +21,11 @@ const fail=m=>{console.error('build-studio: '+m);process.exit(1);};
 const config=readConfig();
 if(flag('--write-pins')){// maintainers: after editing a patch, record the new hashes in the lock (review the diff!)
  const hashes=dir=>Object.fromEntries(fs.readdirSync(abs(dir)).filter(n=>n.endsWith('.patch')).sort().map(n=>[n,sha256(fs.readFileSync(path.join(abs(dir),n)))]));
- fs.writeFileSync(abs(CONFIG),JSON.stringify({...config,desktopPatches:hashes(config.desktopPatchDir),androidPatches:hashes(config.androidPatchDir)},null,2)+'\n');console.log('pins written');process.exit(0);
+ fs.writeFileSync(abs(CONFIG),JSON.stringify({...config,featurePatches:hashes(config.featurePatchDir),androidPatches:hashes(config.androidPatchDir)},null,2)+'\n');console.log('pins written');process.exit(0);
 }
 if(flag('--print-pins')){
  const hashes=dir=>Object.fromEntries(fs.readdirSync(abs(dir)).filter(n=>n.endsWith('.patch')).sort().map(n=>[n,sha256(fs.readFileSync(path.join(abs(dir),n)))]));
- console.log(JSON.stringify({desktopPatches:hashes(config.desktopPatchDir),androidPatches:hashes(config.androidPatchDir)},null,2));process.exit(0);
+ console.log(JSON.stringify({featurePatches:hashes(config.featurePatchDir),androidPatches:hashes(config.androidPatchDir)},null,2));process.exit(0);
 }
 const upstream=abs(arg('--upstream','.build/rhwp')),core=abs(arg('--core',ENGINE_ASSETS)),work=abs(arg('--work','.build/studio-src')),out=abs(arg('--out',DEFAULT_OUT));
 // Nothing below deletes anything until these paths are proven disposable (see assertSafeBuildPaths).
@@ -51,9 +51,9 @@ run('git',['init','-q',work]);run('git',['-C',work,'config','core.autocrlf','fal
 const studio=path.join(work,'rhwp-studio');
 if(sha256(fs.readFileSync(path.join(studio,'package-lock.json')))!==config.packageLockSha256)fail('package-lock.json differs from the pinned packageLockSha256');
 
-// 3. PC patches, then Android patches (hashes already verified above; apply --check first so a conflict names the patch).
+// 3. Feature patches, then Android patches (hashes already verified above; apply --check first so a conflict names the patch).
 const applied=[];
-for(const [dir,pins] of [[config.desktopPatchDir,config.desktopPatches],[config.androidPatchDir,config.androidPatches]])for(const name of Object.keys(pins).sort()){
+for(const [dir,pins] of [[config.featurePatchDir,config.featurePatches],[config.androidPatchDir,config.androidPatches]])for(const name of Object.keys(pins).sort()){
  const file=path.join(abs(dir),name);
  try{run('git',['-C',work,'apply','--check','--whitespace=nowarn',file]);run('git',['-C',work,'apply','--whitespace=nowarn',file]);}catch{fail(`patch does not apply: ${dir}/${name}`);}
  applied.push(`${dir}/${name}`);
@@ -83,10 +83,10 @@ if(reuse){
 const env={...process.env,...config.env};
 run(process.execPath,[path.join(modules,'typescript/bin/tsc'),'--noEmit','-p',studio],{env});
 if(flag('--run-tests')){
- // Exactly the Android-specific unit tests that the patches add (naming convention rhwp-studio/tests/hwpxxx-android-*.test.ts: host surface, save safety,
+ // Exactly the Android-specific unit tests that the patches add (naming convention rhwp-studio/tests/hwpxxx-*.test.ts: host surface, save safety,
  // private history/recent, ...). Deliberately NOT the whole upstream suite: on the sparse source tree it has known baseline failures (missing Rust/scripts files).
- const tests=fs.readdirSync(path.join(studio,'tests')).filter(n=>/^hwpxxx-android-.+\.test\.ts$/.test(n)).sort().map(n=>'tests/'+n);
- if(!tests.length)fail('no Android unit tests (tests/hwpxxx-android-*.test.ts) found in the patched source');
+ const tests=fs.readdirSync(path.join(studio,'tests')).filter(n=>/^hwpxxx-.+\.test\.ts$/.test(n)).sort().map(n=>'tests/'+n);
+ if(!tests.length)fail('no Android unit tests (tests/hwpxxx-*.test.ts) found in the patched source');
  console.log('Android unit tests:',tests.join(' '));
  run(process.execPath,['--test',...tests],{cwd:studio,env});
 }
