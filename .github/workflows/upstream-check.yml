@@ -1,0 +1,56 @@
+name: rhwp upstream check
+# Every second week (the cron fires weekly; scripts/check-upstream.mjs --scheduled skips odd ISO weeks) or on demand.
+# Reports a newer stable rhwp release and whether the hwpxxx patch series still applies to it. Read-only for the code base.
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Check this upstream tag instead of the latest stable one (e.g. v0.9.1)'
+        required: false
+        default: ''
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: upstream-check
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check upstream
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          args=(--report upstream-report.md --json upstream-report.json)
+          [ "$EVENT" = schedule ] && args+=(--scheduled)
+          [ -n "$INPUT_TAG" ] && args+=(--tag "$INPUT_TAG")
+          node scripts/check-upstream.mjs "${args[@]}"
+          cat upstream-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$(node -p "const r=require('./upstream-report.json');r.newer?'yes':'no'")" = yes ] || { echo "no newer upstream release"; exit 0; }
+          latest="$(node -p "require('./upstream-report.json').latest")"
+          title="rhwp $latest 업데이트 확인"
+          number="$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title==\"$title\"))[0].number // empty")"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file upstream-report.md
+          else
+            gh issue create --title "$title" --body-file upstream-report.md
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-report
+          path: upstream-report.*

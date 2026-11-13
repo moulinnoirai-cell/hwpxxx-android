@@ -2,6 +2,7 @@ name: Android tablet build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
@@ -107,6 +108,8 @@ jobs:
         run: |
           node scripts/verify-studio.mjs
           node --test tests/studio-build.test.mjs
+      - name: Release automation gates (signed-release job guards, upstream check on a fixture repository)
+        run: node --test tests/release-automation.test.mjs
       - name: Document worker regression tests
         run: node --test tests/editor-features.test.mjs tests/editor-worker.test.mjs
       - name: Emulator test harness (ANR guard parsers and decisions, no device needed)
@@ -273,3 +276,68 @@ jobs:
           path: .qa/android-*
           include-hidden-files: true
           if-no-files-found: warn
+
+  # Signed release: runs only for a pushed version tag (see docs/RELEASE.md), after the build and the emulator suites are green.
+  # The keystore secrets are used in this job only; the job never runs for pull requests.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, emulator]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write
+    env:
+      # SHA-256 of the signing certificate of the release key (hwpxxx-release.p12, adopted as the official key after v0.2.0). A different key is refused.
+      EXPECTED_CERT_SHA256: d7763191854c02a1e2589dc69c92521f10f0eded2ebd310b07d65fb69cb7f4c8
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag must point at a commit that is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::tag $TAG is not on main"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hwpxxx-android-*
+          path: ci-artifact
+          merge-multiple: true
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: false
+      - run: sdkmanager 'build-tools;35.0.0'
+      - name: Sign and verify the release APK
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ] || { echo "::error::set the RELEASE_KEYSTORE_BASE64 and RELEASE_KEYSTORE_PASSWORD secrets (docs/RELEASE.md)"; exit 1; }
+          ks="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$ks"' EXIT
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 -d > "$ks"
+          unsigned="$(find ci-artifact -name app-release-unsigned.apk | head -n 1)"
+          [ -n "$unsigned" ] || { echo "::error::the build artifact has no app-release-unsigned.apk"; exit 1; }
+          mkdir -p dist
+          core="${TAG#v}"; core="${core%%-*}"   # v0.3.1-rc.1 -> the APK's versionName must start with 0.3.1
+          bash scripts/sign-release.sh "$unsigned" "dist/hwpxxx-${TAG#v}.apk" "$ks" "$core"
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk="dist/hwpxxx-${TAG#v}.apk"
+          sum="$(cut -d' ' -f1 "$apk.sha256")"
+          flags=(--verify-tag --generate-notes)
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          {
+            echo "Signed release build (CI run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo
+            echo "- Source commit: \`$GITHUB_SHA\`"
+            echo "- APK SHA-256: \`$sum\`"
+            echo "- Signing certificate SHA-256: \`$EXPECTED_CERT_SHA256\`"
+          } > release-notes.md
+          gh release create "$TAG" "$apk" "$apk.sha256" --title "$TAG" --notes-file release-notes.md "${flags[@]}"

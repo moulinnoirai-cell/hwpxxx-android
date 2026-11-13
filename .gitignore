@@ -4,6 +4,7 @@ app/build/
 local.properties
 *.keystore
 *.jks
+*.p12
 tests/out-*.png
 tests/design-*.png
 tests/cmp-*.png
