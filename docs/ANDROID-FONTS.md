@@ -35,3 +35,7 @@ python tests/android-font-renderer.py --studio-root /path/to/patched/rhwp-studio
 ```
 
 The source harness creates a temporary local Vite server without modifying Studio. It initializes the real WASM bridge and real Canvas2D/CanvasKit renderer modules, supplies installed Liberation Sans regular/bold TTF, Nimbus Sans CFF OTF and the app's bundled Korean TTF bytes through the Android opaque-resource provider, compares Canvas2D pixels/width to independent FontFace loads, checks different CanvasKit regular/bold output, and verifies import/delete generation cleanup and token release. It does not demonstrate Android SAF/device behavior, DeX hardware, Samsung IME or the complete production editor. Those require separate host/build/device checks.
+
+## Importing a whole folder
+
+`Android · 글꼴` → **폴더에서 가져오기** opens the system folder picker and imports every `.ttf`/`.otf` in the chosen folder and its subfolders (breadth first; at most 200 folders and 256 font files are looked at, dot-names are skipped). It is a one-time bulk import, not a link: the read grant is used for that call only and nothing is watched afterwards. Each file passes through the same `FontStore.importFont` validation and limits as a single import. Files that cannot be read or are not valid fonts are counted and skipped, bytes that are already stored are left as they are, and reaching the store limit (64 fonts or 128 MiB) stops the run without undoing what was imported. The dialog reports how many were added, already present, skipped, and whether the limit was reached.

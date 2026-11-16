@@ -450,6 +450,7 @@ public class MainActivity extends Activity {
     private TermuxFolders termux;
     private long folderPickerRequest=-1;
     private long fontPickerRequest=-1;
+    private long fontFolderRequest=-1;
     private long filePickerRequest=-1;
     private String filePickerKind="document";
     private FontStore fonts;
@@ -548,6 +549,11 @@ public class MainActivity extends Activity {
                     if(fontPickerRequest!=-1){reply(id,null,"글꼴 선택을 마쳐 주세요.");return;}
                     if(fonts==null){reply(id,null,"글꼴 저장소를 사용할 수 없어요.");return;}
                     try{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType("*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);fontPickerRequest=id;launchPicker(EditorSession.this,intent,302);}catch(Exception e){fontPickerRequest=-1;reply(id,null,"글꼴 선택 화면을 열지 못했어요.");}
+                });return;}
+                if(op.equals("fontImportFolder")){runOnUiThread(()->{
+                    if(fontFolderRequest!=-1||fontPickerRequest!=-1){reply(id,null,"글꼴 선택을 마쳐 주세요.");return;}
+                    if(fonts==null){reply(id,null,"글꼴 저장소를 사용할 수 없어요.");return;}
+                    try{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);fontFolderRequest=id;launchPicker(EditorSession.this,intent,304);}catch(Exception e){fontFolderRequest=-1;reply(id,null,"폴더 선택 화면을 열지 못했어요.");}
                 });return;}
                 if(op.equals("pickFile")){runOnUiThread(()->{
                     if(filePickerRequest!=-1){reply(id,null,"파일 선택을 마쳐 주세요.");return;}
@@ -937,6 +943,46 @@ public class MainActivity extends Activity {
         }
         return null;
     }
+    /**
+     * Imports every TTF/OTF in a folder the user picked (and its subfolders, breadth first, bounded). One read grant for this call only;
+     * nothing is linked or watched. Each file goes through the same FontStore validation and limits as a single import: an unreadable or
+     * invalid file is counted and skipped, and the store limit stops the run without undoing what was already imported.
+     */
+    private JSONObject importFontFolder(Uri tree)throws Exception {
+        if(fonts==null)throw new IOException("글꼴 저장소를 사용할 수 없어요.");
+        final List<Uri> files=new ArrayList<>();
+        final ArrayDeque<String> folders=new ArrayDeque<>();folders.add(android.provider.DocumentsContract.getTreeDocumentId(tree));
+        int visited=0;
+        while(!folders.isEmpty()&&visited<200&&files.size()<FontStore.MAX_FONTS*4){
+            if(destroyed)throw new IOException("문서가 닫혔어요.");
+            final String folder=folders.removeFirst();visited++;
+            final Uri children=android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree,folder);
+            List<String[]> rows=ProviderRead.read(resources->{
+                List<String[]> out=new ArrayList<>();CancellationSignal cancellation=new CancellationSignal();resources.own(()->cancellation.cancel());
+                android.database.Cursor cursor=resources.own(getContentResolver().query(children,new String[]{"document_id","_display_name","mime_type"},null,null,null,cancellation));
+                while(cursor!=null&&cursor.moveToNext()&&out.size()<2000)out.add(new String[]{cursor.getString(0),cursor.getString(1),cursor.getString(2)});
+                return out;
+            });
+            for(String[] row:rows){
+                if(row[0]==null||row[1]==null||row[1].startsWith("."))continue;
+                if(android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(row[2])){folders.addLast(row[0]);continue;}
+                String lower=row[1].toLowerCase(Locale.ROOT);
+                if(lower.endsWith(".ttf")||lower.endsWith(".otf"))files.add(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,row[0]));
+            }
+        }
+        final int before=fonts.list().size();int failed=0;boolean full=false;
+        for(Uri file:files){
+            if(destroyed)throw new IOException("문서가 닫혔어요.");
+            try{byte[] bytes=readProviderBytes(file,FontStore.MAX_FONT_BYTES);fonts.importFont(new ByteArrayInputStream(bytes));}
+            catch(Exception error){
+                if(error.getMessage()!=null&&error.getMessage().contains("한도")){full=true;break;}
+                failed++;
+            }
+        }
+        JSONObject result=new JSONObject(fonts.snapshot());
+        result.put("folder",obj("found",files.size(),"added",fonts.list().size()-before,"failed",failed,"full",full));
+        return result;
+    }
     /** VIEW / EDIT / SEND with a content:// document. Anything else (file:, http:, other actions) is refused with a visible message; the document opens as a read-only original. */
     private void handleIncoming(Intent intent){
         if(intent==null||!HostIntents.acceptableIncomingAction(intent.getAction()))return;
@@ -958,6 +1004,10 @@ public class MainActivity extends Activity {
             if(destroyed)return;
             reply(id,registerSelection(uri,kind),null);
         }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요.");}catch(Exception error){reply(id,null,error.getMessage()==null?"선택한 파일을 읽지 못했어요.":error.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
+        if(request==304){final long id=fontFolderRequest;fontFolderRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri tree=data.getData();try{io.execute(()->{try{
+            if(destroyed)return;
+            reply(id,importFontFolder(tree),null);broadcastEvent("fontsChanged",Boolean.TRUE);
+        }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 글꼴을 가져오지 못했어요.");}catch(Exception e){reply(id,null,e.getMessage()==null?"폴더의 글꼴을 가져오지 못했어요.":e.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
         if(request==302){final long id=fontPickerRequest;fontPickerRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri uri=data.getData();try{io.execute(()->{try{if(destroyed)return;if(fonts==null)throw new IOException("글꼴 저장소를 사용할 수 없어요.");byte[] bytes=readProviderBytes(uri,FontStore.MAX_FONT_BYTES);if(destroyed)return;fonts.importFont(new ByteArrayInputStream(bytes));reply(id,new JSONObject(fonts.snapshot()),null);broadcastEvent("fontsChanged",Boolean.TRUE);}catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 글꼴을 가져오지 못했어요.");}catch(Exception e){reply(id,null,e.getMessage()==null?"글꼴을 가져오지 못했어요.":e.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
         if(request!=301)return;final long id=folderPickerRequest;folderPickerRequest=-1;
         // The root has already rejected results whose owning session no longer exists.

@@ -149,7 +149,7 @@ function workspaceOperation(op, a, origin) {
 
 function operation(op, a, events) {
   // Same ungated set as MainActivity.UNGATED; read/scan re-check the permission for shared-storage documents below.
-  if (!['status', 'release', 'scan', 'read', 'disconnectFolder', 'abortSave', 'abortPdf', 'listDrafts', 'beginDraft', 'finishDraft', 'abortDraft', 'readDraft', 'discardDraft', 'saveChunk', 'fontList', 'newDocument', 'pickFile', 'fontImport', 'fontRead', 'fontDelete', 'clipboardRead', 'clipboardWrite', 'beginPrintPdf', 'beginPdfPage', 'finishPdfPage', 'finishPdf', 'permission', 'exit', 'beginClipboardImage', 'finishClipboardImage', 'takeOpenRequests', 'historyList', 'beginHistory', 'finishHistory', 'readHistory', 'deleteHistory', 'clearHistory', 'recentList', 'recentAdd', 'recentOpen', 'recentRemove', 'recentClear'].includes(op) && !permission) throw new Error('문서에 접근하려면 파일 접근을 허용해 주세요.');
+  if (!['status', 'release', 'scan', 'read', 'disconnectFolder', 'abortSave', 'abortPdf', 'listDrafts', 'beginDraft', 'finishDraft', 'abortDraft', 'readDraft', 'discardDraft', 'saveChunk', 'fontList', 'newDocument', 'pickFile', 'fontImport', 'fontImportFolder', 'fontRead', 'fontDelete', 'clipboardRead', 'clipboardWrite', 'beginPrintPdf', 'beginPdfPage', 'finishPdfPage', 'finishPdf', 'permission', 'exit', 'beginClipboardImage', 'finishClipboardImage', 'takeOpenRequests', 'historyList', 'beginHistory', 'finishHistory', 'readHistory', 'deleteHistory', 'clearHistory', 'recentList', 'recentAdd', 'recentOpen', 'recentRemove', 'recentClear'].includes(op) && !permission) throw new Error('문서에 접근하려면 파일 접근을 허용해 주세요.');
   switch (op) {
     case 'status': return { permission, connectedFolders: termux ? [{ id: 'termux-mock', name: 'Termux · hwpxxx-project', active: true }] : [], volumes: [{ path: volume, name: '내장 저장공간' }], version: '0.2.0', engine: 'rhwp 0.8.7' };
     case 'scan': {
@@ -170,6 +170,20 @@ function operation(op, a, events) {
       const view = next.bytes; if (view.length < 12 || ![0x00010000, 0x4f54544f].includes(view.readUInt32BE(0))) throw new Error('TTF 또는 OTF 글꼴만 가져올 수 있어요.');
       const id = sha(next.bytes), face = { id, family: next.family, fullName: next.family + ' ' + next.style, postscriptName: next.family.replace(/\s/g, '') + '-' + next.style, style: next.style, weight: next.weight, slant: 'normal', aliases: [next.family] };
       fonts.set(id, { face, bytes: next.bytes }); events.push(['fontsChanged', true]); return fontSnapshot();
+    }
+    // The queued fonts stand for the files of the chosen folder; an empty queue is a cancelled folder picker.
+    case 'fontImportFolder': {
+      if (!fontQueue.length) return null;
+      const files = fontQueue.splice(0); let added = 0, failed = 0, full = false;
+      for (const next of files) {
+        const view = next.bytes;
+        if (view.length < 12 || ![0x00010000, 0x4f54544f].includes(view.readUInt32BE(0))) { failed++; continue; }
+        const id = sha(next.bytes); if (fonts.has(id)) continue;
+        if (fonts.size >= 64) { full = true; break; }
+        fonts.set(id, { face: { id, family: next.family, fullName: next.family + ' ' + next.style, postscriptName: next.family.replace(/\s/g, '') + '-' + next.style, style: next.style, weight: next.weight, slant: 'normal', aliases: [next.family] }, bytes: next.bytes }); added++;
+      }
+      if (added) events.push(['fontsChanged', true]);
+      return { ...fontSnapshot(), folder: { found: files.length, added, failed, full } };
     }
     case 'fontDelete': { if (!fonts.delete(a.id)) throw new Error('글꼴을 찾을 수 없어요.'); events.push(['fontsChanged', true]); return fontSnapshot(); }
     case 'pickFile': {
