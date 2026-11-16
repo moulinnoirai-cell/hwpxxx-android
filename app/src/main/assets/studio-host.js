@@ -51,7 +51,7 @@
         pending.delete(id);
         if (op === 'scan') request('cancelScan').catch(() => {});
         reject(new Error('작업 시간이 초과됐어요. 다시 시도해 주세요.'));
-      }, ['connectFolder', 'fontImport', 'pickFile'].includes(op) ? 600000 : op === 'scan' ? 300000 : 60000);
+      }, ['connectFolder', 'fontImport', 'fontImportFolder', 'pickFile'].includes(op) ? 600000 : op === 'scan' ? 300000 : 60000);
       pending.set(id, {resolve, reject, timer});
       try { OfflineNative.postMessage(JSON.stringify({id, op, args})); }
       catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
@@ -583,7 +583,7 @@
   function announce(text) { const status = document.getElementById('sb-message'); if (status) status.textContent = text; }
   async function fontManager() {
     const ui = openDialog('글꼴 관리'), list = element('div', null, {className: 'android-host-list'});
-    ui.body.append(element('p', 'TTF·OTF 파일을 가져오면 이 기기에 보관하고 편집기에 등록해요.'), list);
+    ui.body.append(element('p', 'TTF·OTF 파일을 가져오면 이 기기에 보관하고 편집기에 등록해요. 글꼴이 여러 개면 폴더째 가져올 수 있어요.'), list);
     async function refresh() {
       const snapshot = await request('fontList');
       list.replaceChildren(...snapshot.faces.map(face => {
@@ -592,7 +592,23 @@
       }));
       if (!snapshot.faces.length) list.append(element('p', '가져온 글꼴이 없어요.'));
     }
-    ui.footer.append(button('글꼴 가져오기', async () => { const result = await request('fontImport'); if (result) { await fontIntegration?.refresh(); await refresh(); } }));
+    const note = element('p', '', {className: 'android-host-notice', hidden: true});
+    note.setAttribute('role', 'status'); ui.body.append(note);
+    const say = text => { note.textContent = text; note.hidden = !text; };
+    ui.footer.append(button('글꼴 가져오기', async () => { say(''); const result = await request('fontImport'); if (result) { await fontIntegration?.refresh(); await refresh(); } }));
+    // A whole folder at once (purchased font packs): every TTF/OTF in the chosen folder and its subfolders, same checks and limits per file.
+    ui.footer.append(button('폴더에서 가져오기', async () => {
+      say(''); ui.error('');
+      const result = await request('fontImportFolder'); if (!result) return;
+      await fontIntegration?.refresh(); await refresh();
+      const {found = 0, added = 0, failed = 0, full = false} = result.folder || {};
+      if (!found) { say('이 폴더에서 TTF·OTF 글꼴을 찾지 못했어요.'); return; }
+      const parts = [added ? `글꼴 ${added}개를 가져왔어요.` : '새로 가져온 글꼴이 없어요.'];
+      const already = found - added - failed; if (already > 0 && !full) parts.push(`이미 있던 글꼴 ${already}개는 그대로 두었어요.`);
+      if (failed) parts.push(`읽지 못했거나 글꼴이 아닌 파일 ${failed}개는 건너뛰었어요.`);
+      if (full) parts.push('저장 한도(64개 또는 128MB)에 닿아 나머지는 가져오지 못했어요.');
+      say(parts.join(' '));
+    }));
     refresh().catch(ui.error); await ui.promise.catch(() => {});
   }
   async function onReady(studio) {

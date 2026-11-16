@@ -557,6 +557,28 @@ test('font manager: native import registers the face with the Studio provider, d
   assertClean();
 });
 
+test('font folder import: every font of the chosen folder is imported at once; invalid files and repeats are reported, a cancelled picker changes nothing', async () => {
+  const fake = tag => Buffer.concat([Buffer.from([0, 1, 0, 0]), Buffer.from('synthetic font ' + tag)]);
+  await page.getByRole('button', {name: 'Android · 글꼴'}).click();
+  await dialog().getByRole('heading', {name: '글꼴 관리'}).waitFor(); await dialog().getByText('가져온 글꼴이 없어요.').waitFor();
+  const folder = dialog().getByRole('button', {name: '폴더에서 가져오기'}), note = dialog().locator('.android-host-notice');
+  await folder.click();  // nothing queued = the folder picker was cancelled
+  await dialog().getByText('가져온 글꼴이 없어요.').waitFor(); assert.equal(await note.isVisible(), false);
+  await control('/__pickfont?family=' + encodeURIComponent('묶음 하나'), {method: 'POST', body: fake('1')});
+  await control('/__pickfont?family=' + encodeURIComponent('묶음 둘'), {method: 'POST', body: fake('2')});
+  await control('/__pickfont?family=' + encodeURIComponent('글꼴 아님'), {method: 'POST', body: Buffer.from('this is not a font file')});
+  await folder.click(); await dialog().getByText('묶음 둘').waitFor();
+  assert.match(await note.innerText(), /글꼴 2개를 가져왔어요\..*파일 1개는 건너뛰었어요\./);
+  assert.deepEqual(await page.evaluate(async () => (await __studio.provider.getSnapshot()).faces.map(f => f.family).sort()), ['묶음 둘', '묶음 하나']);
+  // the same folder again: nothing new, nothing duplicated
+  await control('/__pickfont?family=' + encodeURIComponent('묶음 하나'), {method: 'POST', body: fake('1')});
+  await folder.click(); await note.filter({hasText: '새로 가져온 글꼴이 없어요.'}).waitFor();
+  assert.match(await note.innerText(), /이미 있던 글꼴 1개/);
+  assert.equal(await page.evaluate(async () => (await __studio.provider.getSnapshot()).faces.length), 2);
+  assert.equal((await nativeLog()).filter(o => o.op === 'fontImportFolder').length, 3);
+  await page.keyboard.press('Escape'); await dialog().waitFor({state: 'detached'}); assertClean();
+});
+
 test('font manager returns mouse users to the editor and keyboard users to its launch button', async () => {
   await page.evaluate(() => {
     const editor = document.createElement('textarea'); editor.id = 'qa-editor-focus';
