@@ -432,7 +432,7 @@ public class MainActivity extends Activity {
     private final Map<String,File> documents=new ConcurrentHashMap<>();
     /** Unsaved documents receive native-issued identities; they can only create a new file. */
     private final NativeHandleRegistry<String> newDocuments=new NativeHandleRegistry<>("new:");
-    private final class SelectedFile {Uri uri;String name,format,mime;long size;}
+    private final class SelectedFile {Uri uri;String name,format,mime,sha;long size;List<String> candidates=Collections.emptyList();}
     /** Temporary SAF selections are opaque and read-only; no content URI crosses the bridge. */
     private final NativeHandleRegistry<SelectedFile> selectedFiles=new NativeHandleRegistry<>("saf:");
     /** Files other apps asked us to open (VIEW/EDIT/SEND). They wait here until the page is ready; only the newest few are kept. */
@@ -905,10 +905,37 @@ public class MainActivity extends Activity {
                 if(result.format==null)throw new IOException("HWP·HWPX·HML 문서를 선택해 주세요.");
                 result.name=HostIntents.nameWithExtension(result.name,result.format);
             }
-            FileStore.name(result.name);if(kind.equals("image"))validateImage(bytes);else validateDocument(bytes,result.format);result.size=bytes.length;return result;
+            FileStore.name(result.name);if(kind.equals("image"))validateImage(bytes);else validateDocument(bytes,result.format);result.size=bytes.length;
+            if(!kind.equals("image")){
+                // Where this document may live in shared storage. Guesses only; storageOriginal() below decides.
+                result.sha=FileStore.sha(bytes);String documentId=null,data=null;
+                try{if(android.provider.DocumentsContract.isDocumentUri(MainActivity.this,uri))documentId=android.provider.DocumentsContract.getDocumentId(uri);}catch(RuntimeException unknown){}
+                try{android.database.Cursor path=resources.own(getContentResolver().query(uri,new String[]{"_data"},null,null,null,cancellation));if(path!=null&&path.moveToFirst()&&!path.isNull(0))data=path.getString(0);}catch(RuntimeException noColumn){}
+                List<String> rootPaths=new ArrayList<>();for(File root:roots)rootPaths.add(root.getPath());
+                result.candidates=HostIntents.storagePathCandidates(documentId,uri.getPath(),data,rootPaths);
+            }
+            return result;
         });
         if(destroyed)throw new IOException("문서가 닫혔어요.");
+        File original=storageOriginal(file);if(original!=null)return record(original);
         String token=selectedFiles.register(uri.toString(),file);return selectedRecord(token,file);
+    }
+    /**
+     * The shared-storage file behind a picked or delivered document, when there provably is one: all-files access is granted, a candidate
+     * path resolves inside a storage root, has the same format and size, and holds exactly the bytes the provider returned. Such a document
+     * is opened as that file, so Save writes the original (baseline hash, backup and atomic replace as for any listed document).
+     * Anything else (another app's private file, cloud documents, a mismatch) stays a read-only source that is saved as a copy.
+     */
+    private File storageOriginal(SelectedFile file){
+        if(file.sha==null||file.candidates.isEmpty()||!Environment.isExternalStorageManager())return null;
+        for(String candidate:file.candidates){
+            try{
+                File target=store.resolve(candidate);
+                if(!target.isFile()||target.length()!=file.size||!documentFormat(target).equals(file.format))continue;
+                if(FileStore.sha(store.read(target.getPath())).equals(file.sha))return target;
+            }catch(Exception|OutOfMemoryError notThisOne){}
+        }
+        return null;
     }
     /** VIEW / EDIT / SEND with a content:// document. Anything else (file:, http:, other actions) is refused with a visible message; the document opens as a read-only original. */
     private void handleIncoming(Intent intent){

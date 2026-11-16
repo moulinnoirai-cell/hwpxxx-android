@@ -23,6 +23,22 @@ public class HostIntentsTest {
         yes(HostIntents.documentFormat("note.txt","text/plain","hello".getBytes("UTF-8"))==null,"text is not a document");
         yes(HostIntents.documentFormat(null,null,null)==null,"nothing known");
         yes(HostIntents.nameWithExtension("1234","hwp").equals("1234.hwp")&&HostIntents.nameWithExtension("a.hwp","hwp").equals("a.hwp")&&HostIntents.nameWithExtension(" ","hwpx").equals("문서.hwpx")&&HostIntents.nameWithExtension(null,"hml").equals("문서.hml"),"names carry an extension");
+        // content:// -> shared-storage path candidates (guesses only; MainActivity keeps one only after a byte-for-byte match inside a root)
+        java.util.List<String> roots=java.util.Arrays.asList("/storage/emulated/0","/storage/1A2B-3C4D");
+        yes(HostIntents.storagePathCandidates("primary:Download/보고서.hwp",null,null,roots).contains("/storage/emulated/0/Download/보고서.hwp"),"primary document id");
+        yes(HostIntents.storagePathCandidates("1A2B-3C4D:문서/a.hwpx",null,null,roots).contains("/storage/1A2B-3C4D/문서/a.hwpx"),"removable volume document id");
+        yes(HostIntents.storagePathCandidates("raw:/storage/emulated/0/Download/a.hwp",null,null,roots).contains("/storage/emulated/0/Download/a.hwp"),"raw document id");
+        yes(HostIntents.storagePathCandidates("msf:1234",null,null,roots).isEmpty()&&HostIntents.storagePathCandidates("1234",null,null,roots).isEmpty()&&HostIntents.storagePathCandidates("primary:",null,null,roots).isEmpty(),"opaque ids give nothing");
+        yes(HostIntents.storagePathCandidates(null,null,"/storage/emulated/0/DCIM/a.hwp",roots).get(0).equals("/storage/emulated/0/DCIM/a.hwp"),"provider path column first");
+        yes(HostIntents.storagePathCandidates(null,null,"relative/a.hwp",roots).isEmpty(),"relative path column ignored");
+        yes(HostIntents.storagePathCandidates(null,"/device_storage/Download/a.hwp",null,roots).contains("/storage/emulated/0/Download/a.hwp"),"file-manager provider path, one leading segment");
+        yes(HostIntents.storagePathCandidates(null,"/external_files/0/Documents/업무/a.hwp",null,roots).contains("/storage/emulated/0/Documents/업무/a.hwp"),"two leading segments");
+        yes(HostIntents.storagePathCandidates(null,"/root/storage/emulated/0/Download/a.hwp",null,roots).get(0).equals("/storage/emulated/0/Download/a.hwp"),"absolute path inside the URI");
+        yes(HostIntents.storagePathCandidates(null,"/x/Download/a.hwp",null,roots).contains("/storage/1A2B-3C4D/Download/a.hwp"),"every root is tried");
+        for(String path:HostIntents.storagePathCandidates("primary:../../data/a.hwp","/a/../b/./c.hwp","/storage/emulated/0/../x.hwp",roots))yes(!("/"+path+"/").contains("/../")&&!("/"+path+"/").contains("/./"),"no dot segments: "+path);
+        yes(HostIntents.storagePathCandidates("primary:../../data/a.hwp",null,"/storage/emulated/0/../x.hwp",roots).isEmpty(),"traversal candidates dropped");
+        yes(HostIntents.storagePathCandidates("primary:a.hwp","/a.hwp","/x/a.hwp",null).isEmpty()&&HostIntents.storagePathCandidates("primary:a.hwp","/a.hwp","/x/a.hwp",new java.util.ArrayList<String>()).isEmpty(),"no roots, no candidates");
+        yes(HostIntents.storagePathCandidates(null,"/a/b/c/d/e/f/g/h/i/j.hwp",null,roots).size()<=16,"bounded");
         System.out.println("HostIntents: "+checks+" checks passed");
     }
 }
