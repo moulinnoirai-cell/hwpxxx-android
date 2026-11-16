@@ -623,13 +623,17 @@ public class MainActivity extends Activity {
                 return true;
             }finally{sessions.upload=null;}}
             case "clipboardWrite": {String text=a.optString("text",""),html=a.optString("html","");if(!HostState.clipboardWithinLimit(text,html))throw new IOException("복사한 내용이 너무 커서 클립보드에 넣을 수 없어요. (글자·서식 합계 256KB까지)");android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);clipboard.setPrimaryClip(html.isEmpty()?ClipData.newPlainText("한눈글",text):ClipData.newHtmlText("한눈글",text,html));return true;}
-            case "status": {roots=refreshRoots();JSONArray volumes=new JSONArray();for(int i=0;i<roots.size();i++)volumes.put(obj("path",roots.get(i).getPath(),"name",i==0?"내장 저장공간":"SD 카드 · "+roots.get(i).getName()));return obj("permission",Environment.isExternalStorageManager(),"connectedFolders",termux.list(),"volumes",volumes,"version",BuildConfig.VERSION_NAME,"engine","rhwp 0.8.7");}
+            case "status": {roots=refreshRoots();JSONArray volumes=new JSONArray();for(int i=0;i<roots.size();i++)volumes.put(obj("path",roots.get(i).getPath(),"name",i==0?"내장 저장공간":"SD 카드 · "+roots.get(i).getName()));return obj("permission",Environment.isExternalStorageManager(),"connectedFolders",termux.list(),"volumes",volumes,"version",BuildConfig.VERSION_NAME,"engine","rhwp 0.9.0");}
             case "disconnectFolder":termux.disconnect(a.getString("id"));broadcastEvent("foldersChanged",Boolean.TRUE);return true;
             case "listDirs": {
                 File dir=store.resolve(a.getString("path"));if(!dir.isDirectory()||!dir.canRead())throw new IOException("폴더를 열 수 없어요. 접근 권한을 확인해 주세요.");
                 File[] children=dir.listFiles();if(children==null)throw new IOException("폴더 목록을 읽지 못했어요.");JSONArray result=new JSONArray();int n=0;
-                for(File f:children){if(f.getName().startsWith(".")||!f.isDirectory())continue;try{store.resolve(f.getPath());}catch(IOException e){continue;}if(++n>3000)throw new IOException("하위 폴더가 너무 많아요. 다른 위치를 선택해 주세요.");String[] entries=f.list();result.put(obj("path",f.getPath(),"name",f.getName(),"modified",f.lastModified(),"count",entries==null?JSONObject.NULL:entries.length));}
-                return obj("path",dir.getPath(),"writable",dir.canWrite(),"folders",result);
+                // Names of documents and exports already here, so the save dialog can show a name clash before the user confirms. Names only; never a save target.
+                JSONArray files=new JSONArray();boolean filesTruncated=false;
+                for(File f:children){
+                    if(f.getName().startsWith("."))continue;
+                    if(!f.isDirectory()){if(f.isFile()&&exportExtension(f.getName()).matches("hwp|hwpx|hml|pdf|html|htm|doc|mhtml|mht|txt|svg|png|jpg|jpeg")){if(files.length()<2000)files.put(f.getName());else filesTruncated=true;}continue;}try{store.resolve(f.getPath());}catch(IOException e){continue;}if(++n>3000)throw new IOException("하위 폴더가 너무 많아요. 다른 위치를 선택해 주세요.");String[] entries=f.list();result.put(obj("path",f.getPath(),"name",f.getName(),"modified",f.lastModified(),"count",entries==null?JSONObject.NULL:entries.length));}
+                return obj("path",dir.getPath(),"writable",dir.canWrite(),"folders",result,"files",files,"filesTruncated",filesTruncated);
             }
             case "mkdir": {File f=store.createFolder(a.getString("parent"),a.getString("name"));return obj("path",f.getPath());}
             case "read": {

@@ -74,9 +74,18 @@ async function chooseOpen(name) {
   await dialog().getByRole('searchbox', {name: '문서 이름 검색'}).fill(name);
   await dialog().locator('.android-host-list button').filter({hasText: name}).first().click();
 }
+// The dialog starts in the document's folder, the last save folder or Documents: walk up to the storage root so `folders` is a path from it.
+async function destinationRoot() {
+  const up = dialog().getByRole('button', {name: '상위 폴더'}), where = dialog().locator('.android-host-path');
+  while (await up.isEnabled()) {
+    const before = await where.innerText(); await up.click();
+    await page.waitForFunction(text => document.querySelector('dialog.android-host-dialog .android-host-path')?.textContent !== text, before);
+  }
+}
 async function chooseDestination({name, folders = []}) {
   await dialog().getByRole('heading', {name: '다른 이름으로 저장'}).waitFor();
   await dialog().locator('.android-host-path').filter({hasText: '/'}).waitFor();
+  await destinationRoot();
   for (const folder of folders) { await dialog().locator('.android-host-list button').filter({hasText: '📁 ' + folder}).click(); await dialog().locator('.android-host-path').filter({hasText: folder}).waitFor(); }
   await dialog().getByLabel('파일 이름').fill(name);
   await dialog().getByRole('button', {name: '저장', exact: true}).click();
@@ -252,12 +261,68 @@ test('Save As: new name in a chosen folder is a NEW copy (replace=false); origin
   assert.deepEqual(fs.readFileSync(doc(HWP)), original);
 });
 
-test('Save As onto an existing file is refused by the native collision rule and never overwrites it', async () => {
+test('Save As onto an existing file is refused in the dialog (name stays editable); a file that appears after the listing is still refused natively', async () => {
   const victim = fs.readFileSync(doc(HWPX)); await openHandle(HWP);
-  const picking = page.evaluate(async () => { __h.b = await showSaveFilePicker({suggestedName: 'x.hwpx'}); });
-  await chooseDestination({name: '프로젝트 일정.hwpx', folders: ['Download']}); await picking;
+  const picking = page.evaluate(async () => { __h.b = await showSaveFilePicker({suggestedName: 'x.hwpx'}); return __h.b.name; });
+  await chooseDestination({name: '프로젝트 일정.hwpx', folders: ['Download']});
+  await dialog().locator('.android-host-error').filter({hasText: '같은 이름'}).waitFor();
+  assert.match(await dialog().locator('.android-host-error').innerText(), /프로젝트 일정 \(2\)\.hwpx/, 'a free name is suggested');
+  assert.ok((await dialog().locator('.android-host-file').allInnerTexts()).includes('프로젝트 일정.hwpx'), 'existing files of the folder are listed');
+  assert.equal((await nativeLog()).filter(o => o.op === 'beginSave').length, 0);
+  // The listing is only a courtesy: a file created after it was read is caught by the native collision rule.
+  fs.writeFileSync(doc('Download/qa-late.hwpx'), victim);
+  await dialog().getByLabel('파일 이름').fill('qa-late.hwpx'); await dialog().getByRole('button', {name: '저장', exact: true}).click();
+  assert.equal(await picking, 'qa-late.hwpx');
   const refused = await saveFailing(Buffer.from('payload payload'), 'b');
-  assert.match(refused.error.message, /같은 이름/); assert.deepEqual(fs.readFileSync(doc(HWPX)), victim);
+  assert.match(refused.error.message, /같은 이름/); assert.deepEqual(fs.readFileSync(doc(HWPX)), victim); assert.deepEqual(fs.readFileSync(doc('Download/qa-late.hwpx')), victim);
+});
+
+test('destination dialog starts where the user works: the document folder, then the last save folder, then Documents; a taken name is replaced by a free one', async () => {
+  const pathText = () => dialog().locator('.android-host-path').innerText();
+  const openSave = suggestedName => page.evaluate(async suggestedName => { try { await showSaveFilePicker({suggestedName}); return 'picked'; } catch (error) { return error.name; } }, suggestedName);
+  const listed = async () => { await dialog().getByRole('heading', {name: '다른 이름으로 저장'}).waitFor(); await dialog().locator('.android-host-path').filter({hasText: '/'}).waitFor(); };
+  // no document, nothing remembered -> Documents
+  let picking = openSave('새 문서.hwp'); await listed();
+  assert.ok((await pathText()).endsWith('/Documents'), await pathText());
+  assert.equal(await dialog().getByRole('button', {name: '상위 폴더'}).isEnabled(), true);
+  await page.keyboard.press('Escape'); assert.equal(await picking, 'AbortError');
+  // a document from shared storage -> its own folder, and its own (taken) name becomes a free one
+  await openHandle('Download/업무자료/2026년 사업계획 검토 의견 최종본.hwp'); await page.evaluate(() => { __studio.state.fileHandle = __h.a; });
+  picking = openSave('2026년 사업계획 검토 의견 최종본.hwp'); await listed();
+  assert.ok((await pathText()).endsWith('/Download/업무자료'), await pathText());
+  assert.equal(await dialog().getByLabel('파일 이름').inputValue(), '2026년 사업계획 검토 의견 최종본 (2).hwp');
+  await page.keyboard.press('Escape'); await picking;
+  // a name typed without an extension gets the one being saved; Enter confirms
+  await page.evaluate(() => { __studio.state.fileHandle = null; });
+  picking = page.evaluate(async () => { __h.e = await showSaveFilePicker({suggestedName: 'a.hwp', types: [{accept: {'application/x-hwp': ['.hwp']}}]}); return __h.e.name; });
+  await listed(); await destinationRoot();
+  assert.equal(await dialog().getByRole('button', {name: '상위 폴더'}).isEnabled(), false, 'no silent no-op at the storage root');
+  await dialog().locator('.android-host-list button').filter({hasText: '📁 Pictures'}).click(); await dialog().locator('.android-host-path').filter({hasText: 'Pictures'}).waitFor();
+  await dialog().getByLabel('파일 이름').fill('qa-확장자없음'); await page.keyboard.press('Enter');
+  assert.equal(await picking, 'qa-확장자없음.hwp');
+  // the folder just used is where the next save starts
+  picking = openSave('다음.hwp'); await listed();
+  assert.ok((await pathText()).endsWith('/Pictures'), await pathText());
+  await page.keyboard.press('Escape'); await picking; assertClean();
+});
+
+test('open dialog: without all-files access it says so and offers the grant; granting rescans by itself; rows carry folder, date and size', async () => {
+  await control('/__grant?0');
+  const opened = page.evaluate(async () => { const [h] = await showOpenFilePicker(); return h.name; });
+  await dialog().getByRole('heading', {name: '문서 열기'}).waitFor();
+  await dialog().locator('.android-host-notice').filter({hasText: '파일 접근 허용'}).waitFor();
+  assert.equal(await dialog().getByRole('button', {name: '파일 접근 허용'}).isVisible(), true);
+  await page.evaluate(() => __mock.grant(true));
+  const row = dialog().locator('.android-host-list button').filter({hasText: '회의 자료.hwp'});
+  await row.waitFor();
+  assert.equal(await dialog().getByRole('button', {name: '파일 접근 허용'}).isVisible(), false);
+  assert.equal(await dialog().locator('.android-host-notice').isVisible(), false);
+  assert.match(await row.locator('small').innerText(), /Download · \d{4}\. ?\d{2}\. ?\d{2}\.? · \d+(\.\d)?(B|KB|MB)/);
+  assert.equal(await dialog().getByRole('button', {name: '검색 중지'}).isVisible(), false, 'no stop control when nothing is scanning');
+  await dialog().getByRole('searchbox', {name: '문서 이름 검색'}).fill('없는 문서 이름');
+  await dialog().getByText('이름에 검색어가 들어간 문서가 없어요.').waitFor();
+  await dialog().getByRole('searchbox', {name: '문서 이름 검색'}).fill('회의 자료'); await page.keyboard.press('Enter');
+  assert.equal(await opened, '회의 자료.hwp'); assertClean();
 });
 
 test('destination dialog enforces name and extension locally (traversal, wrong extension, padded name) and nothing is created', async () => {
@@ -403,7 +468,10 @@ test('exportFile: new-file-only native export with bytes verified; collisions, w
     await chooseDestination({name, folders: ['Documents']}); return p;
   };
   assert.equal(await exportAs('qa-out.html', html, 'text/html'), 'ok'); assert.deepEqual(fs.readFileSync(doc('Documents/qa-out.html')), html);
-  assert.match(await exportAs('qa-out.html', html, 'text/html'), /같은 이름/); assert.deepEqual(fs.readFileSync(doc('Documents/qa-out.html')), html);
+  // A taken name is refused while the dialog is still open; nothing reaches native and the first export is untouched.
+  const clash = exportAs('qa-out.html', html, 'text/html');
+  await dialog().locator('.android-host-error').filter({hasText: '같은 이름'}).waitFor(); await page.keyboard.press('Escape');
+  assert.match(await clash, /취소/); assert.equal((await nativeLog()).filter(o => o.op === 'beginExport').length, 1); assert.deepEqual(fs.readFileSync(doc('Documents/qa-out.html')), html);
   assert.match(await exportAs('qa-fake.png', Buffer.from('not a png at all'), 'image/png'), /PNG/); assert.ok(!fs.existsSync(doc('Documents/qa-fake.png')));
   assert.match(await exportAs('qa-run.exe', html, 'application/octet-stream'), /지원하지 않는/); assert.ok(!fs.existsSync(doc('Documents/qa-run.exe')));
   const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), crypto.randomBytes(64)]);

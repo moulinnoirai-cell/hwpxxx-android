@@ -132,65 +132,146 @@
   }
   function installStyles() {
     const style = element('style');
-    style.textContent = '.android-host-dialog{box-sizing:border-box;width:min(800px,94vw);max-height:90vh;padding:24px;border:1px solid #9da7b5;border-radius:10px;color:CanvasText;background:Canvas;font:14px system-ui;box-shadow:0 16px 70px #0007}.android-host-dialog::backdrop{background:#0006}.android-host-dialog h2{margin:0 0 18px;font-size:19px}.android-host-dialog button,.android-host-dialog input,.android-host-dialog select{font:inherit;padding:9px 12px;border:1px solid #a7b0be;border-radius:5px;color:CanvasText;background:Canvas}.android-host-dialog button{cursor:pointer}.android-host-dialog button:hover{background:color-mix(in srgb,Highlight 14%,Canvas)}.android-host-dialog button:focus-visible,.android-host-dialog input:focus-visible{outline:2px solid Highlight;outline-offset:2px}.android-host-body{display:grid;gap:12px}.android-host-actions,.android-host-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.android-host-list{max-height:46vh;overflow:auto;display:grid;gap:5px}.android-host-list button{text-align:left;white-space:normal;overflow-wrap:anywhere}.android-host-list small{display:block;opacity:.7}.android-host-error{color:#b33535;min-height:1.4em;white-space:pre-wrap}.android-host-path{overflow-wrap:anywhere;font-size:12px}.android-host-dialog input{box-sizing:border-box;width:100%}.android-host-config{position:fixed;bottom:28px;right:8px;z-index:110;padding:4px 8px;font:12px system-ui;color:CanvasText;background:Canvas;border:1px solid #a7b0be;border-radius:5px}';
+    style.textContent = '.android-host-dialog{box-sizing:border-box;width:min(800px,94vw);max-height:90vh;padding:24px;border:1px solid #9da7b5;border-radius:10px;color:CanvasText;background:Canvas;font:14px system-ui;box-shadow:0 16px 70px #0007}.android-host-dialog::backdrop{background:#0006}.android-host-dialog h2{margin:0 0 18px;font-size:19px}.android-host-dialog button,.android-host-dialog input,.android-host-dialog select{font:inherit;padding:9px 12px;border:1px solid #a7b0be;border-radius:5px;color:CanvasText;background:Canvas}.android-host-dialog button{cursor:pointer}.android-host-dialog button:hover{background:color-mix(in srgb,Highlight 14%,Canvas)}.android-host-dialog button:focus-visible,.android-host-dialog input:focus-visible{outline:2px solid Highlight;outline-offset:2px}.android-host-body{display:grid;gap:12px}.android-host-actions,.android-host-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.android-host-list{max-height:46vh;overflow:auto;display:grid;gap:5px}.android-host-list button{text-align:left;white-space:normal;overflow-wrap:anywhere}.android-host-list small{display:block;opacity:.7}.android-host-error{color:#b33535;min-height:1.4em;white-space:pre-wrap}.android-host-path{overflow-wrap:anywhere;font-size:12px}.android-host-dialog input{box-sizing:border-box;width:100%}.android-host-notice{margin:0;padding:10px 12px;border-radius:6px;background:color-mix(in srgb,Highlight 12%,Canvas)}.android-host-file{margin:0;padding:6px 12px;opacity:.65;overflow-wrap:anywhere}.android-host-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.android-host-list>div>button{flex:none}.android-host-dialog button:disabled{opacity:.5;cursor:default}.android-host-dialog [hidden]{display:none}@media (pointer:coarse){.android-host-dialog button,.android-host-dialog input,.android-host-dialog select{min-height:44px}}.android-host-config{position:fixed;bottom:28px;right:8px;z-index:110;padding:4px 8px;font:12px system-ui;color:CanvasText;background:Canvas;border:1px solid #a7b0be;border-radius:5px}';
     document.head.append(style);
   }
+  // The list is rebuilt at most once per frame-ish tick and shows one page at a time: a device scan reports up to 10,000 documents in
+  // batches of 24, and rebuilding (and sorting) every row for every batch froze the dialog on large storages.
+  const OPEN_PAGE = 200;
+  const sizeText = bytes => bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + 'MB' : bytes >= 1024 ? Math.round(bytes / 1024) + 'KB' : bytes > 0 ? bytes + 'B' : '';
+  const dateText = time => { try { return time > 0 ? new Date(time).toLocaleDateString('ko-KR', {year: 'numeric', month: '2-digit', day: '2-digit'}) : ''; } catch { return ''; } };
   async function pickOpen() {
     const ui = openDialog('문서 열기'), search = element('input', null, {type: 'search', placeholder: '문서 이름 검색'});
     search.setAttribute('aria-label', '문서 이름 검색');
     const tools = element('div', null, {className: 'android-host-tools'}), status = element('p', '문서를 찾고 있어요…');
+    const notice = element('p', '', {className: 'android-host-notice', hidden: true});
     const list = element('div', null, {className: 'android-host-list'}), docs = new Map();
-    let scanning = false;
+    status.setAttribute('role', 'status');
+    let scanning = false, timer = 0, shown = OPEN_PAGE, permission = true, summary = '';
+    const matches = () => {
+      const query = search.value.trim().toLocaleLowerCase();
+      return [...docs.values()].filter(item => item.name.toLocaleLowerCase().includes(query)).sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name));
+    };
     function render() {
-      const query = search.value.toLocaleLowerCase();
-      list.replaceChildren(...[...docs.values()].filter(item => item.name.toLocaleLowerCase().includes(query)).sort((a,b) => b.modified - a.modified).map(item => {
+      clearTimeout(timer); timer = 0;
+      const found = matches();
+      list.replaceChildren(...found.slice(0, shown).map(item => {
         const node = button(item.name, () => ui.finish(makeHandle({meta: item})));
-        node.append(element('small', item.folder || '선택한 문서')); return node;
+        node.append(element('small', [item.folder || '선택한 문서', dateText(item.modified), sizeText(item.size)].filter(Boolean).join(' · '))); return node;
       }));
+      if (found.length > shown) list.append(button(`문서 ${found.length - shown}개 더 보기`, () => { shown += OPEN_PAGE; render(); }));
+      else if (!found.length && !scanning) list.append(element('p', search.value.trim() ? '이름에 검색어가 들어간 문서가 없어요.' : permission ? '문서를 찾지 못했어요. ‘파일 선택’으로 직접 고를 수 있어요.' : '아직 보여 줄 문서가 없어요.'));
     }
-    const offBatch = subscribe('scanBatch', items => { for (const item of items) docs.set(item.id, item); render(); });
+    const schedule = () => { if (!timer) timer = setTimeout(render, 60); };
+    const offBatch = subscribe('scanBatch', items => { for (const item of items) docs.set(item.id, item); schedule(); });
+    const offProgress = subscribe('scanProgress', progress => { if (scanning && progress) status.textContent = `문서를 찾고 있어요… 폴더 ${progress.folders}개 확인 · 문서 ${docs.size}개`; });
+    const allow = button('파일 접근 허용', () => request('permission')), refresh = button('새로고침', () => scan()), stop = button('검색 중지', () => request('cancelScan'));
+    function controls() { allow.hidden = permission; notice.hidden = permission; refresh.disabled = scanning; stop.hidden = !scanning; }
+    // Without all-files access only linked folders and single picked files are reachable: say so instead of showing an empty list.
+    async function checkPermission() {
+      try { permission = (await request('status')).permission !== false; } catch { permission = true; }
+      notice.textContent = permission ? '' : '기기의 문서를 모두 찾아 보여 드리려면 ‘파일 접근 허용’을 눌러 주세요. 허용하지 않아도 ‘파일 선택’으로 문서를 하나씩 열 수 있어요.';
+      controls(); return permission;
+    }
     async function scan() {
-      if (scanning) return; scanning = true; docs.clear(); render(); status.textContent = '문서를 찾고 있어요…';
-      try { const result = await request('scan'); status.textContent = `${docs.size}개 문서${result.limited ? ' · 검색 범위에 도달했어요' : ''}${result.cancelled ? ' · 검색 중지' : ''}`; }
-      finally { scanning = false; }
+      if (scanning) return; scanning = true; docs.clear(); shown = OPEN_PAGE; render(); controls(); status.textContent = '문서를 찾고 있어요…';
+      try {
+        const result = await request('scan');
+        summary = `${docs.size}개 문서${result.limited ? ' · 검색 범위에 도달했어요' : ''}${result.cancelled ? ' · 검색 중지' : ''}`; status.textContent = summary;
+      } catch (error) { status.textContent = '문서를 끝까지 찾지 못했어요. ‘새로고침’으로 다시 시도해 주세요.'; throw error; }
+      finally { scanning = false; controls(); render(); }
     }
-    tools.append(button('파일 선택', async () => { const picked = await request('pickFile', {kind: 'document'}); if (picked) ui.finish(makeHandle({meta: picked})); }), button('폴더 연결', async () => { if (await request('connectFolder')) await scan(); }), button('파일 접근 허용', () => request('permission')), button('새로고침', scan), button('검색 중지', () => request('cancelScan')));
-    ui.body.append(search, tools, status, list); search.addEventListener('input', render);
+    tools.append(button('파일 선택', async () => { const picked = await request('pickFile', {kind: 'document'}); if (picked) ui.finish(makeHandle({meta: picked})); }), button('폴더 연결', async () => { if (await request('connectFolder')) await scan(); }), allow, refresh, stop);
+    ui.body.append(search, tools, notice, status, list);
+    search.addEventListener('input', () => { shown = OPEN_PAGE; render(); });
+    // A keyboard user (DeX) types a name and presses Enter to open the first match.
+    search.addEventListener('keydown', event => { if (event.key !== 'Enter' || event.isComposing) return; event.preventDefault(); if (search.value.trim()) list.querySelector('button')?.click(); });
+    // Coming back from the system settings screen with access newly granted: find the documents without a manual refresh.
+    const offResume = subscribe('resume', async () => { const before = permission; try { if (await checkPermission() && !before) await scan(); } catch (error) { ui.error(error); } });
+    controls(); void checkPermission();
     scan().catch(ui.error);
-    try { return await ui.promise; } finally { offBatch(); request('cancelScan').catch(() => {}); }
+    try { return await ui.promise; } finally { clearTimeout(timer); offBatch(); offProgress(); offResume(); request('cancelScan').catch(() => {}); }
   }
-  async function pickDestination(suggestedName, allowed = null) {
+  // ---- save destination -------------------------------------------------------------------------------------------------------
+  // The last folder a document was saved to, so the next save does not start at the storage root again. Only a folder path is
+  // kept, in the WebView's own storage; when it is unavailable or the folder is gone the dialog falls back to Documents, then the root.
+  const FOLDER_KEY = 'hwpxxx.android.saveFolder';
+  let lastFolder = '';
+  const rememberedFolder = () => { if (lastFolder) return lastFolder; try { return localStorage.getItem(FOLDER_KEY) || ''; } catch { return ''; } };
+  function rememberFolder(path) { lastFolder = path; try { localStorage.setItem(FOLDER_KEY, path); } catch { /* storage disabled: this session only */ } }
+  const stemOf = name => { const dot = name.lastIndexOf('.'); return dot > 0 ? name.slice(0, dot) : name; };
+  /** "보고서.hwp" -> "보고서 (2).hwp" … the first name not taken in the folder (compared case-insensitively, as shared storage does). */
+  function freeName(wanted, taken) {
+    if (!taken.has(wanted.toLocaleLowerCase())) return wanted;
+    const stem = stemOf(wanted), tail = wanted.slice(stem.length);
+    for (let index = 2; index < 1000; index++) { const candidate = `${stem} (${index})${tail}`; if (!taken.has(candidate.toLocaleLowerCase())) return candidate; }
+    return wanted;
+  }
+  async function pickDestination(suggestedName, allowed = null, startFolder = null) {
     const info = await request('status');
-    const ui = openDialog('다른 이름으로 저장'), name = element('input', null, {value: suggestedName || '문서.hwp'});
-    name.setAttribute('aria-label', '파일 이름');
+    const suggested = String(suggestedName || '문서.hwp');
+    const ui = openDialog('다른 이름으로 저장'), name = element('input', null, {value: suggested});
+    name.setAttribute('aria-label', '파일 이름'); name.setAttribute('enterkeyhint', 'done');
     const location = element('select'), pathText = element('p', '', {className: 'android-host-path'}), list = element('div', null, {className: 'android-host-list'});
     location.setAttribute('aria-label', '저장공간');
-    for (const volume of info.volumes || []) location.append(element('option', volume.name, {value: volume.path}));
-    let path = '', generation = 0;
+    const volumes = info.volumes || [];
+    for (const volume of volumes) location.append(element('option', volume.name, {value: volume.path}));
+    const volumeOf = folder => volumes.map(volume => volume.path).filter(root => folder === root || folder.startsWith(root + '/')).sort((a, b) => b.length - a.length)[0] || '';
+    let path = '', generation = 0, taken = new Set(), complete = false, edited = false;
+    name.addEventListener('input', () => { edited = true; });
+    const up = button('상위 폴더', async () => { if (path && path !== location.value) await enter(path.slice(0, path.lastIndexOf('/'))); });
+    up.disabled = true;
     async function enter(next) {
       const generationAtStart = ++generation, result = await request('listDirs', {path: next});
       if (generationAtStart !== generation || currentDialog !== ui) return;
       path = result.path; pathText.textContent = path;
+      const root = volumeOf(path); if (root && location.value !== root) location.value = root;
+      up.disabled = !path || path === location.value;
+      // Names already in this folder (when the host reports them): shown so a clash is visible before saving, never as a save target.
+      const files = Array.isArray(result.files) ? result.files.map(String) : [];
+      taken = new Set(files.map(file => file.toLocaleLowerCase())); complete = Array.isArray(result.files) && result.filesTruncated !== true;
       const children = (result.folders || []).sort((a,b) => a.name.localeCompare(b.name));
-      list.replaceChildren(...children.map(folder => button('📁 ' + folder.name, () => enter(folder.path))));
+      const same = allowed ? files.filter(file => allowed.includes('.' + extension(file))) : files;
+      list.replaceChildren(...children.map(folder => button('📁 ' + folder.name, () => enter(folder.path))), ...same.sort((a, b) => a.localeCompare(b)).slice(0, 200).map(file => element('p', file, {className: 'android-host-file'})));
+      if (!list.childElementCount) list.append(element('p', '하위 폴더가 없어요.', {className: 'android-host-file'}));
+      if (!edited) name.value = freeName(suggested, taken);
+    }
+    // First folder that can be listed: the document's own folder, the last save folder, Documents, the storage root.
+    async function start() {
+      const root = location.value, candidates = [startFolder, rememberedFolder(), root && root + '/Documents', root].filter((folder, index, all) => folder && volumeOf(folder) && all.indexOf(folder) === index);
+      for (const folder of candidates) {
+        try { await enter(folder); return; } catch (error) { if (folder === candidates[candidates.length - 1]) throw error; }
+      }
     }
     location.addEventListener('change', () => enter(location.value).catch(ui.error));
     ui.body.append(location, pathText, list, name);
-    ui.footer.prepend(button('상위 폴더', async () => { if (path !== location.value) await enter(path.slice(0, path.lastIndexOf('/'))); }), button('새 폴더', async () => {
+    ui.footer.prepend(up, button('새 폴더', async () => {
       const folderName = window.prompt('새 폴더 이름'); if (!folderName) return;
       await request('mkdir', {parent: path, name: folderName}); await enter(path);
     }));
-    ui.footer.append(button('저장', () => {
-      const value = name.value;
+    const save = button('저장', () => {
+      let value = name.value;
+      // A name typed without an extension gets the one being saved; a different extension is still refused below.
+      if (value && !value.includes('.') && allowed?.length) { value += allowed[0]; name.value = value; }
       if (!value || value.trim() !== value || /[\\/\x00-\x1f\x7f]/.test(value)) throw new Error('파일 이름을 확인해 주세요.');
       if (allowed && !allowed.includes('.' + extension(value))) throw new Error('선택한 저장 형식의 확장자를 유지해 주세요.');
       if (!path) throw new Error('저장할 폴더를 선택해 주세요.');
+      // Native refuses to overwrite through this dialog; say so here, while the name can still be changed.
+      if (complete && taken.has(value.toLocaleLowerCase())) throw new Error(`이 폴더에 같은 이름의 파일이 있어요. 이름을 바꿔 주세요. (예: ${freeName(value, taken)})`);
+      rememberFolder(path);
       ui.finish({name: value, target: path + '/' + value});
-    }));
+    });
+    ui.footer.append(save);
+    name.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); save.click(); } });
     if (!info.permission) { ui.error(new Error('저장하려면 파일 접근을 허용해 주세요.')); ui.footer.prepend(button('파일 접근 허용', () => request('permission'))); }
-    else if (location.value) enter(location.value).catch(ui.error);
-    const offResume = subscribe('resume', async () => { try { const now = await request('status'); if (now.permission && !path && location.value) await enter(location.value); } catch (error) { ui.error(error); } });
+    else if (location.value) start().catch(ui.error);
+    const offResume = subscribe('resume', async () => { try { const now = await request('status'); if (now.permission && !path && location.value) { ui.error(''); await start(); } } catch (error) { ui.error(error); } });
     try { return await ui.promise; } finally { offResume(); }
+  }
+  /** Folder of the document being edited when it lives in shared storage (never a picked/linked/recovered source). */
+  function sourceFolder(record = activeSource()) {
+    const meta = record?.meta;
+    return meta && !meta.external && !meta.draft && meta.path && meta.folder ? String(meta.folder) : null;
   }
   function activeSource() {
     const state = readyStudio?.android?.getState();
@@ -224,7 +305,7 @@
             try {
               // SAF/Termux/recovery handles are read-only. Their first Save creates a copy.
               if (!record.target || record.meta?.external || record.meta?.draft) {
-                const picked = await pickDestination(record.name, ['.' + extension(record.name)]);
+                const picked = await pickDestination(record.name, ['.' + extension(record.name)], sourceFolder(record.source || record));
                 record.target = picked.target; record.name = picked.name;
               }
               const bytes = new Uint8Array(size); let offset = 0;
@@ -272,7 +353,7 @@
   });
   installWindowApi('showSaveFilePicker', async (options = {}) => {
     const types = (options.types || []).flatMap(type => Object.values(type.accept || {}).flat());
-    const picked = await pickDestination(options.suggestedName, types.length ? types : null);
+    const picked = await pickDestination(options.suggestedName, types.length ? types : null, sourceFolder());
     return makeHandle({...picked, source: activeSource()});
   });
   // Menu clipboard actions use Android's foreground clipboard. Keyboard paste/copy
@@ -451,7 +532,7 @@
     async clear() { await request('recentClear'); },
   };
   async function exportFile(blob, fileName) {
-    const picked = await pickDestination(fileName, ['.' + extension(fileName)]), bytes = new Uint8Array(await blob.arrayBuffer()); let token;
+    const picked = await pickDestination(fileName, ['.' + extension(fileName)], sourceFolder()), bytes = new Uint8Array(await blob.arrayBuffer()); let token;
     try { token = await request('beginExport', {target: picked.target, length: bytes.length}); await upload(token, bytes); await request('finishExport', {token}); token = null; announce('저장했어요: ' + picked.name); }
     finally { if (token) await request('abortSave', {token}).catch(() => {}); }
   }
@@ -482,7 +563,7 @@
     try {
       checkStop();
       if (intent === 'print') await request('beginPrintPdf', {count, name: fileName});
-      else { const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf']); await request('beginPdf', {target: picked.target, count}); }
+      else { const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf'], sourceFolder()); await request('beginPdf', {target: picked.target, count}); }
       started = true;
       for (let index = 0; index < count; index++) {
         checkStop();

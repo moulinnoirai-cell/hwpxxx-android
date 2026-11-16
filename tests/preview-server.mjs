@@ -247,7 +247,8 @@ function operation(op, a, events) {
     }
     case 'listDirs': {
       const d = inside(a.path);
-      return { path: d, writable: true, folders: fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => { const p = path.join(d, e.name); return { path: p, name: e.name, modified: fs.statSync(p).mtimeMs, count: fs.readdirSync(p).length }; }) };
+      const files = fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isFile() && !e.name.startsWith('.') && /\.(hwp|hwpx|hml|pdf|html|htm|doc|mhtml|mht|txt|svg|png|jpg|jpeg)$/i.test(e.name)).map(e => e.name);
+      return { path: d, writable: true, files, filesTruncated: false, folders: fs.readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => { const p = path.join(d, e.name); return { path: p, name: e.name, modified: fs.statSync(p).mtimeMs, count: fs.readdirSync(p).length }; }) };
     }
     case 'mkdir': { name(a.name); const p = inside(path.join(inside(a.parent), a.name)); if (fs.existsSync(p)) throw new Error('같은 이름의 항목이 있어요.'); fs.mkdirSync(p); return { path: p }; }
     case 'rename': case 'move': {
