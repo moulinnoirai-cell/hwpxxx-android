@@ -11,6 +11,7 @@ rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY
 | `features/0002-hwpxxx-editor-hooks.patch` | 위 기능을 본가에 잇는 얇은 연결: 단축키(한글 조합 중 Ctrl+Enter 포함), 툴바(형광펜 분할 단추 포함), 입력 처리, 쪽·단 나누기 본문 한정, 메모·글자·문단 대화상자, 번역 문구 |
 | `android/0101-android-new-modules.patch` | Android 셸 연동 새 파일: 호스트 계약·저장 검증·인쇄·상태·복구 봉투 포장, 시험 |
 | `android/0102-android-host-hooks.patch` | Android 연결: 저장 실패 시 닫힘, 비공개 복구 저장소, 최근 문서·이력, 가져온 글꼴, 오프라인 빌드(PWA 제외) |
+| `android/0103-android-composition-text-zoom.patch` | 한글 조합 오버레이 크기: 시스템 글자 크기(WebView textZoom)가 DOM 글자에만 걸려 조합 중 글자가 본문보다 크게 보이던 것을 보정 |
 
 `features/` → `android/` 순서(이름순)로 적용합니다. 복구(자동 저장)는 본가 방식(세션 복구 키 `RecoveryCipher`)을 따르고,
 셸의 비공개 저장소에는 봉투를 암호문 앞에 붙여 한 덩어리 바이트로 보관합니다(`src/hwpxxx/android-draft-envelope.ts`).

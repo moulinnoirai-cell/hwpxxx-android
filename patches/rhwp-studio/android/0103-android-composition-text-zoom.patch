@@ -1,0 +1,100 @@
+diff --git a/rhwp-studio/src/hwpxxx/composition-font.ts b/rhwp-studio/src/hwpxxx/composition-font.ts
+index bef76a6..8f8de6c 100644
+--- a/rhwp-studio/src/hwpxxx/composition-font.ts
++++ b/rhwp-studio/src/hwpxxx/composition-font.ts
+@@ -16,6 +16,8 @@ export interface CompositionFontInput {
+   zoom: number;
+   /** 글자 크기를 모를 때 쓰는 오버레이 상자 높이(CSS px, 줌 적용 전) */
+   boxHeight: number;
++  /** DOM 글자 배율. 생략하면 `domTextZoom()` 으로 잰다(시험에서는 값을 넣는다). */
++  textZoom?: number;
+ }
+ 
+ export type FontResolver = (font: string) => string;
+@@ -36,14 +38,53 @@ export function resolveFontLikeCanvas(font: string): string {
+   }
+ }
+ 
++let textZoomCache: { value: number; at: number } | null = null;
++
++/**
++ * DOM 글자에만 걸리는 배율. Android WebView 는 시스템 글자 크기를 `textZoom` 으로 DOM 글자에 곱하지만 캔버스 글자에는 곱하지 않는다.
++ * 그래서 시스템 글자 크기를 키운 기기에서는 조합 오버레이(DOM)가 본문(캔버스)보다 크게 보였다.
++ * 같은 글꼴·같은 크기의 글자를 DOM 과 캔버스에서 재어 그 비율을 돌려준다. 잴 수 없으면 1.
++ * 시스템 설정은 실행 중에도 바뀔 수 있어 잠깐만 기억한다.
++ */
++export function domTextZoom(now: number = Date.now()): number {
++  if (textZoomCache && now - textZoomCache.at >= 0 && now - textZoomCache.at < 3000) return textZoomCache.value;
++  let value = 1;
++  try {
++    if (typeof document !== 'undefined' && document.body) {
++      resolveFontLikeCanvas('100px sans-serif');
++      const context = sharedContext;
++      if (context) {
++        const sample = 'MMMMMMMMMM';
++        context.font = '100px sans-serif';
++        const canvasWidth = context.measureText(sample).width;
++        const probe = document.createElement('span');
++        probe.style.cssText = 'position:absolute;left:-99999px;top:0;visibility:hidden;white-space:nowrap;letter-spacing:0;font:100px sans-serif';
++        probe.textContent = sample;
++        document.body.appendChild(probe);
++        const domWidth = probe.getBoundingClientRect().width;
++        probe.remove();
++        const ratio = canvasWidth > 0 ? domWidth / canvasWidth : 1;
++        if (Number.isFinite(ratio) && ratio > 0.3 && ratio < 4) value = Math.abs(ratio - 1) < 0.02 ? 1 : ratio;
++      }
++    }
++  } catch {
++    value = 1;
++  }
++  textZoomCache = { value, at: now };
++  return value;
++}
++
+ function quoteFamily(name: string): string {
+   return `"${name.replace(/["\\\n\r]/g, '')}"`;
+ }
+ 
+-/** 오버레이에 쓸 CSS `font` 값. 글자 크기는 문서의 실제 크기(없으면 상자 높이의 85%)에 줌을 곱한다. */
++/** 오버레이에 쓸 CSS `font` 값. 글자 크기는 문서의 실제 크기(없으면 상자 높이의 85%)에 줌을 곱하고 DOM 글자 배율로 나눈다. */
+ export function compositionCssFont(input: CompositionFontInput, resolve: FontResolver = resolveFontLikeCanvas): string {
+   const pt = typeof input.fontSize === 'number' && Number.isFinite(input.fontSize) && input.fontSize > 0 ? input.fontSize / 100 : null;
+-  const px = Math.max(1, (pt !== null ? pt * 96 / 72 : input.boxHeight * 0.85) * input.zoom);
++  const given = input.textZoom;
++  const textZoom = typeof given === 'number' && Number.isFinite(given) && given > 0 ? given : domTextZoom();
++  // DOM 이 다시 곱할 배율만큼 미리 나눠, 화면에 보이는 크기가 캔버스 본문과 같게 한다.
++  const px = Math.max(1, (pt !== null ? pt * 96 / 72 : input.boxHeight * 0.85) * input.zoom / textZoom);
+   const family = input.fontFamily && input.fontFamily.trim() ? `${quoteFamily(input.fontFamily.trim())}, sans-serif` : 'sans-serif';
+   const style = `${input.italic ? 'italic ' : ''}${input.bold ? 'bold ' : ''}`;
+   return resolve(`${style}${Math.round(px * 100) / 100}px ${family}`);
+diff --git a/rhwp-studio/tests/hwpxxx-composition-font.test.ts b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+index a0cce36..2ca5fcd 100644
+--- a/rhwp-studio/tests/hwpxxx-composition-font.test.ts
++++ b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+@@ -2,7 +2,7 @@
+ import test from 'node:test';
+ import assert from 'node:assert/strict';
+ import { readFileSync } from 'node:fs';
+-import { compositionCssFont } from '../src/hwpxxx/composition-font.ts';
++import { compositionCssFont, domTextZoom } from '../src/hwpxxx/composition-font.ts';
+ 
+ const identity = (font: string) => font;
+ const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
+@@ -20,6 +20,17 @@ test('실제 글자 크기(HWPUNIT)·줌·굵기·기울임을 따른다', () =>
+   assert.equal(compositionCssFont({ fontFamily: 'A', fontSize: 1000, zoom: 1, boxHeight: 99 }, identity), '13.33px "A", sans-serif');
+ });
+ 
++test('DOM 글자 배율(Android 시스템 글자 크기)만큼 미리 나눠 본문과 같은 크기로 보이게 한다', () => {
++  // 10pt·줌 1.5 = 20px. 배율 1.25 인 기기에서는 16px 로 넣어야 화면에서 20px 로 보인다.
++  assert.equal(compositionCssFont({ fontFamily: 'A', fontSize: 1000, zoom: 1.5, boxHeight: 99, textZoom: 1.25 }, identity), '16px "A", sans-serif');
++  assert.equal(compositionCssFont({ fontFamily: 'A', zoom: 1, boxHeight: 20, textZoom: 2 }, identity), '8.5px "A", sans-serif');
++  // 이상한 배율은 무시하고 잰 값(DOM 이 없는 곳에서는 1)을 쓴다.
++  for (const textZoom of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
++    assert.equal(compositionCssFont({ fontFamily: 'A', fontSize: 1000, zoom: 1, boxHeight: 99, textZoom }, identity), '13.33px "A", sans-serif', String(textZoom));
++  }
++  assert.equal(domTextZoom(), 1, 'DOM 이 없으면 1');
++});
++
+ test('크기를 모르거나 이상하면 상자 높이의 85%로 물러난다', () => {
+   for (const fontSize of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+     assert.equal(compositionCssFont({ fontFamily: 'A', fontSize, zoom: 2, boxHeight: 10 }, identity), '17px "A", sans-serif', String(fontSize));
