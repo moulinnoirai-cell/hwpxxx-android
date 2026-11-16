@@ -12,6 +12,7 @@ rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY
 | `android/0101-android-new-modules.patch` | Android 셸 연동 새 파일: 호스트 계약·저장 검증·인쇄·상태·복구 봉투 포장, 시험 |
 | `android/0102-android-host-hooks.patch` | Android 연결: 저장 실패 시 닫힘, 비공개 복구 저장소, 최근 문서·이력, 가져온 글꼴, 오프라인 빌드(PWA 제외) |
 | `android/0103-android-composition-text-zoom.patch` | 한글 조합 오버레이 크기: 시스템 글자 크기(WebView textZoom)가 DOM 글자에만 걸려 조합 중 글자가 본문보다 크게 보이던 것을 보정 |
+| `android/0104-android-skip-empty-host-font-scan.patch` | 큰 문서 여는 시간: 가져온 글꼴이 없을 때 모든 쪽의 레이어 트리를 내보내 읽던 호스트 글꼴 탐색을 건너뜀(결과는 같음) |
 
 `features/` → `android/` 순서(이름순)로 적용합니다. 복구(자동 저장)는 본가 방식(세션 복구 키 `RecoveryCipher`)을 따르고,
 셸의 비공개 저장소에는 봉투를 암호문 앞에 붙여 한 덩어리 바이트로 보관합니다(`src/hwpxxx/android-draft-envelope.ts`).
