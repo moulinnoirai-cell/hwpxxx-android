@@ -229,6 +229,12 @@ class Realm:
         dialog = self.host_dialog()
         dialog.get_by_role('heading', name='다른 이름으로 저장').wait_for(timeout=20000)
         dialog.locator('.android-host-path').filter(has_text='/').wait_for()
+        # The dialog starts in the document's folder, the last save folder or Documents: walk up to the storage root first.
+        up, where = dialog.get_by_role('button', name='상위 폴더'), dialog.locator('.android-host-path')
+        while up.is_enabled():
+            before = where.inner_text()
+            up.click()
+            self.wait("document.querySelector('dialog.android-host-dialog .android-host-path').textContent !== " + json.dumps(before), 15, 'parent folder listed')
         for folder in folders:
             dialog.locator('.android-host-list button').filter(has_text='📁 ' + folder).click()
             dialog.locator('.android-host-path').filter(has_text=folder).wait_for()

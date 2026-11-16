@@ -24,7 +24,9 @@
   },
   "androidPatches": {
     "0101-android-new-modules.patch": "7b50a63eef6791c5fab6242b413327eb76f301e519f3c6ab2cba9a4b73afe0a1",
-    "0102-android-host-hooks.patch": "74bd2e7ec752590e88cc2d5b5a1a08d2194ac33360661198a84e0aa547a74383"
+    "0102-android-host-hooks.patch": "74bd2e7ec752590e88cc2d5b5a1a08d2194ac33360661198a84e0aa547a74383",
+    "0103-android-composition-text-zoom.patch": "2b28167fc3f1aa6e3619c202210100e3ee49d5b89791aecbe272d53935ec62f4",
+    "0104-android-host-font-scan-by-name.patch": "20eb053724b9c37831a94881c2ca9daaaf0bf1ec729bffcc807d4d409f83684b"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",

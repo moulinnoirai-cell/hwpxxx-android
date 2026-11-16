@@ -1,0 +1,290 @@
+diff --git a/rhwp-studio/src/core/host-font-requests.ts b/rhwp-studio/src/core/host-font-requests.ts
+index ed60a981b..5d4472d94 100644
+--- a/rhwp-studio/src/core/host-font-requests.ts
++++ b/rhwp-studio/src/core/host-font-requests.ts
+@@ -120,6 +120,33 @@ function hancomEquationFamilies(root: LayerEquationLayoutBox | undefined): Set<s
+   return families;
+ }
+ 
++/**
++ * [hwpxxx-android] 문서 수준의 글꼴 이름만으로 고를 수 있는 호스트 face.
++ * 쪽 트리의 글자 런은 (글꼴 이름, 굵게, 기울임)으로 face 를 고르므로, 문서가 선언한 이름마다 네 조합을 모두 고르면
++ * 쪽 트리를 읽지 않고도 같은 face 를(쓰이지 않는 굵기·기울임이 조금 더 들어갈 뿐) 얻는다.
++ * 엔진이 문서에 없는 이름을 끼워 넣는 드문 경우는 여기서 빠질 수 있어, 호출자가 뒤에서 `collectHostFontRequests` 로 한 번 확인한다.
++ */
++export function collectHostFontRequestsForFamilies(families: Iterable<string>): LocalFontRecord[] {
++  const selected = new Map<string, LocalFontRecord>();
++  const select = (name: string, weight: number, slant: 'normal' | 'italic') => {
++    const record = resolveRendererLocalFont(name, { weight, slant });
++    if (record?.hostReference) selected.set(localFontFaceKey(record), record);
++  };
++  for (const family of new Set(families)) {
++    if (!family) continue;
++    const candidates = ordinaryTextFontFamilies(family);
++    for (const weight of [400, 700]) {
++      for (const slant of ['normal', 'italic'] as const) {
++        for (const candidate of candidates) select(candidate, weight, slant);
++      }
++    }
++  }
++  // 수식의 기본 글꼴과 원문자 안쪽 글꼴은 문서의 글꼴 목록에 나오지 않는다.
++  select('HyhwpEQ', 400, 'normal');
++  select(enclosedPuaMetrics.innerFace, 400, 'normal');
++  return [...selected.values()];
++}
++
+ /** 실제 text/수식 face 소비자를 준비한다. glyph ID나 자원 내용은 다시 쓰지 않는다. */
+ export function collectHostFontRequests(tree: PageLayerTree): LocalFontRecord[] {
+   const selected = new Map<string, LocalFontRecord>();
+diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
+index d09ac812d..43fc071b6 100644
+--- a/rhwp-studio/src/core/wasm-bridge.ts
++++ b/rhwp-studio/src/core/wasm-bridge.ts
+@@ -8,7 +8,7 @@ import { NativePuaFontSession, type NativePuaFontDocument } from './native-pua-f
+ import { CanvasFontResolutionScope } from './canvas-font-resolution-scope';
+ import { MetafileFontSession, type MetafileFontDocument } from './metafile-font-session';
+ import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, type LocalFontRecord } from './local-fonts';
+-import { collectHostFontRequests } from './host-font-requests';
++import { collectHostFontRequests, collectHostFontRequestsForFamilies } from './host-font-requests';
+ import type { CanvasMetricDocument } from './canvas-metric-session';
+ import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
+ import type { CharShapeRun } from './types';
+@@ -363,6 +363,20 @@ interface DocumentFontEnvironmentApi {
+   setFontEnvironment(environment?: string): boolean;
+ }
+ 
++/** [hwpxxx-android] 한 문서·한 호스트 글꼴 목록에 대한 탐색 상태. */
++interface HostFontScanState {
++  doc: HwpDocument | null;
++  documentGeneration: number;
++  hostGeneration: number;
++  /** 전체 확인이 찾은, 이름 목록 밖의 face */
++  extras: Map<string, LocalFontRecord>;
++  /** 지금까지 준비한 face 의 키 */
++  known: Set<string>;
++  verified: boolean;
++  running: boolean;
++  timer: ReturnType<typeof setTimeout> | null;
++}
++
+ export class WasmBridge {
+   private doc: HwpDocument | null = null;
+   private canvasMetrics = new CanvasMetricSession();
+@@ -390,6 +404,81 @@ export class WasmBridge {
+     this.canvasMetricDocument()?.selectCanvasMetrics(false);
+   }
+ 
++  // ---- [hwpxxx-android] 호스트 글꼴 탐색: 이름 목록으로 바로 고르고, 전체 쪽 확인은 문서당 한 번 뒤에서 한다 ----
++  private hostFontScan: HostFontScanState | null = null;
++  private hostFontScanListener: (() => void) | null = null;
++
++  /** 뒤에서 한 전체 확인이 이름 목록에 없던 호스트 글꼴을 찾았을 때 불린다. 듣는 쪽은 글꼴 자원을 다시 준비한다. */
++  onHostFontScanFound(listener: (() => void) | null): void { this.hostFontScanListener = listener; }
++
++  private hostFontScanFor(doc: HwpDocument | null, documentGeneration: number, hostGeneration: number): HostFontScanState {
++    const scan = this.hostFontScan;
++    if (scan && scan.doc === doc && scan.documentGeneration === documentGeneration && scan.hostGeneration === hostGeneration) return scan;
++    if (scan?.timer != null) clearTimeout(scan.timer);
++    return this.hostFontScan = { doc, documentGeneration, hostGeneration, extras: new Map(), known: new Set(),
++      verified: false, running: false, timer: null };
++  }
++
++  /** 문서가 선언한 글꼴 이름(대체 글꼴과 선택 계획의 이름 포함). 수 밀리초면 얻는다. */
++  private documentFontFamilyNames(): string[] {
++    const names = new Set<string>();
++    try {
++      const info = this.getDocumentInfo();
++      for (const name of info.fontsUsed ?? []) names.add(name);
++      for (const pair of info.fontSubstitutions ?? []) for (const name of pair) names.add(name);
++    } catch { /* 아래 전체 확인이 채운다 */ }
++    try {
++      const api = this.doc as unknown as Partial<DocumentFontEnvironmentApi> | null;
++      if (api && typeof api.getDocumentFontSelectionPlan === 'function') {
++        const plan = JSON.parse(api.getDocumentFontSelectionPlan()) as DocumentFontSelectionPlan;
++        for (const request of plan.requests ?? []) {
++          for (const name of [request.source, ...(request.primary ?? []), ...(request.substitute ?? []), ...(request.publicFallback ?? [])]) {
++            if (name) names.add(name);
++          }
++        }
++      }
++    } catch { /* 아래 전체 확인이 채운다 */ }
++    return [...names];
++  }
++
++  /**
++   * 모든 쪽의 레이어 트리를 한 번 훑어, 이름 목록으로 고르지 못한 호스트 face 가 있는지 확인한다(예: 엔진이 문서에 없는 기본 글꼴을 쓴 글자).
++   * 첫 화면을 막지 않도록 한 번에 한 쪽씩 쉬는 틈에 하고, 문서나 호스트 글꼴 목록이 바뀌면 그만둔다. 새로 찾았을 때만 한 번 알린다.
++   */
++  private verifyHostFontScan(scan: HostFontScanState): void {
++    if (scan.verified || scan.running) return;
++    scan.running = true;
++    let page = 0, found = false;
++    const stale = () => this.hostFontScan !== scan || this.doc !== scan.doc
++      || this._documentGeneration !== scan.documentGeneration || getHostFontState().generation !== scan.hostGeneration;
++    const later = (delay: number) => { scan.timer = setTimeout(step, delay); };
++    const step = () => {
++      scan.timer = null;
++      if (stale()) { scan.running = false; return; }
++      const started = Date.now();
++      try {
++        while (page < this.pageCount && Date.now() - started < 12) {
++          const tree = withCanvasFontResolution(null, () => this.getPageLayerTreeObject(page));
++          page += 1;
++          for (const record of collectHostFontRequests(tree)) {
++            const key = localFontFaceKey(record);
++            if (scan.known.has(key) || scan.extras.has(key)) continue;
++            scan.extras.set(key, record); found = true;
++          }
++        }
++      } catch (error) {
++        // 확인은 보조 수단이다. 읽지 못한 쪽은 건너뛰고 계속한다.
++        console.warn('[HostFonts] 쪽 글꼴 확인 실패:', error);
++        page += 1;
++      }
++      if (page < this.pageCount) { later(40); return; }
++      scan.verified = true; scan.running = false;
++      if (found) this.hostFontScanListener?.();
++    };
++    // 첫 화면과 초기화가 끝난 뒤에 시작한다.
++    later(1500);
++  }
++
+   async prepareCanvasMetrics(backend: string, isCurrent: () => boolean = () => true): Promise<boolean> {
+     const doc = this.doc;
+     const documentGeneration = this._documentGeneration;
+@@ -401,12 +490,17 @@ export class WasmBridge {
+       const generation = getHostFontState().generation;
+       await prepareHostFontCatalog();
+       if (!current() || generation !== getHostFontState().generation) return false;
++      const hostFontScan = this.hostFontScanFor(doc, documentGeneration, generation);
+       const records = this.withPortableMetrics(() => {
+         const selected = new Map<string, LocalFontRecord>();
+-        for (let page = 0; page < this.pageCount; page++) {
+-          for (const record of collectHostFontRequests(this.getPageLayerTreeObject(page))) {
++        // [hwpxxx-android] 예전에는 여기서 모든 쪽의 레이어 트리를 내보내 JSON 으로 읽었다(178쪽 문서에서 90MB, 첫 화면 전 시간의 대부분.
++        // 편집할 때마다도 되풀이됐다). 호스트 글꼴이 없으면 고를 face 가 없고(`collectHostFontRequests` 는 hostReference 가 있는
++        // 기록만 고른다), 있으면 문서가 선언한 글꼴 이름으로 바로 고른다. 이름 목록에 없던 face 는 뒤에서 한 번 확인해 채운다.
++        if (getHostFontState().count > 0) {
++          for (const record of collectHostFontRequestsForFamilies(this.documentFontFamilyNames())) {
+             selected.set(localFontFaceKey(record), record);
+           }
++          for (const record of hostFontScan.extras.values()) selected.set(localFontFaceKey(record), record);
+         }
+         for (const record of this.nativePuaFonts.records(doc as unknown as NativePuaFontDocument | null)) {
+           selected.set(localFontFaceKey(record), record);
+@@ -415,6 +509,8 @@ export class WasmBridge {
+       });
+       await this.hostCanvasFonts.prepare(records, doc, current);
+       if (!current() || generation !== getHostFontState().generation) return false;
++      for (const record of records) hostFontScan.known.add(localFontFaceKey(record));
++      if (getHostFontState().count > 0) this.verifyHostFontScan(hostFontScan);
+       const puaFontGeneration = this.canvasFontGeneration;
+       if (!await this.nativePuaFonts.prepare(doc as unknown as NativePuaFontDocument | null,
+         puaFontGeneration, record => this.hostCanvasFonts.isPrepared(record),
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 95ea4ce4f..eae66ee25 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -1347,6 +1347,14 @@ function setupEventListeners(): void {
+       console.warn('[HostFonts] View refresh failed:', error);
+     });
+   });
++  // [hwpxxx-android] 뒤에서 한 전체 쪽 확인이 이름 목록에 없던 가져온 글꼴을 찾으면, 글꼴 목록이 바뀐 것과 같은 방식으로 다시 준비한다.
++  wasm.onHostFontScanFound(() => {
++    if (!canvasView || wasm.pageCount === 0) return;
++    wasm.invalidateCanvasMetricFonts();
++    void canvasView.refreshFontResources().catch(error => {
++      console.warn('[HostFonts] View refresh after page scan failed:', error);
++    });
++  });
+ 
+   eventBus.on('local-fonts-changed', (payload) => {
+     if ((payload as { source?: string } | undefined)?.source === 'options-dialog-clear') {
+diff --git a/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts b/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts
+new file mode 100644
+index 000000000..a89af8c58
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts
+@@ -0,0 +1,82 @@
++// [hwpxxx-android] 호스트 글꼴 탐색: 문서의 글꼴 이름으로 바로 고르고, 모든 쪽을 훑는 확인은 첫 화면 뒤에 한 번만 한다(큰 문서 여는 시간·편집 반응).
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import type { HostFontProvider, HostFontSnapshot } from '../src/core/host-font-provider.ts';
++import { setHostFontProvider } from '../src/core/local-fonts.ts';
++import { collectHostFontRequests, collectHostFontRequestsForFamilies } from '../src/core/host-font-requests.ts';
++import type { PageLayerTree } from '../src/core/types.ts';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++
++function provider(): { provider: HostFontProvider; reads: () => number } {
++  let reads = 0;
++  const snapshot: HostFontSnapshot = { revision: 'r1', faces: [
++    { id: 'regular', family: 'Host Only', fullName: 'Host Only Regular', postscriptName: 'HostOnly-Regular',
++      style: 'Regular', weight: 400, slant: 'normal', aliases: ['호스트전용'] },
++    { id: 'bold', family: 'Host Only', fullName: 'Host Only Bold', postscriptName: 'HostOnly-Bold',
++      style: 'Bold', weight: 700, slant: 'normal', aliases: ['호스트전용'] },
++    { id: 'other', family: 'Unused Host', fullName: 'Unused Host Regular', postscriptName: 'UnusedHost-Regular',
++      style: 'Regular', weight: 400, slant: 'normal', aliases: [] },
++  ] };
++  return { reads: () => reads, provider: {
++    getSnapshot: async () => snapshot,
++    readFace: async () => { reads++; return { bytes: Uint8Array.of(1).buffer }; },
++    subscribe: () => () => {},
++  } };
++}
++const ids = (records: ReturnType<typeof collectHostFontRequests>) => records.map(record => record.hostReference?.face.id).sort();
++
++test('문서의 글꼴 이름만으로 쪽 트리 탐색이 고르는 face 를 모두(그 이상) 고른다', async () => {
++  const f = provider();
++  const bounds = { x: 0, y: 0, width: 200, height: 100 };
++  const tree: PageLayerTree = { pageWidth: 200, pageHeight: 100,
++    root: { kind: 'leaf', bounds, ops: [
++      { type: 'textRun', text: '가', bbox: bounds, style: { fontFamily: 'Host Only', bold: true } },
++      { type: 'textRun', text: '나', bbox: bounds, style: { fontFamily: 'Missing Source, "호스트전용"' } },
++      { type: 'textRun', text: '다', bbox: bounds, style: { fontFamily: '함초롬바탕' } },
++    ] } };
++  try {
++    await setHostFontProvider(f.provider);
++    const exact = ids(collectHostFontRequests(tree));
++    assert.deepEqual(exact, ['bold', 'regular']);
++    // 문서가 선언한 이름: 원본, 대체 후보(별칭 포함), 가져오지 않은 글꼴
++    const fast = ids(collectHostFontRequestsForFamilies(['Host Only', 'Missing Source', '호스트전용', '함초롬바탕', 'Host Only']));
++    for (const id of exact) assert.ok(fast.includes(id), `${id} 를 놓치지 않는다`);
++    assert.ok(!fast.includes('other'), '문서가 이름을 대지 않은 가져온 글꼴은 준비하지 않는다');
++    assert.equal(f.reads(), 0, '고르는 데에는 글꼴 파일을 읽지 않는다');
++    assert.deepEqual(ids(collectHostFontRequestsForFamilies(['Missing Source', '함초롬바탕', ''])), []);
++    assert.deepEqual(ids(collectHostFontRequestsForFamilies([])), []);
++  } finally { await setHostFontProvider(null); }
++});
++
++test('연결: 준비 단계는 쪽 트리를 내보내지 않고, 확인은 틈틈이 한 번만 한다', () => {
++  const bridge = source('core/wasm-bridge.ts');
++  const start = bridge.indexOf('async prepareCanvasMetrics(');
++  assert.ok(start >= 0);
++  const prepare = bridge.slice(start, bridge.indexOf('await this.hostCanvasFonts.prepare(records', start));
++  assert.ok(!prepare.includes('getPageLayerTreeObject('), '첫 화면 전에는 쪽 트리를 읽지 않는다');
++  assert.match(prepare, /if \(getHostFontState\(\)\.count > 0\) \{\s+for \(const record of collectHostFontRequestsForFamilies\(this\.documentFontFamilyNames\(\)\)\)/);
++  assert.match(prepare, /for \(const record of hostFontScan\.extras\.values\(\)\)/, '확인이 찾은 face 는 다음 준비부터 포함한다');
++  assert.ok(prepare.indexOf('await prepareHostFontCatalog()') < prepare.indexOf('getHostFontState().count > 0'), '개수는 카탈로그 준비 뒤에 읽는다');
++  assert.match(prepare, /this\.nativePuaFonts\.records\(/, 'PUA 글꼴 기록은 그대로 고른다');
++
++  const verify = bridge.slice(bridge.indexOf('private verifyHostFontScan('), start);
++  assert.match(verify, /if \(scan\.verified \|\| scan\.running\) return;/, '문서·글꼴 목록마다 한 번');
++  assert.match(verify, /Date\.now\(\) - started < 12/, '한 번에 오래 붙잡지 않는다');
++  assert.match(verify, /if \(stale\(\)\) \{ scan\.running = false; return; \}/, '문서나 글꼴 목록이 바뀌면 그만둔다');
++  assert.match(verify, /if \(found\) this\.hostFontScanListener\?\.\(\);/, '새로 찾았을 때만 알린다');
++  assert.equal(bridge.split('collectHostFontRequests(tree)').length - 1, 1);
++
++  const main = source('main.ts');
++  assert.match(main, /wasm\.onHostFontScanFound\(\(\) => \{\s+if \(!canvasView \|\| wasm\.pageCount === 0\) return;\s+wasm\.invalidateCanvasMetricFonts\(\);\s+void canvasView\.refreshFontResources\(\)/);
++});
++
++test('쪽 트리 탐색이 고르는 것은 hostReference 가 있는 기록뿐이다(호스트 글꼴이 없으면 건너뛰어도 결과가 같다는 근거)', () => {
++  const requests = source('core/host-font-requests.ts');
++  const body = requests.slice(requests.indexOf('export function collectHostFontRequests('));
++  const sets = body.match(/selected\.set\(/g) ?? [];
++  const guarded = body.match(/if \(\w+\??\.hostReference\) selected\.set\(/g) ?? [];
++  assert.ok(sets.length > 0);
++  assert.equal(guarded.length, sets.length, 'hostReference 없이 고르는 경로가 없다');
++});
