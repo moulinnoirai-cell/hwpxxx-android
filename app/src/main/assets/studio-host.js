@@ -150,7 +150,7 @@
     let scanning = false, timer = 0, shown = OPEN_PAGE, permission = true, summary = '';
     const matches = () => {
       const query = search.value.trim().toLocaleLowerCase();
-      return [...docs.values()].filter(item => item.name.toLocaleLowerCase().includes(query)).sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name));
+      return [...docs.values()].filter(item => item.name.toLocaleLowerCase().includes(query)).sort((a, b) => b.modified - a.modified);
     };
     function render() {
       clearTimeout(timer); timer = 0;
