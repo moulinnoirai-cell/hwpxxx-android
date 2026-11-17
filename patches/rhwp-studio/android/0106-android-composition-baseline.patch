@@ -64,7 +64,7 @@ index 3e33504..d6fe082 100644
      this.compEl.style.opacity = '1';
      this.visible = true;
 diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
-index af8af09..baec8db 100644
+index af8af09..6cb2f33 100644
 --- a/rhwp-studio/src/engine/input-handler.ts
 +++ b/rhwp-studio/src/engine/input-handler.ts
 @@ -64,7 +64,7 @@ import { CaretLayoutReveal } from './caret-layout-reveal';
@@ -72,11 +72,29 @@ index af8af09..baec8db 100644
  import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
  import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
 -import { compositionCssFont } from '@/hwpxxx/composition-font';
-+import { compositionCssFont, compositionWidthRatio } from '@/hwpxxx/composition-font';
++import { compositionCssFont, compositionWidthRatio, compositionOverlayTail } from '@/hwpxxx/composition-font';
  import { ImeNavigationGuard } from './ime-navigation-guard';
  
  const SVG_NS = 'http://www.w3.org/2000/svg';
-@@ -3942,16 +3942,18 @@ export class InputHandler {
+@@ -3900,7 +3900,11 @@ export class InputHandler {
+       // IME 조합 중: 블랙박스 캐럿 표시
+       if (this.isComposing && this.compositionAnchor && this.compositionLength > 0) {
+         try {
+-          const anchor = this.compositionAnchor;
++          // [hwpxxx] 낱말 전체가 조합 구간인 입력기(삼성 키보드 등)에서도 마지막 글자만 덮는다.
++          const tail = compositionOverlayTail(this.compositionLength, this.textarea.value || '');
++          const anchor = tail.offset > 0
++            ? { ...this.compositionAnchor, charOffset: this.compositionAnchor.charOffset + tail.offset }
++            : this.compositionAnchor;
+           let startRect: CursorRect;
+           if (this.cursor.isInHeaderFooter()) {
+             const isHeader = this.cursor.headerFooterMode === 'header';
+@@ -3938,20 +3942,22 @@ export class InputHandler {
+             this.caret.update(rect, zoom);
+           } else {
+             const charWidth = rect.x - startRect.x;
+-            const text = this.textarea.value || '';
++            const text = tail.text;
              // 현재 커서 위치의 글꼴 정보
              let fontFamily = 'sans-serif';
              let overlayFont: string | undefined;
@@ -97,10 +115,10 @@ index af8af09..baec8db 100644
          } catch {
            // getCursorRect 실패 시 일반 캐럿
 diff --git a/rhwp-studio/src/hwpxxx/composition-font.ts b/rhwp-studio/src/hwpxxx/composition-font.ts
-index 8f8de6c..aac2839 100644
+index 8f8de6c..0421d97 100644
 --- a/rhwp-studio/src/hwpxxx/composition-font.ts
 +++ b/rhwp-studio/src/hwpxxx/composition-font.ts
-@@ -89,3 +89,30 @@ export function compositionCssFont(input: CompositionFontInput, resolve: FontRes
+@@ -89,3 +89,45 @@ export function compositionCssFont(input: CompositionFontInput, resolve: FontRes
    const style = `${input.italic ? 'italic ' : ''}${input.bold ? 'bold ' : ''}`;
    return resolve(`${style}${Math.round(px * 100) / 100}px ${family}`);
  }
@@ -131,11 +149,26 @@ index 8f8de6c..aac2839 100644
 +  if (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 50 || percent > 200) return 1;
 +  return percent / 100;
 +}
++
++/**
++ * [hwpxxx] 조합 오버레이가 덮을 부분: 조합 중인 글의 **마지막 글자** 하나.
++ * 데스크톱 한글 입력기는 한 음절씩 조합하지만, Android 삼성 키보드 등은 띄어쓰기 전까지 낱말 전체를 조합 구간으로 둔다.
++ * 그 구간 전체를 덮으면 낱말 전체가 깜빡여 보이므로, 이미 완성된 앞 글자들은 캔버스 글자 그대로 두고 실제로 바뀌는 마지막 글자만 덮는다.
++ * `length` 는 문서에 들어간 조합 구간 길이(글자 위치 단위), `text` 는 입력기가 준 조합 글이다.
++ * 돌려주는 `offset` 은 조합 시작에서 덮을 글자까지의 거리(글자 위치 단위)다.
++ */
++export function compositionOverlayTail(length: number, text: string): { offset: number; text: string } {
++  if (!Number.isInteger(length) || length <= 1) return { offset: 0, text };
++  const chars = Array.from(text);
++  const last = chars.length ? chars[chars.length - 1] : '';
++  // 문서 위치는 UTF-16 단위로 센다(보충 문자는 2). 마지막 글자 길이만큼 뒤에서 뺀다.
++  return { offset: Math.max(0, length - Math.max(1, last.length)), text: last };
++}
 diff --git a/rhwp-studio/tests/hwpxxx-composition-font.test.ts b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
-index 2ca5fcd..a512e2e 100644
+index 2ca5fcd..27512a5 100644
 --- a/rhwp-studio/tests/hwpxxx-composition-font.test.ts
 +++ b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
-@@ -47,8 +47,37 @@ test('글꼴 이름이 없거나 따옴표·역슬래시·줄바꿈이 섞여도
+@@ -47,8 +47,50 @@ test('글꼴 이름이 없거나 따옴표·역슬래시·줄바꿈이 섞여도
  test('연결: 조합 오버레이가 해석된 글꼴을 받고, 못 쓰면 기존 값으로 물러난다', () => {
    const handler = source('engine/input-handler.ts');
    assert.match(handler, /overlayFont = compositionCssFont\(\{/);
@@ -174,4 +207,17 @@ index 2ca5fcd..a512e2e 100644
 +  assert.match(caret, /text-align:left/);
 +  assert.match(caret, /this\.compGlyph\.style\.transform = widthRatio !== 1 \? `scaleX\(\$\{widthRatio\}\)` : ''/);
 +  assert.match(source('engine/input-handler.ts'), /overlayWidthRatio = compositionWidthRatio\(props\.ratios\)/);
++});
++
++test('낱말 전체가 조합 구간이어도 오버레이는 마지막 글자만 덮는다', async () => {
++  const { compositionOverlayTail } = await import('../src/hwpxxx/composition-font.ts');
++  assert.deepEqual(compositionOverlayTail(1, '한'), { offset: 0, text: '한' });
++  assert.deepEqual(compositionOverlayTail(3, '대한민'), { offset: 2, text: '민' });
++  assert.deepEqual(compositionOverlayTail(0, ''), { offset: 0, text: '' });
++  // 보충 문자(UTF-16 두 단위)
++  assert.deepEqual(compositionOverlayTail(4, '가😀나'.slice(0, 3)), { offset: 2, text: '😀' });
++  const handler = source('engine/input-handler.ts');
++  assert.match(handler, /const tail = compositionOverlayTail\(this\.compositionLength, this\.textarea\.value \|\| ''\);/);
++  assert.match(handler, /charOffset: this\.compositionAnchor\.charOffset \+ tail\.offset/);
++  assert.match(handler, /const text = tail\.text;/);
  });
