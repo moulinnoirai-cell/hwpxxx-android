@@ -50,7 +50,7 @@ GitHub → Settings → Environments → `release`에 다음이 걸려 있습니
 ## 2. 릴리스하기
 
 1. `app/build.gradle`의 `versionName`을 올리고, `versionCode`는 **이전 릴리스보다 큰 정수**로 올립니다
-   (v0.2.0 = 4, v0.3.0 = 5, v0.3.1 = 6, v0.3.2 = 7, 이후 8, 9, …). PR → `main` 머지.
+   (v0.2.0 = 4, v0.3.0 = 5, v0.3.1 = 6, v0.3.2 = 7, v0.3.3 = 8, 이후 9, 10, …). PR → `main` 머지.
    병합 커밋 작성자가 계정 기본 메일이 되지 않게, GitHub의 병합 단추나 `gh pr merge`를 쓰지 않습니다(계정 기본 메일이 작성자로 들어가고, `--author-email`은 noreply 주소를 거부합니다).
    대신 noreply 주소로 설정한 작업 기기에서 `git merge --no-ff origin/<브랜치> -m "Merge pull request #N from <owner>/<브랜치>"` 후 `main`을 푸시합니다. PR은 자동으로 병합됨으로 바뀝니다.
 2. `main`의 해당 커밋에 태그를 달고 푸시합니다.

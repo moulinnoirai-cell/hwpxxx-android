@@ -1,4 +1,4 @@
-# hwpxxx for Android 0.3.2
+# hwpxxx for Android 0.3.3
 
 개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.9.0(MIT).
 인터넷 권한이 없고 광고·분석·원격 글꼴·외부 전송이 없습니다. 문서는 기기 안에서만 처리합니다.
@@ -30,6 +30,10 @@
 | `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.9.0, Noto Sans KR, Lucide (원래 라이선스 포함) |
 | `design/latest-inline-fragment.html` | 승인 디자인 원본 |
 | `tests/` | FileStore JVM 시험, 브라우저 미리보기 서버, 안내 화면 타이밍 시험, rhwp 샘플 문서 |
+
+## 0.3.3 조합 중 깜빡임 수정
+
+삼성 키보드처럼 낱말 전체를 조합 구간으로 두는 입력기에서 쓴 글자 전체가 깜빡이던 것을, 지금 조합 중인 글자만 표시하도록 고쳤습니다. [변경 안내](docs/CHANGES-0.3.3.md)
 
 ## 0.3.2 스크롤바·모두 찾기·글꼴 보강
 
