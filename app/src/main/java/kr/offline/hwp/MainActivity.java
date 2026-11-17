@@ -490,9 +490,9 @@ public class MainActivity extends Activity {
             @Override public void onPermissionRequest(PermissionRequest request){request.deny();}
             @Override public boolean onShowFileChooser(WebView view,ValueCallback<Uri[]> callback,FileChooserParams params){callback.onReceiveValue(null);return true;}
             @Override public void onGeolocationPermissionsShowPrompt(String origin,GeolocationPermissions.Callback callback){callback.invoke(origin,false,false);}
-            @Override public boolean onJsAlert(WebView view,String url,String message,JsResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("한눈글").setMessage(clip(message,8000)).setPositiveButton("확인",(dialog,which)->result.confirm()).setOnCancelListener(dialog->result.cancel()));return true;}
-            @Override public boolean onJsConfirm(WebView view,String url,String message,JsResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("한눈글").setMessage(clip(message,8000)).setPositiveButton("확인",(dialog,which)->result.confirm()).setNegativeButton("취소",(dialog,which)->result.cancel()).setOnCancelListener(dialog->result.cancel()));return true;}
-            @Override public boolean onJsPrompt(WebView view,String url,String message,String value,JsPromptResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;android.widget.EditText input=new android.widget.EditText(MainActivity.this);input.setText(clip(value,1000));input.setSingleLine(true);showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("한눈글").setMessage(clip(message,8000)).setView(input).setPositiveButton("확인",(dialog,which)->result.confirm(input.getText().toString())).setNegativeButton("취소",(dialog,which)->result.cancel()).setOnCancelListener(dialog->result.cancel()));return true;}
+            @Override public boolean onJsAlert(WebView view,String url,String message,JsResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("hwpxxx").setMessage(clip(message,8000)).setPositiveButton("확인",(dialog,which)->result.confirm()).setOnCancelListener(dialog->result.cancel()));return true;}
+            @Override public boolean onJsConfirm(WebView view,String url,String message,JsResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("hwpxxx").setMessage(clip(message,8000)).setPositiveButton("확인",(dialog,which)->result.confirm()).setNegativeButton("취소",(dialog,which)->result.cancel()).setOnCancelListener(dialog->result.cancel()));return true;}
+            @Override public boolean onJsPrompt(WebView view,String url,String message,String value,JsPromptResult result){if(!isLive(EditorSession.this)){result.cancel();return true;}if(!url.startsWith(ORIGIN+"/"))return false;android.widget.EditText input=new android.widget.EditText(MainActivity.this);input.setText(clip(value,1000));input.setSingleLine(true);showNativeDialog(new AlertDialog.Builder(MainActivity.this).setTitle("hwpxxx").setMessage(clip(message,8000)).setView(input).setPositiveButton("확인",(dialog,which)->result.confirm(input.getText().toString())).setNegativeButton("취소",(dialog,which)->result.cancel()).setOnCancelListener(dialog->result.cancel()));return true;}
         });
         web.setDownloadListener((url,ua,cd,mime,len)->{});
         web.addJavascriptInterface(new Bridge(),"OfflineNative");
@@ -559,7 +559,7 @@ public class MainActivity extends Activity {
                     if(filePickerRequest!=-1){reply(id,null,"파일 선택을 마쳐 주세요.");return;}
                     try{filePickerKind=args.optString("kind","document");if(!filePickerKind.equals("image"))filePickerKind="document";Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType(filePickerKind.equals("image")?"image/*":"*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|(filePickerKind.equals("image")?0:Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION));filePickerRequest=id;launchPicker(EditorSession.this,intent,303);}catch(Exception e){filePickerRequest=-1;reply(id,null,"파일 선택 화면을 열지 못했어요.");}
                 });return;}
-                if(op.equals("permission")){runOnUiThread(()->{try{Intent intent=new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:"+getPackageName()));startActivity(intent);reply(id,true,null);}catch(Exception e){reply(id,null,"설정에서 한눈글의 모든 파일 접근을 허용해 주세요.");}});return;}
+                if(op.equals("permission")){runOnUiThread(()->{try{Intent intent=new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:"+getPackageName()));startActivity(intent);reply(id,true,null);}catch(Exception e){reply(id,null,"설정에서 hwpxxx의 모든 파일 접근을 허용해 주세요.");}});return;}
                 io.execute(()->{try {if(destroyed)return;if(!UNGATED.contains(op)&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){sessions.clear(EditorSession.this::releaseNewSource);if(op.equals("beginSave"))releaseNewId(args.optString("id",null));reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){if(op.equals("beginSave"))releaseNewId(args.optString("id",null));reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
             }catch(Exception ignored){}
         }
@@ -625,10 +625,10 @@ public class MainActivity extends Activity {
                 validateImage(png);Uri uri=ClipboardImageProvider.publish(MainActivity.this,png);String text=u.info.get("text"),html=u.info.get("html");
                 ClipData.Item item=new ClipData.Item(text,html.isEmpty()?null:html,null,uri);
                 String[] types=html.isEmpty()?new String[]{"text/plain","image/png"}:new String[]{"text/plain","text/html","image/png"};
-                ((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(new ClipData(new ClipDescription("한눈글",types),item));
+                ((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(new ClipData(new ClipDescription("hwpxxx",types),item));
                 return true;
             }finally{sessions.upload=null;}}
-            case "clipboardWrite": {String text=a.optString("text",""),html=a.optString("html","");if(!HostState.clipboardWithinLimit(text,html))throw new IOException("복사한 내용이 너무 커서 클립보드에 넣을 수 없어요. (글자·서식 합계 256KB까지)");android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);clipboard.setPrimaryClip(html.isEmpty()?ClipData.newPlainText("한눈글",text):ClipData.newHtmlText("한눈글",text,html));return true;}
+            case "clipboardWrite": {String text=a.optString("text",""),html=a.optString("html","");if(!HostState.clipboardWithinLimit(text,html))throw new IOException("복사한 내용이 너무 커서 클립보드에 넣을 수 없어요. (글자·서식 합계 256KB까지)");android.content.ClipboardManager clipboard=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);clipboard.setPrimaryClip(html.isEmpty()?ClipData.newPlainText("hwpxxx",text):ClipData.newHtmlText("hwpxxx",text,html));return true;}
             case "status": {roots=refreshRoots();JSONArray volumes=new JSONArray();for(int i=0;i<roots.size();i++)volumes.put(obj("path",roots.get(i).getPath(),"name",i==0?"내장 저장공간":"SD 카드 · "+roots.get(i).getName()));return obj("permission",Environment.isExternalStorageManager(),"connectedFolders",termux.list(),"volumes",volumes,"version",BuildConfig.VERSION_NAME,"engine","rhwp 0.9.0");}
             case "disconnectFolder":termux.disconnect(a.getString("id"));broadcastEvent("foldersChanged",Boolean.TRUE);return true;
             case "listDirs": {
@@ -856,8 +856,8 @@ public class MainActivity extends Activity {
     private void printPdf(File file,String name,int pages){
         if(destroyed){file.delete();return;}
         PrintManager manager=(PrintManager)getSystemService(PRINT_SERVICE);
-        try {manager.print(name==null||name.isEmpty()?"한눈글":name,new PrintDocumentAdapter(){
-            @Override public void onLayout(PrintAttributes oldAttributes,PrintAttributes newAttributes,CancellationSignal cancellation,LayoutResultCallback callback,Bundle extras){if(cancellation.isCanceled()){callback.onLayoutCancelled();return;}callback.onLayoutFinished(new PrintDocumentInfo.Builder("한눈글.pdf").setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).setPageCount(pages).build(),!newAttributes.equals(oldAttributes));}
+        try {manager.print(name==null||name.isEmpty()?"hwpxxx":name,new PrintDocumentAdapter(){
+            @Override public void onLayout(PrintAttributes oldAttributes,PrintAttributes newAttributes,CancellationSignal cancellation,LayoutResultCallback callback,Bundle extras){if(cancellation.isCanceled()){callback.onLayoutCancelled();return;}callback.onLayoutFinished(new PrintDocumentInfo.Builder("hwpxxx.pdf").setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT).setPageCount(pages).build(),!newAttributes.equals(oldAttributes));}
             @Override public void onWrite(PageRange[] ranges,ParcelFileDescriptor destination,CancellationSignal cancellation,WriteResultCallback callback){try(InputStream input=new FileInputStream(file);OutputStream output=new FileOutputStream(destination.getFileDescriptor())){byte[] buffer=new byte[16384];int count;while((count=input.read(buffer))!=-1){if(cancellation.isCanceled()){callback.onWriteCancelled();return;}output.write(buffer,0,count);}callback.onWriteFinished(new PageRange[]{PageRange.ALL_PAGES});}catch(IOException error){callback.onWriteFailed("인쇄 자료를 읽지 못했어요.");}}
             @Override public void onFinish(){file.delete();}
         },null);}catch(Exception error){file.delete();event("hostError",JSONObject.quote("인쇄 서비스를 열지 못했어요."));}
@@ -952,7 +952,7 @@ public class MainActivity extends Activity {
         if(fonts==null)throw new IOException("글꼴 저장소를 사용할 수 없어요.");
         final List<Uri> files=new ArrayList<>();
         final ArrayDeque<String> folders=new ArrayDeque<>();folders.add(android.provider.DocumentsContract.getTreeDocumentId(tree));
-        int visited=0;
+        int visited=0,legacy=0;
         while(!folders.isEmpty()&&visited<200&&files.size()<FontStore.MAX_FONTS*4){
             if(destroyed)throw new IOException("문서가 닫혔어요.");
             final String folder=folders.removeFirst();visited++;
@@ -967,20 +967,21 @@ public class MainActivity extends Activity {
                 if(row[0]==null||row[1]==null||row[1].startsWith("."))continue;
                 if(android.provider.DocumentsContract.Document.MIME_TYPE_DIR.equals(row[2])){folders.addLast(row[0]);continue;}
                 String lower=row[1].toLowerCase(Locale.ROOT);
-                if(lower.endsWith(".ttf")||lower.endsWith(".otf"))files.add(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,row[0]));
+                if(lower.endsWith(".hft")){legacy++;continue;}// Hancom's own pre-TrueType format: counted so the dialog can say why nothing was added
+                if(lower.endsWith(".ttf")||lower.endsWith(".otf")||lower.endsWith(".ttc"))files.add(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree,row[0]));
             }
         }
         final int before=fonts.list().size();int failed=0;boolean full=false;
         for(Uri file:files){
             if(destroyed)throw new IOException("문서가 닫혔어요.");
-            try{byte[] bytes=readProviderBytes(file,FontStore.MAX_FONT_BYTES);fonts.importFont(new ByteArrayInputStream(bytes));}
+            try{byte[] bytes=readProviderBytes(file,FontStore.MAX_SOURCE_BYTES);fonts.importFonts(new ByteArrayInputStream(bytes));}
             catch(Exception error){
                 if(error.getMessage()!=null&&error.getMessage().contains("한도")){full=true;break;}
                 failed++;
             }
         }
         JSONObject result=new JSONObject(fonts.snapshot());
-        result.put("folder",obj("found",files.size(),"added",fonts.list().size()-before,"failed",failed,"full",full));
+        result.put("folder",obj("found",files.size(),"added",fonts.list().size()-before,"failed",failed,"full",full,"hft",legacy));
         return result;
     }
     /** VIEW / EDIT / SEND with a content:// document. Anything else (file:, http:, other actions) is refused with a visible message; the document opens as a read-only original. */
@@ -1008,7 +1009,7 @@ public class MainActivity extends Activity {
             if(destroyed)return;
             reply(id,importFontFolder(tree),null);broadcastEvent("fontsChanged",Boolean.TRUE);
         }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 글꼴을 가져오지 못했어요.");}catch(Exception e){reply(id,null,e.getMessage()==null?"폴더의 글꼴을 가져오지 못했어요.":e.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
-        if(request==302){final long id=fontPickerRequest;fontPickerRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri uri=data.getData();try{io.execute(()->{try{if(destroyed)return;if(fonts==null)throw new IOException("글꼴 저장소를 사용할 수 없어요.");byte[] bytes=readProviderBytes(uri,FontStore.MAX_FONT_BYTES);if(destroyed)return;fonts.importFont(new ByteArrayInputStream(bytes));reply(id,new JSONObject(fonts.snapshot()),null);broadcastEvent("fontsChanged",Boolean.TRUE);}catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 글꼴을 가져오지 못했어요.");}catch(Exception e){reply(id,null,e.getMessage()==null?"글꼴을 가져오지 못했어요.":e.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
+        if(request==302){final long id=fontPickerRequest;fontPickerRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri uri=data.getData();try{io.execute(()->{try{if(destroyed)return;if(fonts==null)throw new IOException("글꼴 저장소를 사용할 수 없어요.");byte[] bytes=readProviderBytes(uri,FontStore.MAX_SOURCE_BYTES);if(destroyed)return;fonts.importFonts(new ByteArrayInputStream(bytes));reply(id,new JSONObject(fonts.snapshot()),null);broadcastEvent("fontsChanged",Boolean.TRUE);}catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 글꼴을 가져오지 못했어요.");}catch(Exception e){reply(id,null,e.getMessage()==null?"글꼴을 가져오지 못했어요.":e.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
         if(request!=301)return;final long id=folderPickerRequest;folderPickerRequest=-1;
         // The root has already rejected results whose owning session no longer exists.
         if(result!=RESULT_OK||data==null||data.getData()==null){if(id>=0)reply(id,false,null);return;}

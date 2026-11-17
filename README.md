@@ -24,7 +24,7 @@
 | `app/src/main/assets/studio/` | 고정한 데스크톱 Studio에서 생성하는 편집기 번들 (Git 제외) |
 | `config/android-studio.json`, `patches/rhwp-studio/` | 본가 rhwp-studio(v0.9.0)와 hwpxxx 패치 시리즈(편집기 기능 + Android 연결)의 빌드 고정 정보 |
 | `app/src/main/assets/app.js` | 명시적으로 선택하는 기존 문서함·편집기 테스트 경로 |
-| `app/src/main/java/kr/offline/hwp/FontStore.java` | 가져온 TTF/OTF의 비공개 영구 보관·검증 |
+| `app/src/main/java/kr/offline/hwp/FontStore.java` | 가져온 TTF/OTF/TTC의 비공개 영구 보관·검증 |
 | `app/src/main/assets/intro.js` | 파일 접근 미허용 안내 3화면과 전환 |
 | `app/src/main/assets/library.css` | 승인 디자인에서 생성한 문서함·안내·팝업 스타일 (`scripts/make_library_css.py`) |
 | `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.9.0, Noto Sans KR, Lucide (원래 라이선스 포함) |

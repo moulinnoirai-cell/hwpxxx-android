@@ -1,0 +1,336 @@
+diff --git a/rhwp-studio/src/hwpxxx/doc-scrollbar.ts b/rhwp-studio/src/hwpxxx/doc-scrollbar.ts
+new file mode 100644
+index 0000000..908a47d
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/doc-scrollbar.ts
+@@ -0,0 +1,171 @@
++/**
++ * [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바.
++ *
++ * Android WebView 의 스크롤바는 스크롤할 때만 잠깐 나타났다 사라지고 손가락·마우스로 잡을 수 없다. 긴 문서에서 지금 위치를
++ * 알기 어렵고 먼 쪽으로 한 번에 갈 수 없어, 문서 영역(`#scroll-container`) 오른쪽에 늘 보이는 막대를 따로 둔다.
++ * 막대는 스크롤 위치를 그대로 비추기만 한다: 손잡이를 끌거나 빈 곳을 누르면 `scrollTop` 을 바꾸고, 나머지(쪽 그리기·캐럿)는
++ * 기존 scroll 이벤트 경로가 처리한다. 문서가 화면보다 짧으면 길만 보이고 손잡이는 숨는다.
++ * 손잡이를 끄는 동안에는 옆에 지금 쪽(상태 표시줄과 같은 글)을 띄우고, 길 위에는 메모가 달린 자리와 모두 찾기로 찾은 자리를 작은 표시로 보여 준다.
++ */
++export interface DocScrollbarOptions {
++  /** 끄는 동안 손잡이 옆에 띄울 글(예: "3 / 12 쪽"). 빈 글이면 띄우지 않는다. */
++  pageLabel?: () => string;
++  /** 문서 내용(`#scroll-content`) 안에서 길에 표시할 요소들: 선택자와, 표시에 붙일 클래스(색 구분). 뒤에 적은 종류가 위에 그려진다. */
++  marks?: ReadonlyArray<{ selector: string; className?: string }>;
++}
++
++export const MAX_TRACK_MARKS = 200;
++
++/**
++ * 문서 안 세로 위치들(px) → 길 위 표시 위치(px). 문서 전체 높이에 대한 비율로 놓고, 같은 자리(2px 이내)에 겹치는 것은 하나로 줄인다.
++ * 표시가 길 밖으로 나가지 않게 `markHeight` 만큼 안쪽에 둔다.
++ */
++export function trackMarkOffsets(positions: readonly number[], scrollHeight: number, trackHeight: number, markHeight = 3, limit: number = MAX_TRACK_MARKS): number[] {
++  if (!(scrollHeight > 0) || !(trackHeight > markHeight)) return [];
++  const out: number[] = [];
++  const sorted = positions.filter(y => Number.isFinite(y)).map(y => Math.min(1, Math.max(0, y / scrollHeight)) * (trackHeight - markHeight)).sort((a, b) => a - b);
++  for (const offset of sorted) {
++    if (out.length && offset - out[out.length - 1] < 2) continue;
++    out.push(Math.round(offset * 100) / 100);
++    if (out.length >= limit) break;
++  }
++  return out;
++}
++
++export interface ThumbGeometry {
++  /** 손잡이 길이(px). 스크롤할 것이 없으면 0. */
++  size: number;
++  /** 길 위쪽에서 손잡이 위쪽까지(px). */
++  offset: number;
++}
++
++export const MIN_THUMB_PX = 36;
++
++/** 스크롤 상태 → 손잡이 위치·길이. */
++export function thumbGeometry(scrollTop: number, scrollHeight: number, clientHeight: number, trackHeight: number, minThumb: number = MIN_THUMB_PX): ThumbGeometry {
++  const range = scrollHeight - clientHeight;
++  if (!(range > 0.5) || !(trackHeight > 0) || !(clientHeight > 0)) return { size: 0, offset: 0 };
++  const size = Math.min(trackHeight, Math.max(Math.min(minThumb, trackHeight), trackHeight * clientHeight / scrollHeight));
++  const travel = trackHeight - size;
++  const ratio = Math.min(1, Math.max(0, scrollTop / range));
++  return { size, offset: travel * ratio };
++}
++
++/** 손잡이 위쪽 위치(px) → scrollTop. `thumbGeometry` 의 역. */
++export function scrollTopForThumbOffset(offset: number, scrollHeight: number, clientHeight: number, trackHeight: number, minThumb: number = MIN_THUMB_PX): number {
++  const range = scrollHeight - clientHeight;
++  if (!(range > 0.5) || !(trackHeight > 0)) return 0;
++  const size = Math.min(trackHeight, Math.max(Math.min(minThumb, trackHeight), trackHeight * clientHeight / scrollHeight));
++  const travel = trackHeight - size;
++  if (!(travel > 0)) return 0;
++  return Math.min(range, Math.max(0, offset / travel * range));
++}
++
++/** 문서 영역에 세로 스크롤바를 붙인다. 정리 함수를 돌려준다. */
++export function installDocScrollbar(container: HTMLElement, options: DocScrollbarOptions = {}): () => void {
++  const host = container.parentElement;
++  if (!host || host.querySelector(':scope > .hwpxxx-vscroll')) return () => {};
++  const track = document.createElement('div');
++  track.className = 'hwpxxx-vscroll';
++  track.setAttribute('aria-hidden', 'true'); // 키보드·보조 기술은 문서 영역 자체의 스크롤을 쓴다
++  const thumb = document.createElement('div');
++  thumb.className = 'hwpxxx-vscroll-thumb';
++  const marks = document.createElement('div');
++  marks.className = 'hwpxxx-vscroll-marks';
++  const bubble = document.createElement('div');
++  bubble.className = 'hwpxxx-vscroll-bubble';
++  bubble.hidden = true;
++  track.append(marks, thumb, bubble);
++  container.insertAdjacentElement('afterend', track);
++  document.body.classList.add('hwpxxx-vscroll-on');
++
++  let frame = 0;
++  let marksStale = true;
++  let drag: { pointerId: number; grab: number } | null = null;
++  const content = container.querySelector<HTMLElement>('#scroll-content');
++  const renderMarks = () => {
++    marksStale = false;
++    const top = content?.getBoundingClientRect().top ?? 0;
++    const wanted: Array<{ offset: number; className: string }> = [];
++    for (const kind of content ? options.marks ?? [] : []) {
++      const found = Array.from(content!.querySelectorAll<HTMLElement>(kind.selector));
++      // 문서 내용 위쪽에서 잰 위치: 스크롤 위치와 무관하다.
++      const offsets = trackMarkOffsets(found.map(el => el.getBoundingClientRect().top - top + content!.offsetTop), container.scrollHeight, track.clientHeight);
++      for (const offset of offsets) wanted.push({ offset, className: kind.className ?? '' });
++    }
++    while (marks.childElementCount > wanted.length) marks.lastElementChild!.remove();
++    while (marks.childElementCount < wanted.length) marks.appendChild(document.createElement('i'));
++    wanted.forEach((mark, i) => {
++      const el = marks.children[i] as HTMLElement;
++      el.className = mark.className;
++      el.style.transform = `translateY(${mark.offset}px)`;
++    });
++  };
++  const render = () => {
++    frame = 0;
++    const g = thumbGeometry(container.scrollTop, container.scrollHeight, container.clientHeight, track.clientHeight);
++    thumb.hidden = g.size <= 0;
++    if (g.size > 0) {
++      thumb.style.height = `${g.size}px`;
++      thumb.style.transform = `translateY(${g.offset}px)`;
++    }
++    if (marksStale) renderMarks();
++    const label = drag && g.size > 0 ? (options.pageLabel?.() ?? '').trim() : '';
++    bubble.hidden = !label;
++    if (label) {
++      bubble.textContent = label;
++      bubble.style.transform = `translateY(${g.offset + g.size / 2}px) translateY(-50%)`;
++    }
++  };
++  const schedule = () => { if (!frame) frame = requestAnimationFrame(render); };
++  const scheduleMarks = () => { marksStale = true; schedule(); };
++
++  const moveTo = (clientY: number, grab: number) => {
++    const top = track.getBoundingClientRect().top;
++    container.scrollTop = scrollTopForThumbOffset(clientY - top - grab, container.scrollHeight, container.clientHeight, track.clientHeight);
++  };
++  const onDown = (e: PointerEvent) => {
++    if (e.button !== 0 || thumb.hidden) return;
++    e.preventDefault(); // 문서의 글자 선택·포커스 이동을 일으키지 않는다
++    const rect = thumb.getBoundingClientRect();
++    // 손잡이를 잡으면 잡은 자리를 유지하고, 빈 길을 누르면 손잡이 가운데가 그 자리로 온다.
++    const grab = e.target === thumb ? e.clientY - rect.top : rect.height / 2;
++    drag = { pointerId: e.pointerId, grab };
++    try { track.setPointerCapture(e.pointerId); } catch { /* 합성 이벤트 */ }
++    track.classList.add('dragging');
++    moveTo(e.clientY, grab);
++    schedule(); // 스크롤 위치가 그대로여도 쪽 표시를 띄운다
++  };
++  const onMove = (e: PointerEvent) => { if (drag && e.pointerId === drag.pointerId) { e.preventDefault(); moveTo(e.clientY, drag.grab); } };
++  const onUp = (e: PointerEvent) => {
++    if (!drag || e.pointerId !== drag.pointerId) return;
++    drag = null;
++    track.classList.remove('dragging');
++    try { track.releasePointerCapture(e.pointerId); } catch { /* 이미 풀림 */ }
++    schedule(); // 쪽 표시를 지운다
++  };
++  track.addEventListener('pointerdown', onDown);
++  track.addEventListener('pointermove', onMove);
++  track.addEventListener('pointerup', onUp);
++  track.addEventListener('pointercancel', onUp);
++  container.addEventListener('scroll', schedule, { passive: true });
++  window.addEventListener('resize', scheduleMarks);
++  const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleMarks) : null;
++  observer?.observe(container);
++  observer?.observe(track);
++  if (content) observer?.observe(content);
++  // 메모가 생기거나 지워지면(요소가 바뀌면) 표시를 다시 놓는다. 스타일 변화(캐럿 깜빡임 등)는 보지 않는다.
++  const mutations = options.marks?.length && content && typeof MutationObserver !== 'undefined' ? new MutationObserver(scheduleMarks) : null;
++  if (content) mutations?.observe(content, { childList: true, subtree: true });
++  schedule();
++
++  return () => {
++    if (frame) cancelAnimationFrame(frame);
++    observer?.disconnect();
++    mutations?.disconnect();
++    container.removeEventListener('scroll', schedule);
++    window.removeEventListener('resize', scheduleMarks);
++    track.remove();
++    document.body.classList.remove('hwpxxx-vscroll-on');
++  };
++}
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index eae66ee..017562f 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -34,6 +34,8 @@ import { PluginHostRegistry } from '@/plugin/host';
+ import type { StudioPlugin } from '@/plugin/types';
+ import { CommandDispatcher } from '@/command/dispatcher';
+ import { installMemoMarks } from '@/hwpxxx/memo-marks';
++import { installDocScrollbar } from '@/hwpxxx/doc-scrollbar';
++import '@/styles/hwpxxx-scrollbar.css';
+ import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
+ import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+ import { handleDocumentSelectAllShortcut, isTextEditingTarget } from '@/command/document-shortcut-guard';
+@@ -1124,6 +1126,8 @@ function setupFileInput(): void {
+ 
+   // 드래그 앤 드롭 지원 (scroll-container 영역)
+   const container = document.getElementById('scroll-container')!;
++  // [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: 끄는 동안 상태 표시줄과 같은 쪽 표시, 길 위에 메모 자리·모두 찾기 자리
++  installDocScrollbar(container, { pageLabel: () => sbPage().textContent ?? '', marks: [{ selector: '.hwpxxx-memo-box' }, { selector: '.hwpxxx-find-hit', className: 'find' }] });
+   container.addEventListener('dragover', (e) => {
+     e.preventDefault();
+     container.classList.add('drag-over');
+diff --git a/rhwp-studio/src/styles/hwpxxx-scrollbar.css b/rhwp-studio/src/styles/hwpxxx-scrollbar.css
+new file mode 100644
+index 0000000..e55b2e5
+--- /dev/null
++++ b/rhwp-studio/src/styles/hwpxxx-scrollbar.css
+@@ -0,0 +1,54 @@
++/* [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바 — hwpxxx/doc-scrollbar.ts */
++.hwpxxx-vscroll {
++  grid-column: 2;
++  grid-row: 2;
++  justify-self: end;
++  position: relative;
++  width: 16px;
++  z-index: 20;
++  background: var(--ruler-bg, #f0f0f0);
++  border-left: 1px solid var(--ui-border-strong, #c8c8c8);
++  touch-action: none;
++  user-select: none;
++  -webkit-user-select: none;
++  cursor: default;
++}
++.hwpxxx-vscroll-thumb {
++  position: absolute;
++  top: 0;
++  left: 3px;
++  right: 3px;
++  border-radius: 5px;
++  background: var(--color-text-muted, #8a8a8a);
++  opacity: 0.75;
++  will-change: transform;
++}
++.hwpxxx-vscroll:hover .hwpxxx-vscroll-thumb,
++.hwpxxx-vscroll.dragging .hwpxxx-vscroll-thumb { opacity: 1; }
++.hwpxxx-vscroll-thumb[hidden] { display: none; }
++/* 메모가 달린 자리(노랑)와 모두 찾기로 찾은 자리(주황) */
++.hwpxxx-vscroll-marks { position: absolute; inset: 0; pointer-events: none; }
++.hwpxxx-vscroll-marks > i { position: absolute; top: 0; left: 1px; right: 1px; height: 3px; border-radius: 1px; background: #e0a800; }
++.hwpxxx-vscroll-marks > i.find { left: 4px; right: 4px; background: #e8590c; }
++/* 끄는 동안 손잡이 옆에 띄우는 쪽 표시 */
++.hwpxxx-vscroll-bubble {
++  position: absolute;
++  top: 0;
++  right: 22px;
++  padding: 6px 10px;
++  border-radius: 6px;
++  background: rgba(32, 32, 32, 0.92);
++  color: #fff;
++  font-size: 13px;
++  line-height: 1.2;
++  white-space: nowrap;
++  pointer-events: none;
++}
++.hwpxxx-vscroll-bubble[hidden] { display: none; }
++/* 막대 자리만큼 문서 영역을 줄이고, 겹치는 기본 세로 스크롤바는 숨긴다(가로는 그대로). */
++body.hwpxxx-vscroll-on #scroll-container { margin-right: 16px; }
++body.hwpxxx-vscroll-on #scroll-container::-webkit-scrollbar { width: 0; height: 10px; }
++body.hwpxxx-vscroll-on #scroll-container::-webkit-scrollbar-thumb { background: var(--color-text-muted, #8a8a8a); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
++body.hwpxxx-vscroll-on #scroll-container::-webkit-scrollbar-track,
++body.hwpxxx-vscroll-on #scroll-container::-webkit-scrollbar-corner { background: transparent; }
++@media print { .hwpxxx-vscroll { display: none !important; } body.hwpxxx-vscroll-on #scroll-container { margin-right: 0; } }
+diff --git a/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts b/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts
+new file mode 100644
+index 0000000..af4b24c
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts
+@@ -0,0 +1,71 @@
++// [hwpxxx] 문서 영역의 항상 보이는 세로 스크롤바: 손잡이 위치 계산과 편집기 연결.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { thumbGeometry, scrollTopForThumbOffset, trackMarkOffsets, MIN_THUMB_PX, MAX_TRACK_MARKS } from '../src/hwpxxx/doc-scrollbar.ts';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++
++test('스크롤할 것이 없으면 손잡이가 없다', () => {
++  assert.deepEqual(thumbGeometry(0, 500, 500, 500), { size: 0, offset: 0 });
++  assert.deepEqual(thumbGeometry(0, 400, 500, 500), { size: 0, offset: 0 });
++  assert.deepEqual(thumbGeometry(0, 1000, 500, 0), { size: 0, offset: 0 });
++});
++
++test('손잡이 길이는 보이는 비율을 따르고, 위치는 처음과 끝에서 길의 양 끝에 닿는다', () => {
++  assert.deepEqual(thumbGeometry(0, 2000, 500, 500), { size: 125, offset: 0 });
++  assert.deepEqual(thumbGeometry(1500, 2000, 500, 500), { size: 125, offset: 375 });
++  assert.deepEqual(thumbGeometry(750, 2000, 500, 500), { size: 125, offset: 187.5 });
++  // 범위를 벗어난 값(탄성 스크롤)은 양 끝에 붙인다.
++  assert.equal(thumbGeometry(-50, 2000, 500, 500).offset, 0);
++  assert.equal(thumbGeometry(9999, 2000, 500, 500).offset, 375);
++});
++
++test('아주 긴 문서에서도 손잡이는 잡을 수 있는 최소 길이를 지킨다', () => {
++  const g = thumbGeometry(500000, 1000000, 500, 500);
++  assert.equal(g.size, MIN_THUMB_PX);
++  assert.ok(Math.abs(g.offset - (500 - MIN_THUMB_PX) * 500000 / 999500) < 1e-9);
++  // 길이 최소 길이보다 짧으면 길 전체를 넘지 않는다.
++  assert.equal(thumbGeometry(0, 1000000, 20, 20).size, 20);
++});
++
++test('손잡이 위치 → scrollTop 은 위치 계산의 역이다', () => {
++  for (const [scrollHeight, client, track] of [[2000, 500, 500], [1000000, 700, 640], [900, 600, 580]] as const) {
++    for (const top of [0, 1, (scrollHeight - client) / 3, scrollHeight - client]) {
++      const g = thumbGeometry(top, scrollHeight, client, track);
++      assert.ok(Math.abs(scrollTopForThumbOffset(g.offset, scrollHeight, client, track) - top) < 1e-6, `${scrollHeight}/${client}/${track}@${top}`);
++    }
++    assert.equal(scrollTopForThumbOffset(-100, scrollHeight, client, track), 0);
++    assert.equal(scrollTopForThumbOffset(1e9, scrollHeight, client, track), scrollHeight - client);
++  }
++  assert.equal(scrollTopForThumbOffset(10, 500, 500, 500), 0);
++});
++
++test('편집기가 문서 영역에 스크롤바를 붙이고, 기본 세로 스크롤바 자리를 비운다', () => {
++  assert.match(source('main.ts'), /installDocScrollbar\(container, \{ pageLabel: \(\) => sbPage\(\)\.textContent \?\? '', marks: \[\{ selector: '\.hwpxxx-memo-box' \}, \{ selector: '\.hwpxxx-find-hit', className: 'find' \}\] \}\)/);
++  const css = source('styles/hwpxxx-scrollbar.css');
++  assert.match(css, /body\.hwpxxx-vscroll-on #scroll-container \{ margin-right: 16px; \}/);
++  assert.match(css, /\.hwpxxx-vscroll \{[^}]*width: 16px;/);
++  assert.match(css, /@media print \{ \.hwpxxx-vscroll \{ display: none !important; \}/);
++});
++
++test('메모 자리는 문서 높이에 대한 비율로 길 위에 놓고, 겹치는 것은 하나로 줄인다', () => {
++  // 문서 1000px, 길 503px(표시 높이 3) → 쓸 수 있는 길 500px
++  assert.deepEqual(trackMarkOffsets([0, 500, 1000], 1000, 503), [0, 250, 500]);
++  // 순서와 무관하고, 2px 안에 겹치면 하나만 남긴다
++  assert.deepEqual(trackMarkOffsets([502, 100, 500, 101], 1000, 503), [50, 250]);
++  // 범위 밖·이상한 값
++  assert.deepEqual(trackMarkOffsets([-50, 2000, Number.NaN], 1000, 503), [0, 500]);
++  assert.deepEqual(trackMarkOffsets([10], 0, 503), []);
++  assert.deepEqual(trackMarkOffsets([10], 1000, 2), []);
++  // 표시 수 한도
++  const many = Array.from({ length: 5000 }, (_, i) => i * 100);
++  assert.equal(trackMarkOffsets(many, 500000, 100003).length, MAX_TRACK_MARKS);
++});
++
++test('끄는 동안에만 쪽 표시를 띄우고, 메모 요소가 바뀌면 표시를 다시 놓는다', () => {
++  const code = source('hwpxxx/doc-scrollbar.ts');
++  assert.match(code, /const label = drag && g\.size > 0 \? \(options\.pageLabel\?\.\(\) \?\? ''\)\.trim\(\) : '';/);
++  assert.match(code, /mutations\?\.observe\(content, \{ childList: true, subtree: true \}\)/);
++  assert.match(source('styles/hwpxxx-scrollbar.css'), /\.hwpxxx-vscroll-marks \{[^}]*pointer-events: none;/);
++});

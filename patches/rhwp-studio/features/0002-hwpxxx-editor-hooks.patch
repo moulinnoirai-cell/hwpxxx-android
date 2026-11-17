@@ -7,14 +7,14 @@ index 72c5142ec..9966ab385 100644
    <link rel="icon" href="/favicon.ico" />
    <link rel="apple-touch-icon" href="/icons/icon-256.png" />
 -  <title>rhwp-studio</title>
-+  <title>한눈글</title>
++  <title>hwpxxx</title>
    <link rel="stylesheet" href="/src/style.css" />
  </head>
  <body>
    <div id="studio-root">
      <header id="studio-header">
 -      <h1 class="visually-hidden" data-i18n="ui.studioHeader.srLabel">rhwp-studio 문서 편집기</h1>
-+      <h1 class="visually-hidden" data-i18n="ui.studioHeader.srLabel">한눈글 문서 편집기</h1>
++      <h1 class="visually-hidden" data-i18n="ui.studioHeader.srLabel">hwpxxx 문서 편집기</h1>
      <!-- 메뉴바 -->
      <nav id="menu-bar" aria-label="주 메뉴" data-i18n-aria-label="ui.menuBar.ariaLabel">
        <!-- ── 파일 ── -->
@@ -1052,7 +1052,7 @@ index bdfefc703..e729b5e61 100644
    "ui.sbZoomRange.ariaLabel": "화면 확대/축소 배율",
    "ui.scrollContainer.ariaLabel": "문서 페이지",
 -  "ui.studioHeader.srLabel": "rhwp-studio 문서 편집기",
-+  "ui.studioHeader.srLabel": "한눈글 문서 편집기",
++  "ui.studioHeader.srLabel": "hwpxxx 문서 편집기",
    "ui.styleBar.fieldLabel.x76905b": "크기",
    "ui.styleBar.fieldLabel.x7c16df": "글꼴",
    "ui.styleBar.fieldLabel.x9c591b": "스타일",

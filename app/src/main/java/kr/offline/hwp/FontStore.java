@@ -12,7 +12,10 @@ import java.util.*;
 public final class FontStore {
     public static final int MAX_FONT_BYTES = 16 * 1024 * 1024;
     public static final int MAX_FONTS = 64;
-    public static final long MAX_TOTAL_BYTES = 128L * 1024 * 1024;
+    public static final long MAX_TOTAL_BYTES = 256L * 1024 * 1024;
+    /** A picked file may be a TrueType collection (.ttc) holding several faces; each extracted face still obeys MAX_FONT_BYTES. */
+    public static final int MAX_SOURCE_BYTES = 48 * 1024 * 1024;
+    public static final int MAX_COLLECTION_FACES = 16;
     private final File root;
 
     public FontStore(File directory) throws IOException {
@@ -43,11 +46,30 @@ public final class FontStore {
     }
 
     /** Caller owns and closes the SAF stream. An interrupted/invalid import never replaces a font. */
-    public synchronized Face importFont(InputStream source) throws IOException {
+    public synchronized Face importFont(InputStream source) throws IOException {return importFonts(source).get(0);}
+
+    /**
+     * Imports every face of the picked file: one for a plain TTF/OTF, one per member for a TrueType collection (.ttc, e.g. the Windows
+     * 바탕/굴림/돋움 files). Collection members and fonts whose tables are not 4-byte aligned (some 1990s Korean fonts; browsers refuse them)
+     * are rewritten as standalone, aligned SFNT files with fresh checksums; glyph data is copied byte for byte. Every face is validated before
+     * anything is stored, and a file whose new faces do not all fit in the store limits is refused as a whole (nothing is stored).
+     */
+    public synchronized List<Face> importFonts(InputStream source) throws IOException {
         if(source==null) throw new IOException("글꼴 파일을 읽을 수 없어요.");
-        byte[] bytes=boundedRead(source);
-        String id=sha(bytes);
-        Face face=validate(bytes,id);
+        byte[] file=boundedRead(source,MAX_SOURCE_BYTES);
+        List<byte[]> members=members(file); List<Face> checked=new ArrayList<>();
+        for(byte[] member:members) checked.add(validate(member,sha(member)));
+        List<File> files=fontFiles(); long size=0; int added=0;
+        for(File f:files) size+=f.length();
+        for(int i=0;i<members.size();i++) if(!file(checked.get(i).id).exists()) {added++; size+=members.get(i).length;}
+        if(files.size()+added>MAX_FONTS || size>MAX_TOTAL_BYTES) throw new IOException(LIMIT);
+        List<Face> stored=new ArrayList<>();
+        for(int i=0;i<members.size();i++) stored.add(store(members.get(i),checked.get(i)));
+        return Collections.unmodifiableList(stored);
+    }
+
+    private Face store(byte[] bytes,Face face) throws IOException {
+        String id=face.id;
         File target=file(id);
         if(target.exists()) {
             if(!Arrays.equals(readFile(target),bytes)) throw new IOException("저장된 글꼴이 손상되었어요. 삭제 후 다시 추가해 주세요.");
@@ -56,7 +78,7 @@ public final class FontStore {
         List<File> files=fontFiles(); long size=0;
         for(File f:files) size+=f.length();
         if(files.size()>=MAX_FONTS || size+bytes.length>MAX_TOTAL_BYTES)
-            throw new IOException("저장 글꼴 한도(64개 또는 128MB)에 도달했어요. 사용하지 않는 글꼴을 삭제해 주세요.");
+            throw new IOException(LIMIT);
         Path temporary=Files.createTempFile(root.toPath(),".font-",".tmp");
         try {
             File temp=temporary.toFile();
@@ -128,21 +150,89 @@ public final class FontStore {
 
     private static byte[] readFile(File f) throws IOException {
         if(f.length()<12 || f.length()>MAX_FONT_BYTES) throw bad();
-        try(InputStream input=new FileInputStream(f)) {return boundedRead(input);}
+        try(InputStream input=new FileInputStream(f)) {return boundedRead(input,MAX_FONT_BYTES);}
     }
 
-    private static byte[] boundedRead(InputStream source) throws IOException {
+    private static byte[] boundedRead(InputStream source,int limit) throws IOException {
         ByteArrayOutputStream output=new ByteArrayOutputStream(); byte[] chunk=new byte[16384]; int count;
         while((count=source.read(chunk))!=-1) {
-            if(count==0) {int one=source.read(); if(one==-1) break; if(output.size()==MAX_FONT_BYTES) throw tooLarge(); output.write(one); continue;}
-            if(count>MAX_FONT_BYTES-output.size()) throw tooLarge();
+            if(count==0) {int one=source.read(); if(one==-1) break; if(output.size()==limit) throw tooLarge(); output.write(one); continue;}
+            if(count>limit-output.size()) throw tooLarge();
             output.write(chunk,0,count);
         }
         return output.toByteArray();
     }
 
+    /** The standalone SFNT files held by a picked file: the file itself, its aligned rewrite, or one rewrite per collection member. */
+    private static List<byte[]> members(byte[] file) throws IOException {
+        range(file,0,12); long signature=u32(file,0);
+        if(signature==0x774f4646L || signature==0x774f4632L) throw new IOException("WOFF 글꼴은 지원하지 않아요. TTF·OTF·TTC 파일을 가져와 주세요.");
+        List<byte[]> out=new ArrayList<>();
+        if(signature==0x74746366L) {
+            long version=u32(file,4),count=u32(file,8);
+            if((version!=0x00010000L && version!=0x00020000L) || count<1) throw bad();
+            if(count>MAX_COLLECTION_FACES) throw new IOException("글꼴 묶음(TTC) 하나에 글꼴이 너무 많아요. 16개까지 가져올 수 있어요.");
+            range(file,12,4*count); Set<Long> seen=new HashSet<>();
+            for(int i=0;i<count;i++) {long offset=u32(file,12+4*i); if(seen.add(offset)) out.add(repack(file,offset));}
+            return out;
+        }
+        if(signature!=0x00010000L && signature!=0x4f54544fL) throw bad();
+        if(file.length>MAX_FONT_BYTES) throw tooLarge();
+        int count=u16(file,4); boolean aligned=true;
+        if(12L+16L*count<=file.length) for(int i=0;i<count;i++) if((u32(file,12+16*i+8)&3)!=0) aligned=false;
+        out.add(aligned?file:repack(file,0));
+        return out;
+    }
+
+    private static long checksum(byte[] b,int start,int length) {
+        long sum=0; int end=start+length,p=start;
+        for(;p+4<=end;p+=4) sum+=u32(b,p);
+        if(p<end) {long last=0; for(int i=0;i<4;i++) last=(last<<8)|(p+i<end?(b[p+i]&255):0); sum+=last;}
+        return sum&0xffffffffL;
+    }
+    private static void put32(byte[] b,int p,long value) {b[p]=(byte)(value>>>24);b[p+1]=(byte)(value>>>16);b[p+2]=(byte)(value>>>8);b[p+3]=(byte)value;}
+
+    /**
+     * Rewrites the font whose table directory starts at {@code directory} (inside a collection, or a font with unaligned tables) as a
+     * standalone SFNT: tables sorted by tag, 4-byte aligned, table checksums and head.checkSumAdjustment recomputed. Table contents are
+     * copied unchanged; a DSIG table is dropped because its signature no longer covers the new file.
+     */
+    private static byte[] repack(byte[] file,long directory) throws IOException {
+        range(file,directory,12); int at=(int)directory; long signature=u32(file,at);
+        if(signature!=0x00010000L && signature!=0x4f54544fL) throw bad();
+        int count=u16(file,at+4); if(count<5 || count>256) throw bad();
+        range(file,directory+12,16L*count);
+        TreeMap<String,int[]> tables=new TreeMap<>(); long total=12;
+        for(int i=0;i<count;i++) {
+            int p=at+12+16*i; String tag=new String(file,p,4,StandardCharsets.ISO_8859_1);
+            if(!tag.matches("[ -~]{4}")) throw bad();
+            long offset=u32(file,p+8),length=u32(file,p+12); range(file,offset,length);
+            if(tag.equals("DSIG")) continue;
+            if(tables.put(tag,new int[]{(int)offset,(int)length})!=null) throw bad();
+            total+=16+((length+3)&~3L);
+        }
+        if(total>MAX_FONT_BYTES) throw tooLarge();
+        byte[] out=new byte[(int)total]; int n=tables.size(),power=Integer.highestOneBit(n);
+        put32(out,0,signature); out[4]=(byte)(n>>>8); out[5]=(byte)n;
+        out[6]=(byte)((power*16)>>>8); out[7]=(byte)(power*16);
+        out[8]=0; out[9]=(byte)Integer.numberOfTrailingZeros(power);
+        out[10]=(byte)((n*16-power*16)>>>8); out[11]=(byte)(n*16-power*16);
+        int record=12,data=12+16*n,head=-1;
+        for(Map.Entry<String,int[]> entry:tables.entrySet()) {
+            int offset=entry.getValue()[0],length=entry.getValue()[1];
+            System.arraycopy(file,offset,out,data,length);
+            if(entry.getKey().equals("head")) {if(length<12) throw bad(); head=data; put32(out,head+8,0);}
+            System.arraycopy(entry.getKey().getBytes(StandardCharsets.ISO_8859_1),0,out,record,4);
+            put32(out,record+4,checksum(out,data,length)); put32(out,record+8,data); put32(out,record+12,length);
+            record+=16; data+=(length+3)&~3;
+        }
+        if(head<0) throw bad();
+        put32(out,head+8,(0xB1B0AFBAL-checksum(out,0,out.length))&0xffffffffL);
+        return out;
+    }
+
     private static String revision(List<Face> faces) {
-        StringBuilder key=new StringBuilder("android-fonts-v1\n");
+        StringBuilder key=new StringBuilder("android-fonts-v2\n");
         for(Face face:faces) key.append(face.id).append('\n');
         return sha(key.toString().getBytes(StandardCharsets.UTF_8));
     }
@@ -153,8 +243,9 @@ public final class FontStore {
         catch(NoSuchAlgorithmException impossible) {throw new AssertionError(impossible);}
     }
 
-    private static IOException bad() {return new IOException("올바른 TTF/OTF 글꼴 파일이 아니에요. TTC/WOFF 글꼴은 지원하지 않아요.");}
-    private static IOException tooLarge() {return new IOException("글꼴은 파일당 16MB까지 추가할 수 있어요.");}
+    private static IOException bad() {return new IOException("올바른 TTF/OTF/TTC 글꼴 파일이 아니에요. 한컴 전용 HFT 글꼴과 WOFF 글꼴은 지원하지 않아요.");}
+    private static final String LIMIT="저장 글꼴 한도(64개 또는 256MB)에 도달했어요. 사용하지 않는 글꼴을 삭제해 주세요.";
+    private static IOException tooLarge() {return new IOException("글꼴은 하나당 16MB까지(글꼴 묶음 TTC 파일은 48MB까지) 추가할 수 있어요.");}
 
     private static final class Table {
         final int offset,length;
@@ -240,25 +331,68 @@ public final class FontStore {
         for(int id:ids) {List<String> values=names.get(id); if(values!=null && !values.isEmpty()) return values.get(0);} return "";
     }
 
+    private static Charset charset(String... candidates) {
+        for(String name:candidates) try {if(Charset.isSupported(name)) return Charset.forName(name);} catch(IllegalArgumentException unknown) { /* next */ }
+        return null;
+    }
+    private static String strict(Charset charset,byte[] bytes,int start,int length) {
+        if(charset==null) return null;
+        try {return charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(bytes,start,length)).toString();}
+        catch(CharacterCodingException malformed) {return null;}
+    }
+    /** A name record in a pre-Unicode encoding, or null when it cannot be decoded with confidence. */
+    private static String legacyName(byte[] bytes,int start,int length,int platform,int encoding) {
+        Charset charset;
+        if(platform==3) {
+            if(encoding==5) charset=charset("x-windows-949","windows-949","MS949","EUC-KR");
+            else if(encoding==6) charset=charset("x-Johab","Johab");
+            else return null;
+            // Windows legacy records store each character in two bytes; single-byte characters have a zero high byte.
+            byte[] packed=new byte[length]; int size=0;
+            if((length&1)==0) for(int i=0;i<length;i+=2) {if(bytes[start+i]!=0) packed[size++]=bytes[start+i]; packed[size++]=bytes[start+i+1];}
+            else {System.arraycopy(bytes,start,packed,0,length); size=length;}
+            String text=strict(charset,packed,0,size);
+            // Some fonts label UTF-16 names as Wansung.
+            if(text==null && (length&1)==0) text=strict(StandardCharsets.UTF_16BE,bytes,start,length);
+            return text;
+        }
+        if(platform==1) {
+            if(encoding==3) return strict(charset("x-windows-949","windows-949","MS949","EUC-KR"),bytes,start,length);
+            if(encoding==0) return strict(StandardCharsets.US_ASCII,bytes,start,length);
+        }
+        return null;
+    }
+
     private static Map<Integer,List<String>> names(byte[] bytes,Table table) throws IOException {
         int p=table.offset,format=u16(bytes,p),count=u16(bytes,p+2),strings=u16(bytes,p+4);
         if(format>1 || count>4096 || 6L+12L*count>table.length || strings<6L+12L*count || strings>table.length) throw bad();
         Map<Integer,List<String>> names=new HashMap<>();
         // Prefer English Unicode records; keep localized names as document aliases.
-        for(int pass=0;pass<2;pass++) for(int i=0;i<count;i++) {
+        for(int pass=0;pass<3;pass++) for(int i=0;i<count;i++) {
             int at=p+6+12*i,platform=u16(bytes,at),encoding=u16(bytes,at+2),language=u16(bytes,at+4);
             int nameId=u16(bytes,at+6),length=u16(bytes,at+8),offset=u16(bytes,at+10);
             if((long)strings+offset+length>table.length) throw bad();
             boolean english=language==0x409 || language==0;
-            if((pass==0)!=english || (platform!=0 && !(platform==3 && (encoding==0 || encoding==1 || encoding==10)))) continue;
+            boolean unicode=platform==0 || (platform==3 && (encoding==0 || encoding==1 || encoding==10));
             if(nameId!=1 && nameId!=2 && nameId!=4 && nameId!=6 && nameId!=16 && nameId!=17) continue;
-            if(length==0) continue; if(length>2048 || (length&1)!=0) throw bad();
             String text;
+            if(pass==2) {
+                // Older Korean fonts (1990s HY/한양, 휴먼 series) carry their Korean names only in legacy records: Windows Wansung/Johab
+                // (platform 3, encoding 5/6) or Macintosh Korean (platform 1, script 3). Documents refer to those Korean names, so they
+                // are added after the Unicode names. A record that does not decode is skipped; it never rejects the font.
+                if(unicode || length==0 || length>2048) continue;
+                text=legacyName(bytes,p+strings+offset,length,platform,encoding);
+                if(text==null) continue;
+            } else {
+            if((pass==0)!=english || !unicode) continue;
+            if(length==0) continue; if(length>2048 || (length&1)!=0) throw bad();
             try {text=StandardCharsets.UTF_16BE.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes,p+strings+offset,length)).toString();}
             catch(CharacterCodingException malformed) {throw bad();}
+            }
             text=Normalizer.normalize(text,Normalizer.Form.NFC).replaceAll("[\\p{Cc}\\p{Cf}]", " ").replaceAll("\\s+"," ").trim();
-            if(text.isEmpty()) continue; if(text.length()>512) throw bad();
+            if(text.isEmpty()) continue; if(text.length()>512) {if(pass==2) continue; throw bad();}
             List<String> values=names.computeIfAbsent(nameId,key->new ArrayList<>());
             if(!values.contains(text) && values.size()<32) values.add(text);
         }

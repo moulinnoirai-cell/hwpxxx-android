@@ -23,7 +23,10 @@ test('android.yml: tag trigger and a release job guarded for tags only',()=>{
   assert.match(wf,/tags: \['v\*'\]/);
   const j=jobs(wf);assert.ok(j.release,'release job exists');
   assert.match(j.release,/if: startsWith\(github\.ref, 'refs\/tags\/v'\)/);
-  assert.match(j.release,/needs: \[build, emulator\]/);
+  assert.match(j.release,/needs: \[build, emulator, identity\]/);
+  // public repository: the history is checked for personal author/committer addresses, and a release waits for that check
+  assert.match(j.identity,/fetch-depth: 0/);assert.match(j.identity,/bash scripts\/check-commit-identity\.sh HEAD/);
+  assert.doesNotMatch(j.identity,/secrets\./);
   assert.match(j.release,/environment: release/);
   assert.match(j.release,/permissions:\n\s+contents: write/);
   assert.match(j.release,/merge-base --is-ancestor/);
