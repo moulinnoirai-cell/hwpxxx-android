@@ -1,9 +1,9 @@
 diff --git a/rhwp-studio/src/hwpxxx/doc-scrollbar.ts b/rhwp-studio/src/hwpxxx/doc-scrollbar.ts
 new file mode 100644
-index 0000000..04024ae
+index 0000000..908a47d
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/doc-scrollbar.ts
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,171 @@
 +/**
 + * [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바.
 + *
@@ -11,13 +11,13 @@ index 0000000..04024ae
 + * 알기 어렵고 먼 쪽으로 한 번에 갈 수 없어, 문서 영역(`#scroll-container`) 오른쪽에 늘 보이는 막대를 따로 둔다.
 + * 막대는 스크롤 위치를 그대로 비추기만 한다: 손잡이를 끌거나 빈 곳을 누르면 `scrollTop` 을 바꾸고, 나머지(쪽 그리기·캐럿)는
 + * 기존 scroll 이벤트 경로가 처리한다. 문서가 화면보다 짧으면 길만 보이고 손잡이는 숨는다.
-+ * 손잡이를 끄는 동안에는 옆에 지금 쪽(상태 표시줄과 같은 글)을 띄우고, 길 위에는 메모가 달린 자리를 작은 표시로 보여 준다.
++ * 손잡이를 끄는 동안에는 옆에 지금 쪽(상태 표시줄과 같은 글)을 띄우고, 길 위에는 메모가 달린 자리와 모두 찾기로 찾은 자리를 작은 표시로 보여 준다.
 + */
 +export interface DocScrollbarOptions {
 +  /** 끄는 동안 손잡이 옆에 띄울 글(예: "3 / 12 쪽"). 빈 글이면 띄우지 않는다. */
 +  pageLabel?: () => string;
-+  /** 문서 내용(`#scroll-content`) 안에서 길에 표시할 요소(메모 상자 등)의 선택자. */
-+  markSelector?: string;
++  /** 문서 내용(`#scroll-content`) 안에서 길에 표시할 요소들: 선택자와, 표시에 붙일 클래스(색 구분). 뒤에 적은 종류가 위에 그려진다. */
++  marks?: ReadonlyArray<{ selector: string; className?: string }>;
 +}
 +
 +export const MAX_TRACK_MARKS = 200;
@@ -91,13 +91,21 @@ index 0000000..04024ae
 +  const content = container.querySelector<HTMLElement>('#scroll-content');
 +  const renderMarks = () => {
 +    marksStale = false;
-+    const found = options.markSelector && content ? Array.from(content.querySelectorAll<HTMLElement>(options.markSelector)) : [];
 +    const top = content?.getBoundingClientRect().top ?? 0;
-+    // 문서 내용 위쪽에서 잰 위치: 스크롤 위치와 무관하다.
-+    const offsets = trackMarkOffsets(found.map(el => el.getBoundingClientRect().top - top + (content?.offsetTop ?? 0)), container.scrollHeight, track.clientHeight);
-+    while (marks.childElementCount > offsets.length) marks.lastElementChild!.remove();
-+    while (marks.childElementCount < offsets.length) marks.appendChild(document.createElement('i'));
-+    offsets.forEach((offset, i) => { (marks.children[i] as HTMLElement).style.transform = `translateY(${offset}px)`; });
++    const wanted: Array<{ offset: number; className: string }> = [];
++    for (const kind of content ? options.marks ?? [] : []) {
++      const found = Array.from(content!.querySelectorAll<HTMLElement>(kind.selector));
++      // 문서 내용 위쪽에서 잰 위치: 스크롤 위치와 무관하다.
++      const offsets = trackMarkOffsets(found.map(el => el.getBoundingClientRect().top - top + content!.offsetTop), container.scrollHeight, track.clientHeight);
++      for (const offset of offsets) wanted.push({ offset, className: kind.className ?? '' });
++    }
++    while (marks.childElementCount > wanted.length) marks.lastElementChild!.remove();
++    while (marks.childElementCount < wanted.length) marks.appendChild(document.createElement('i'));
++    wanted.forEach((mark, i) => {
++      const el = marks.children[i] as HTMLElement;
++      el.className = mark.className;
++      el.style.transform = `translateY(${mark.offset}px)`;
++    });
 +  };
 +  const render = () => {
 +    frame = 0;
@@ -153,7 +161,7 @@ index 0000000..04024ae
 +  observer?.observe(track);
 +  if (content) observer?.observe(content);
 +  // 메모가 생기거나 지워지면(요소가 바뀌면) 표시를 다시 놓는다. 스타일 변화(캐럿 깜빡임 등)는 보지 않는다.
-+  const mutations = options.markSelector && content && typeof MutationObserver !== 'undefined' ? new MutationObserver(scheduleMarks) : null;
++  const mutations = options.marks?.length && content && typeof MutationObserver !== 'undefined' ? new MutationObserver(scheduleMarks) : null;
 +  if (content) mutations?.observe(content, { childList: true, subtree: true });
 +  schedule();
 +
@@ -168,7 +176,7 @@ index 0000000..04024ae
 +  };
 +}
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index eae66ee..5ee6e92 100644
+index eae66ee..017562f 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
 @@ -34,6 +34,8 @@ import { PluginHostRegistry } from '@/plugin/host';
@@ -184,17 +192,17 @@ index eae66ee..5ee6e92 100644
  
    // 드래그 앤 드롭 지원 (scroll-container 영역)
    const container = document.getElementById('scroll-container')!;
-+  // [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: 끄는 동안 상태 표시줄과 같은 쪽 표시, 길 위에 메모 자리
-+  installDocScrollbar(container, { pageLabel: () => sbPage().textContent ?? '', markSelector: '.hwpxxx-memo-box' });
++  // [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: 끄는 동안 상태 표시줄과 같은 쪽 표시, 길 위에 메모 자리·모두 찾기 자리
++  installDocScrollbar(container, { pageLabel: () => sbPage().textContent ?? '', marks: [{ selector: '.hwpxxx-memo-box' }, { selector: '.hwpxxx-find-hit', className: 'find' }] });
    container.addEventListener('dragover', (e) => {
      e.preventDefault();
      container.classList.add('drag-over');
 diff --git a/rhwp-studio/src/styles/hwpxxx-scrollbar.css b/rhwp-studio/src/styles/hwpxxx-scrollbar.css
 new file mode 100644
-index 0000000..dd04493
+index 0000000..e55b2e5
 --- /dev/null
 +++ b/rhwp-studio/src/styles/hwpxxx-scrollbar.css
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,54 @@
 +/* [hwpxxx] 문서 영역 오른쪽의 항상 보이는 세로 스크롤바 — hwpxxx/doc-scrollbar.ts */
 +.hwpxxx-vscroll {
 +  grid-column: 2;
@@ -223,9 +231,10 @@ index 0000000..dd04493
 +.hwpxxx-vscroll:hover .hwpxxx-vscroll-thumb,
 +.hwpxxx-vscroll.dragging .hwpxxx-vscroll-thumb { opacity: 1; }
 +.hwpxxx-vscroll-thumb[hidden] { display: none; }
-+/* 메모가 달린 자리 */
++/* 메모가 달린 자리(노랑)와 모두 찾기로 찾은 자리(주황) */
 +.hwpxxx-vscroll-marks { position: absolute; inset: 0; pointer-events: none; }
 +.hwpxxx-vscroll-marks > i { position: absolute; top: 0; left: 1px; right: 1px; height: 3px; border-radius: 1px; background: #e0a800; }
++.hwpxxx-vscroll-marks > i.find { left: 4px; right: 4px; background: #e8590c; }
 +/* 끄는 동안 손잡이 옆에 띄우는 쪽 표시 */
 +.hwpxxx-vscroll-bubble {
 +  position: absolute;
@@ -250,7 +259,7 @@ index 0000000..dd04493
 +@media print { .hwpxxx-vscroll { display: none !important; } body.hwpxxx-vscroll-on #scroll-container { margin-right: 0; } }
 diff --git a/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts b/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts
 new file mode 100644
-index 0000000..ea4442f
+index 0000000..af4b24c
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-doc-scrollbar.test.ts
 @@ -0,0 +1,71 @@
@@ -298,7 +307,7 @@ index 0000000..ea4442f
 +});
 +
 +test('편집기가 문서 영역에 스크롤바를 붙이고, 기본 세로 스크롤바 자리를 비운다', () => {
-+  assert.match(source('main.ts'), /installDocScrollbar\(container, \{ pageLabel: \(\) => sbPage\(\)\.textContent \?\? '', markSelector: '\.hwpxxx-memo-box' \}\)/);
++  assert.match(source('main.ts'), /installDocScrollbar\(container, \{ pageLabel: \(\) => sbPage\(\)\.textContent \?\? '', marks: \[\{ selector: '\.hwpxxx-memo-box' \}, \{ selector: '\.hwpxxx-find-hit', className: 'find' \}\] \}\)/);
 +  const css = source('styles/hwpxxx-scrollbar.css');
 +  assert.match(css, /body\.hwpxxx-vscroll-on #scroll-container \{ margin-right: 16px; \}/);
 +  assert.match(css, /\.hwpxxx-vscroll \{[^}]*width: 16px;/);

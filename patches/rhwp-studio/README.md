@@ -13,8 +13,9 @@ rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY
 | `android/0102-android-host-hooks.patch` | Android 연결: 저장 실패 시 닫힘, 비공개 복구 저장소, 최근 문서·이력, 가져온 글꼴, 오프라인 빌드(PWA 제외) |
 | `android/0103-android-composition-text-zoom.patch` | 한글 조합 오버레이 크기: 시스템 글자 크기(WebView textZoom)가 DOM 글자에만 걸려 조합 중 글자가 본문보다 크게 보이던 것을 보정 |
 | `android/0104-android-host-font-scan-by-name.patch` | 큰 문서 여는 시간·편집 반응: 첫 화면 전(그리고 편집마다) 모든 쪽의 레이어 트리를 내보내 읽던 호스트 글꼴 탐색을, 문서의 글꼴 이름으로 바로 고르고 전체 쪽 확인은 화면이 뜬 뒤 문서당 한 번 틈틈이 하도록 바꿈. 가져온 글꼴이 없으면 탐색 자체를 하지 않음 |
-| `android/0105-android-doc-scrollbar.patch` | 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: WebView 기본 스크롤바는 스크롤할 때만 잠깐 보이고 잡을 수 없어, 손잡이를 끌거나 길을 눌러 이동하는 막대를 따로 둠(`src/hwpxxx/doc-scrollbar.ts`). 끄는 동안 쪽 표시, 길 위에 메모 자리 표시 |
+| `android/0105-android-doc-scrollbar.patch` | 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: WebView 기본 스크롤바는 스크롤할 때만 잠깐 보이고 잡을 수 없어, 손잡이를 끌거나 길을 눌러 이동하는 막대를 따로 둠(`src/hwpxxx/doc-scrollbar.ts`). 끄는 동안 쪽 표시, 길 위에 메모 자리·모두 찾기 자리 표시 |
 | `android/0106-android-composition-baseline.patch` | 한글 조합 중 글자가 위아래로 흔들리던 문제: 깜빡이는 조합 오버레이(DOM)의 글자를 상자 가운데가 아니라 캔버스 글자와 같은 기준선(캐럿 사각형 높이의 80%)에 놓고, 왼쪽 끝에서 시작해 장평을 따르게 함 |
+| `android/0107-android-find-all.patch` | 모두 찾기: 찾기 대화상자의 **모두 찾기** 단추가 엔진의 `searchAllText` 결과를 목록(쪽 번호 + 앞뒤 글, 300곳까지)으로 보여 주고, 고르면 그 자리로 이동. 찾은 자리는 스크롤바 길 위에 표시하고 편집하면 다시 찾음(`src/hwpxxx/find-all.ts`) |
 
 `features/` → `android/` 순서(이름순)로 적용합니다. 복구(자동 저장)는 본가 방식(세션 복구 키 `RecoveryCipher`)을 따르고,
 셸의 비공개 저장소에는 봉투를 암호문 앞에 붙여 한 덩어리 바이트로 보관합니다(`src/hwpxxx/android-draft-envelope.ts`).

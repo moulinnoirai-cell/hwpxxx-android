@@ -1,0 +1,366 @@
+diff --git a/rhwp-studio/src/hwpxxx/find-all-text.ts b/rhwp-studio/src/hwpxxx/find-all-text.ts
+new file mode 100644
+index 0000000..3d557cc
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/find-all-text.ts
+@@ -0,0 +1,42 @@
++// [hwpxxx] 모두 찾기의 순수 계산: 앞뒤 글 자르기와 칸 안 경로. 화면·엔진에 기대지 않아 따로 시험한다(find-all.ts 가 쓴다).
++import type { SearchHit } from '@/core/types';
++
++/** 목록에 보여 주는 최대 줄 수(찾은 수 자체는 전부 센다). */
++export const MAX_FIND_ALL_ROWS = 300;
++const CONTEXT_CHARS = 16;
++
++export interface SnippetParts { before: string; match: string; after: string }
++
++/**
++ * 찾은 글과 그 앞뒤 글. `text` 는 문단에서 `windowStart` 부터 잘라 온 조각이고 `start`·`length` 는 문단 안 위치다.
++ * 줄바꿈·탭 같은 제어 문자는 빈칸으로 바꾸고, 앞뒤가 잘렸으면 말줄임표를 붙인다.
++ */
++export function snippetParts(text: string, windowStart: number, start: number, length: number, paragraphLength: number): SnippetParts {
++  const chars = Array.from(text);
++  const at = Math.max(0, start - windowStart);
++  const clean = (value: string[]): string => value.join('').replace(/[\u0000-\u001f\u007f]+/g, ' ');
++  const before = clean(chars.slice(0, at));
++  const match = clean(chars.slice(at, at + length));
++  const after = clean(chars.slice(at + length));
++  return {
++    before: (windowStart > 0 ? '…' : '') + before,
++    match,
++    after: after + (windowStart + chars.length < paragraphLength ? '…' : ''),
++  };
++}
++
++/** 앞뒤 글을 잘라 올 범위. */
++export function snippetWindow(start: number, length: number, context: number = CONTEXT_CHARS): { from: number; count: number } {
++  const from = Math.max(0, start - context);
++  return { from, count: start - from + length + context };
++}
++
++export type Step = { controlIndex: number; cellIndex: number; cellParaIndex: number };
++export interface Rect { pageIndex: number; x: number; y: number; width: number; height: number }
++
++/** 표 칸·글상자 안에서 찾은 곳의 경로(없으면 본문). */
++export function hitSteps(hit: SearchHit): Step[] | null {
++  if (hit.cellPath?.length) return hit.cellPath.map(step => ({ controlIndex: step.controlIndex, cellIndex: step.cellIndex, cellParaIndex: step.cellParaIndex }));
++  const cell = hit.cellContext;
++  return cell ? [{ controlIndex: cell.ctrlIdx, cellIndex: cell.cellIdx, cellParaIndex: cell.cellPara }] : null;
++}
+diff --git a/rhwp-studio/src/hwpxxx/find-all.ts b/rhwp-studio/src/hwpxxx/find-all.ts
+new file mode 100644
+index 0000000..31718ec
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/find-all.ts
+@@ -0,0 +1,162 @@
++// [hwpxxx] 모두 찾기: 문서 전체의 찾은 곳을 한 번에 모아 목록(쪽 번호 + 앞뒤 글)으로 보여 주고, 스크롤바 길 위에 자리를 표시한다.
++// 본가의 찾기는 하나씩 찾아가는 방식이라, 엔진의 `searchAllText` 결과에 쪽·위치·앞뒤 글만 붙인다. 문서 내용은 바꾸지 않는다.
++import '@/styles/hwpxxx-find-all.css';
++import type { CommandServices } from '@/command/types';
++import type { SearchHit } from '@/core/types';
++
++import { MAX_FIND_ALL_ROWS, hitSteps, snippetParts, snippetWindow, type Rect, type SnippetParts } from '@/hwpxxx/find-all-text';
++
++export interface FindAllRow { hit: SearchHit; parts: SnippetParts; pageIndex: number | null; y: number | null }
++
++interface ScrollView { getPageOffset(i: number): number }
++
++export class FindAllPanel {
++  readonly element: HTMLDivElement;
++  private readonly summary: HTMLDivElement;
++  private readonly list: HTMLOListElement;
++  private layer: HTMLDivElement | null = null;
++  private rows: FindAllRow[] = [];
++  private query = '';
++  private caseSensitive = false;
++  private timer: number | undefined;
++  /** 예약된 일이 다시 찾기인지(아니면 표시만 다시 놓기). 다시 찾기가 예약돼 있으면 뒤따르는 배치 이벤트가 덮어쓰지 않는다. */
++  private searchPending = false;
++  private readonly off: Array<() => void> = [];
++
++  constructor(private readonly services: CommandServices, private readonly onPick: (hit: SearchHit) => void) {
++    this.element = document.createElement('div');
++    this.element.className = 'hwpxxx-find-all';
++    this.element.hidden = true;
++    this.summary = document.createElement('div');
++    this.summary.className = 'hwpxxx-find-all-summary';
++    this.summary.setAttribute('role', 'status');
++    this.list = document.createElement('ol');
++    this.list.className = 'hwpxxx-find-all-list';
++    this.element.append(this.summary, this.list);
++    this.list.addEventListener('click', (e) => {
++      const item = (e.target as HTMLElement).closest<HTMLElement>('li[data-index]');
++      const row = item ? this.rows[Number(item.dataset.index)] : null;
++      if (!row) return;
++      this.list.querySelector('li.current')?.classList.remove('current');
++      item!.classList.add('current');
++      this.onPick(row.hit);
++    });
++    // 편집하면 위치가 달라지므로 다시 찾고, 확대·배치가 바뀌면 길 위 표시만 다시 놓는다.
++    const again = () => { if (this.query) this.schedule(true); };
++    const place = () => { if (this.rows.length) this.schedule(false); };
++    for (const name of ['document-mutated', 'document-changed', 'document-swapped', 'history-jumped']) this.off.push(services.eventBus.on(name, again));
++    for (const name of ['document-layout-refreshed', 'document-view-loaded', 'document-view-changed', 'zoom-changed']) this.off.push(services.eventBus.on(name, place));
++  }
++
++  /** 문서 전체에서 찾아 목록과 길 위 표시를 채운다. 찾은 수를 돌려준다. */
++  run(query: string, caseSensitive: boolean): number {
++    this.query = query;
++    this.caseSensitive = caseSensitive;
++    const wasm = this.services.wasm;
++    let hits: SearchHit[] = [];
++    try { hits = query ? wasm.searchAllText(query, caseSensitive, true) : []; } catch { hits = []; }
++    this.rows = hits.slice(0, MAX_FIND_ALL_ROWS).map(hit => this.describe(hit));
++    this.element.hidden = !query;
++    this.summary.textContent = !hits.length ? '찾는 글이 없어요.'
++      : hits.length > this.rows.length ? `${hits.length}곳을 찾았어요. 처음 ${this.rows.length}곳만 보여 줘요.`
++      : `${hits.length}곳을 찾았어요.`;
++    this.list.replaceChildren(...this.rows.map((row, index) => {
++      const item = document.createElement('li');
++      item.dataset.index = String(index);
++      item.tabIndex = 0;
++      const page = document.createElement('span');
++      page.className = 'hwpxxx-find-all-page';
++      page.textContent = row.pageIndex === null ? '' : `${row.pageIndex + 1}쪽`;
++      const text = document.createElement('span');
++      text.className = 'hwpxxx-find-all-text';
++      const mark = document.createElement('mark');
++      mark.textContent = row.parts.match;
++      text.append(row.parts.before, mark, row.parts.after);
++      item.append(page, text);
++      return item;
++    }));
++    this.placeMarks();
++    return hits.length;
++  }
++
++  /** 목록과 길 위 표시를 지운다(대화상자를 닫거나 찾는 글을 지울 때). */
++  clear(): void {
++    window.clearTimeout(this.timer);
++    this.searchPending = false;
++    this.query = '';
++    this.rows = [];
++    this.element.hidden = true;
++    this.summary.textContent = '';
++    this.list.replaceChildren();
++    this.layer?.remove();
++    this.layer = null;
++  }
++
++  dispose(): void {
++    this.clear();
++    for (const off of this.off.splice(0)) off();
++  }
++
++  private schedule(search: boolean): void {
++    this.searchPending ||= search;
++    window.clearTimeout(this.timer);
++    this.timer = window.setTimeout(() => {
++      const again = this.searchPending;
++      this.searchPending = false;
++      if (again) this.run(this.query, this.caseSensitive); else this.placeMarks();
++    }, 250);
++  }
++
++  private describe(hit: SearchHit): FindAllRow {
++    const wasm = this.services.wasm;
++    const steps = hitSteps(hit);
++    const end = hit.charOffset + hit.length;
++    let parts: SnippetParts = { before: '', match: this.query, after: '' };
++    let rect: Rect | undefined;
++    if (hit.equationControl !== undefined) return { hit, parts: { before: '수식: ', match: this.query, after: '' }, ...this.locate(undefined) };
++    try {
++      const window_ = snippetWindow(hit.charOffset, hit.length);
++      if (!steps) {
++        const total = wasm.getParagraphLength(hit.sec, hit.para);
++        const count = Math.min(window_.count, Math.max(0, total - window_.from));
++        parts = snippetParts(wasm.getTextRange(hit.sec, hit.para, window_.from, count), window_.from, hit.charOffset, hit.length, total);
++      } else {
++        // 칸 안 문단 길이는 따로 묻지 않고, 찾은 글 앞쪽과 찾은 글만 가져온다(범위를 넘겨 실패하지 않게).
++        const count = hit.charOffset - window_.from + hit.length;
++        const text = wasm.getTextInCellByPath(hit.sec, hit.para, JSON.stringify(steps), window_.from, count);
++        parts = snippetParts(text, window_.from, hit.charOffset, hit.length, window_.from + Array.from(text).length);
++      }
++    } catch { /* 앞뒤 글을 못 읽으면 찾는 글만 보여 준다 */ }
++    try {
++      const rects: Rect[] = !steps
++        ? wasm.getSelectionRects(hit.sec, hit.para, hit.charOffset, hit.para, end)
++        : wasm.getSelectionRectsInCellByPath(hit.sec, hit.para, JSON.stringify(steps), steps[steps.length - 1].cellParaIndex, hit.charOffset, steps[steps.length - 1].cellParaIndex, end);
++      rect = rects[0];
++    } catch { /* 위치를 모르면 쪽 번호와 길 위 표시를 생략한다 */ }
++    return { hit, parts, ...this.locate(rect) };
++  }
++
++  private locate(rect: Rect | undefined): { pageIndex: number | null; y: number | null } {
++    return rect && Number.isFinite(rect.pageIndex) && Number.isFinite(rect.y) ? { pageIndex: rect.pageIndex, y: rect.y } : { pageIndex: null, y: null };
++  }
++
++  /** 스크롤바가 읽는 표시(문서 내용 안의 보이지 않는 점)를 찾은 곳의 세로 위치에 놓는다. */
++  private placeMarks(): void {
++    const handler = this.services.getInputHandler() as unknown as { container?: HTMLElement; virtualScroll?: ScrollView } | null;
++    const content = handler?.container?.querySelector<HTMLElement>('#scroll-content');
++    const scroll = handler?.virtualScroll;
++    const zoom = this.services.getViewportManager()?.getZoom();
++    const placed = this.rows.filter(row => row.pageIndex !== null && row.y !== null);
++    if (!content || !scroll || !zoom || !placed.length) { this.layer?.remove(); this.layer = null; return; }
++    const layer = this.layer ?? document.createElement('div');
++    layer.className = 'hwpxxx-find-marks';
++    layer.replaceChildren(...placed.map(row => {
++      const dot = document.createElement('i');
++      dot.className = 'hwpxxx-find-hit';
++      dot.style.top = `${scroll.getPageOffset(row.pageIndex!) + row.y! * zoom}px`;
++      return dot;
++    }));
++    if (layer.parentElement !== content) content.append(layer);
++    this.layer = layer;
++  }
++}
+diff --git a/rhwp-studio/src/styles/hwpxxx-find-all.css b/rhwp-studio/src/styles/hwpxxx-find-all.css
+new file mode 100644
+index 0000000..7d49f1a
+--- /dev/null
++++ b/rhwp-studio/src/styles/hwpxxx-find-all.css
+@@ -0,0 +1,15 @@
++/* [hwpxxx] 모두 찾기 — hwpxxx/find-all.ts */
++.hwpxxx-find-all { border-top: 1px solid var(--color-primary-subtle, #d0d7e2); padding: 6px 8px 8px; }
++.hwpxxx-find-all[hidden] { display: none; }
++.hwpxxx-find-all-summary { font-size: var(--font-size-sm, 12px); color: var(--color-text-secondary, #555); padding: 2px 2px 6px; }
++.hwpxxx-find-all-list { list-style: none; margin: 0; padding: 0; max-height: min(40vh, 320px); overflow-y: auto; overscroll-behavior: contain; }
++.hwpxxx-find-all-list:empty { display: none; }
++.hwpxxx-find-all-list > li { display: flex; gap: 8px; align-items: baseline; padding: 7px 6px; border-radius: 4px; cursor: pointer; }
++.hwpxxx-find-all-list > li:hover, .hwpxxx-find-all-list > li:focus-visible { background: var(--color-primary-subtle, #e6eefb); outline: none; }
++.hwpxxx-find-all-list > li.current { background: var(--color-primary-subtle, #e6eefb); font-weight: 600; }
++.hwpxxx-find-all-page { flex: 0 0 3.2em; text-align: right; color: var(--color-text-muted, #777); font-size: var(--font-size-sm, 12px); white-space: nowrap; }
++.hwpxxx-find-all-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.hwpxxx-find-all-text > mark { background: #ffe58a; color: inherit; padding: 0 1px; border-radius: 2px; }
++/* 스크롤바가 읽는 자리 표시: 화면에는 보이지 않는다. */
++.hwpxxx-find-marks { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
++.hwpxxx-find-hit { position: absolute; left: 0; width: 1px; height: 1px; visibility: hidden; }
+diff --git a/rhwp-studio/src/ui/find-dialog.ts b/rhwp-studio/src/ui/find-dialog.ts
+index 6407dd3..0f44f0b 100644
+--- a/rhwp-studio/src/ui/find-dialog.ts
++++ b/rhwp-studio/src/ui/find-dialog.ts
+@@ -2,6 +2,7 @@ import type { CommandServices } from '@/command/types';
+ import type { SearchResult, ReplaceResult, ReplaceAllResult } from '@/core/types';
+ 
+ import { t } from '../i18n/index.ts';
++import { FindAllPanel } from '@/hwpxxx/find-all';
+ export type FindMode = 'find' | 'replace';
+ 
+ /**
+@@ -86,6 +87,8 @@ export class FindDialog {
+   /** [Task #2339] history-jumped 구독 해제 핸들 (열려 있는 동안만 구독). */
+   private historyJumpOff: (() => void) | null = null;
+   private documentMutationOff: (() => void) | null = null;
++  /** [hwpxxx] 모두 찾기 결과 목록(대화상자가 열려 있는 동안만 있다). */
++  private findAll: FindAllPanel | null = null;
+ 
+   constructor(services: CommandServices, mode: FindMode) {
+     this.services = services;
+@@ -130,6 +133,8 @@ export class FindDialog {
+     this.historyJumpOff = null;
+     this.documentMutationOff?.();
+     this.documentMutationOff = null;
++    this.findAll?.dispose(); // [hwpxxx] 목록과 스크롤바 표시를 지운다
++    this.findAll = null;
+     this.wrap?.remove();
+   }
+ 
+@@ -272,6 +277,10 @@ export class FindDialog {
+     nextBtn.setAttribute('aria-label', nextBtn.title);
+     btnRow.appendChild(prevBtn);
+     btnRow.appendChild(nextBtn);
++    // [hwpxxx] 모두 찾기: 문서 전체의 찾은 곳을 목록으로 보여 주고, 고르면 그 자리로 간다.
++    const allBtn = this.createButton('모두 찾기', () => this.doFindAll());
++    allBtn.title = '문서 전체에서 찾은 곳을 목록으로 보기';
++    btnRow.appendChild(allBtn);
+     this.wrap.appendChild(btnRow);
+ 
+     // 바꾸기 버튼 행
+@@ -283,10 +292,27 @@ export class FindDialog {
+     this.replaceButtonRow.appendChild(replaceAllBtn);
+     this.wrap.appendChild(this.replaceButtonRow);
+ 
++    this.findAll = new FindAllPanel(this.services, (hit) => {
++      this.currentHit = { found: true, ...hit };
++      this.navigateToHit(this.currentHit);
++    });
++    this.wrap.appendChild(this.findAll.element);
++
+     // 드래그 이동
+     this.makeDraggable(titleBar);
+   }
+ 
++  /** [hwpxxx] 모두 찾기 */
++  private doFindAll(): void {
++    const query = this.queryInput.value;
++    if (!query) { this.findAll?.clear(); return; }
++    FindDialog.lastQuery = query;
++    FindDialog.lastCaseSensitive = this.caseSensitiveCheck.checked;
++    this.searchedQuery = query;
++    this.statusLabel.textContent = '';
++    this.showMatchCount(this.findAll?.run(query, this.caseSensitiveCheck.checked) ?? 0);
++  }
++
+   private createButton(text: string, handler: () => void): HTMLButtonElement {
+     const btn = document.createElement('button');
+     btn.className = 'dialog-btn';
+diff --git a/rhwp-studio/tests/hwpxxx-find-all.test.ts b/rhwp-studio/tests/hwpxxx-find-all.test.ts
+new file mode 100644
+index 0000000..c880cc1
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-find-all.test.ts
+@@ -0,0 +1,54 @@
++// [hwpxxx] 모두 찾기: 앞뒤 글 자르기, 칸 안 경로, 대화상자·스크롤바 연결.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++import { snippetParts, snippetWindow, hitSteps, MAX_FIND_ALL_ROWS } from '../src/hwpxxx/find-all-text.ts';
++
++test('앞뒤 글 범위: 찾은 글 앞뒤로 정해진 글자 수만 가져온다', async () => {
++  assert.deepEqual(snippetWindow(100, 3, 16), { from: 84, count: 35 });
++  assert.deepEqual(snippetWindow(5, 2, 16), { from: 0, count: 23 });
++  assert.deepEqual(snippetWindow(0, 4, 16), { from: 0, count: 20 });
++});
++
++test('앞뒤 글: 찾은 글을 가르고, 잘린 쪽에만 말줄임표를 붙이며, 제어 문자는 빈칸으로 바꾼다', async () => {
++  // 문단 전체가 조각 안에 들어온 경우
++  assert.deepEqual(snippetParts('가나다 예산 라마바', 0, 4, 2, 10), { before: '가나다 ', match: '예산', after: ' 라마바' });
++  // 앞뒤가 모두 잘린 경우
++  assert.deepEqual(snippetParts('다 예산 라', 2, 4, 2, 10), { before: '…다 ', match: '예산', after: ' 라…' });
++  // 줄바꿈·탭
++  assert.deepEqual(snippetParts('가\n예산\t나', 0, 2, 2, 6), { before: '가 ', match: '예산', after: ' 나' });
++  // 보충 문자(이모지 등)도 글자 하나로 센다
++  assert.deepEqual(snippetParts('😀예산😀', 0, 1, 2, 4), { before: '😀', match: '예산', after: '😀' });
++  // 조각이 찾은 글에서 끝나는 경우(칸 안)
++  assert.deepEqual(snippetParts('앞글 예산', 0, 3, 2, 5), { before: '앞글 ', match: '예산', after: '' });
++});
++
++test('칸 안에서 찾은 곳은 전체 경로를, 없으면 한 단계 칸 정보를 쓴다', async () => {
++  assert.equal(hitSteps({ sec: 0, para: 1, charOffset: 0, length: 2 }), null);
++  assert.deepEqual(hitSteps({ sec: 0, para: 1, charOffset: 0, length: 2, cellContext: { parentPara: 1, ctrlIdx: 2, cellIdx: 3, cellPara: 4 } }), [{ controlIndex: 2, cellIndex: 3, cellParaIndex: 4 }]);
++  assert.deepEqual(hitSteps({ sec: 0, para: 1, charOffset: 0, length: 2, cellContext: { parentPara: 1, ctrlIdx: 2, cellIdx: 3, cellPara: 4 },
++    cellPath: [{ controlIndex: 2, cellIndex: 3, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 1, cellParaIndex: 4 }] }),
++    [{ controlIndex: 2, cellIndex: 3, cellParaIndex: 0 }, { controlIndex: 0, cellIndex: 1, cellParaIndex: 4 }]);
++});
++
++test('찾기 대화상자에 모두 찾기 단추와 목록을 붙이고, 닫으면 정리한다', () => {
++  const dialog = source('ui/find-dialog.ts');
++  assert.match(dialog, /const allBtn = this\.createButton\('모두 찾기', \(\) => this\.doFindAll\(\)\);/);
++  assert.match(dialog, /this\.wrap\.appendChild\(this\.findAll\.element\);/);
++  assert.match(dialog, /this\.currentHit = \{ found: true, \.\.\.hit \};\s+this\.navigateToHit\(this\.currentHit\);/);
++  assert.match(dialog, /this\.findAll\?\.dispose\(\);/);
++  const code = source('hwpxxx/find-all.ts');
++  assert.match(code, /wasm\.searchAllText\(query, caseSensitive, true\)/, '표 칸 안도 찾는다');
++  assert.match(code, /hits\.slice\(0, MAX_FIND_ALL_ROWS\)/);
++  assert.equal(MAX_FIND_ALL_ROWS, 300);
++  assert.match(code, /'document-mutated', 'document-changed', 'document-swapped', 'history-jumped'/, '편집하면 다시 찾는다');
++  assert.doesNotMatch(code, /replaceText|replaceAll|insertText/, '문서 내용을 바꾸지 않는다');
++});
++
++test('찾은 자리는 스크롤바 길 위에 메모와 다른 색으로 표시한다', () => {
++  assert.match(source('styles/hwpxxx-find-all.css'), /\.hwpxxx-find-hit \{[^}]*visibility: hidden;/);
++  assert.match(source('styles/hwpxxx-scrollbar.css'), /\.hwpxxx-vscroll-marks > i\.find \{/);
++  assert.match(source('hwpxxx/doc-scrollbar.ts'), /el\.className = mark\.className;/);
++});

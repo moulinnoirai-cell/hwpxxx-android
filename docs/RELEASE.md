@@ -44,6 +44,7 @@ GitHub → Settings → Environments → `release`에 다음이 걸려 있습니
 ### 1-4. 공개 저장소 안전장치
 - **커밋 작성자 주소**: `identity` 작업이 이력의 모든 커밋에서 작성자·커미터 주소가 GitHub noreply 주소인지 검사합니다(`scripts/check-commit-identity.sh`). 하나라도 아니면 실패하고 `release` 작업도 진행되지 않습니다.
   이미 푸시된 주소는 되돌릴 수 없으므로, 작업하는 기기에서는 같은 스크립트를 pre-push 훅으로 걸어 푸시 전에 막습니다(스크립트 머리말 참고). 커밋 전에 `git config user.email`이 noreply 주소인지 확인하세요.
+- **비공개 금지 목록(작업 기기 전용)**: `.git/info/identity-denylist`에 정규식을 한 줄에 하나씩 적어 두면(실명, 개인 메일 등) pre-push 훅이 푸시할 커밋의 작성자·메시지·추가한 줄·파일 이름을 검사해, 걸리면 푸시를 막습니다. 목록 자체가 개인정보라 저장소에 넣지 않으며 CI는 이 검사를 하지 않습니다. PR 제목·본문·댓글은 git 밖이라 검사 대상이 아닙니다.
 - **비밀값 푸시 차단**: 저장소의 Secret scanning과 Push protection이 켜져 있습니다.
 
 ## 2. 릴리스하기
