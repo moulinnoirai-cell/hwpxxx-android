@@ -49,6 +49,8 @@ const LOG={
  mainSystemUi:'11-07 03:10:02.140  1583  1601 E ActivityManager: ANR in com.android.systemui',
  mainLauncher:'11-07 03:10:12.140  1583  1601 E ActivityManager: ANR in com.google.android.apps.nexuslauncher (com.google.android.apps.nexuslauncher/.NexusLauncherActivity)',
  mainTermux:'11-07 03:14:00.000  1583  1601 E ActivityManager: ANR in com.termux (com.termux/.app.TermuxActivity)',
+ eventsDialer:'11-13 04:22:13.949   491   530 I am_anr  : [0,2110,com.google.android.dialer,550026565,Input dispatching timed out (Waiting because no window has focus)]',
+ mainGms:'11-13 04:22:14.000  1583  1601 E ActivityManager: ANR in com.google.android.gms (com.google.android.gms/.chimera.GmsIntentOperationService)',
  noise:'11-07 03:12:46.000  1583  1601 I ActivityManager: Start proc 5200:kr.offline.hwp.preview/u0a156 for top-activity {kr.offline.hwp.preview/kr.offline.hwp.MainActivity}',
 };
 
@@ -108,6 +110,19 @@ test('dialog parser: label from uiautomator XML, aerr markers, stale trees',()=>
  assert.equal(parse.systemDialogLabel(dialogXml('System UI is not responding')),'System UI');
  assert(parse.hasAnyErrorDialog(XML.app)&&parse.hasAnyErrorDialog(XML.chrome)&&!parse.hasAnyErrorDialog(XML.normal));
  assert(parse.dialogMatchesPackage('System UI','com.android.systemui')&&!parse.dialogMatchesPackage('System UI','com.google.android.apps.nexuslauncher')&&!parse.dialogMatchesPackage(null,'com.android.systemui'));
+});
+test('log parser: only the app and Termux can fail the guard; other processes (the image\'s Dialer, GMS) are informational',()=>{
+ const r=parse.classifyAnrLog([LOG.eventsDialer,LOG.mainGms,LOG.eventsSystemUi].join('\n'));
+ assert.deepEqual(r.failures,[]);
+ assert.deepEqual(r.system.map(e=>e.package).sort(),['com.android.systemui','com.google.android.dialer','com.google.android.gms']);
+ const mixed=parse.classifyAnrLog([LOG.eventsDialer,LOG.mainTermux,LOG.eventsApp].join('\n'));
+ assert.deepEqual(mixed.failures.map(e=>e.package),['com.termux','kr.offline.hwp.preview']);
+ assert.ok(parse.isWatchedPackage('kr.offline.hwp')&&parse.isWatchedPackage('kr.offline.hwp.preview')&&parse.isWatchedPackage('com.termux')&&!parse.isWatchedPackage('com.termuxx')&&!parse.isWatchedPackage('kr.offline.hwpx'));
+});
+test('a Dialer ANR from the device boot does not fail the guard (the CI failure of the main run)',()=>{
+ const root=tmp(),{guard}=device(root,{focus:FOCUS.none,events:LOG.eventsDialer,main:LOG.mainGms});
+ assert.doesNotThrow(()=>guard.check());
+ assert.equal(guard.finish([APP]).failures,0);
 });
 test('log parser: am_anr events and ActivityManager "ANR in" lines',()=>{
  const r=parse.classifyAnrLog([LOG.eventsApp,LOG.eventsSystemUi,LOG.mainApp,LOG.mainSystemUi,LOG.mainLauncher,LOG.mainTermux,LOG.noise].join('\n'));

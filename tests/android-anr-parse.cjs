@@ -57,11 +57,16 @@ function parseAnrLog(text){
  }
  return out;
 }
-function classifyAnrLog(text){
+// Only the processes under test can fail the guard from the log: the app (all kr.offline.hwp* ids, release and .preview) and Termux.
+// An ANR line of any other process (the emulator image's own Dialer, Google Play services, SystemUI, the launcher ...) is reported as
+// `system` (informational): those apps are not ours, and on a loaded CI runner the image's stock apps ANR while the device boots.
+const WATCHED_PACKAGES=Object.freeze(['kr.offline.hwp','com.termux']);
+const isWatchedPackage=(pkg,watched=WATCHED_PACKAGES)=>watched.some(w=>pkg===w||String(pkg).startsWith(w+'.'));
+function classifyAnrLog(text,watched=WATCHED_PACKAGES){
  const all=parseAnrLog(text),system=[],failures=[];
- for(const e of all)(isSystemPackage(e.package)?system:failures).push(e);
+ for(const e of all)(isWatchedPackage(e.package,watched)?failures:system).push(e);
  return {all,system,failures};
 }
 // `logcat -b crash`: any fatal exception / native crash line of the packages under test.
 function crashLines(text,pkg='kr.offline.hwp'){return String(text).split('\n').filter(l=>l.includes(pkg));}
-module.exports={SYSTEM_PACKAGES,isSystemPackage,parseFocus,classifyFocus,systemDialogLabel,decodeXml,hasAnyErrorDialog,dialogMatchesPackage,parseAnrLog,classifyAnrLog,crashLines};
+module.exports={SYSTEM_PACKAGES,WATCHED_PACKAGES,isWatchedPackage,isSystemPackage,parseFocus,classifyFocus,systemDialogLabel,decodeXml,hasAnyErrorDialog,dialogMatchesPackage,parseAnrLog,classifyAnrLog,crashLines};
