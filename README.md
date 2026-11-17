@@ -1,4 +1,4 @@
-# hwpxxx for Android 0.3.1
+# hwpxxx for Android 0.3.2
 
 개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.9.0(MIT).
 인터넷 권한이 없고 광고·분석·원격 글꼴·외부 전송이 없습니다. 문서는 기기 안에서만 처리합니다.
@@ -30,6 +30,10 @@
 | `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.9.0, Noto Sans KR, Lucide (원래 라이선스 포함) |
 | `design/latest-inline-fragment.html` | 승인 디자인 원본 |
 | `tests/` | FileStore JVM 시험, 브라우저 미리보기 서버, 안내 화면 타이밍 시험, rhwp 샘플 문서 |
+
+## 0.3.2 스크롤바·모두 찾기·글꼴 보강
+
+앱 이름을 hwpxxx로 되돌리고, 편집기 오른쪽의 항상 보이는 스크롤바(쪽 표시, 메모·찾은 자리 표시), 모두 찾기, 한글 조합 중 글자 흔들림 수정, TTC·옛 한글 글꼴 가져오기를 더했습니다. 내용은 [변경 안내](docs/CHANGES-0.3.2.md)를 참고하세요.
 
 ## 0.3.1 사용성·속도 개선
 
