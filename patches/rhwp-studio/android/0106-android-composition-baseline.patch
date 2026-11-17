@@ -1,0 +1,177 @@
+diff --git a/rhwp-studio/src/engine/caret-renderer.ts b/rhwp-studio/src/engine/caret-renderer.ts
+index 3e33504..d6fe082 100644
+--- a/rhwp-studio/src/engine/caret-renderer.ts
++++ b/rhwp-studio/src/engine/caret-renderer.ts
+@@ -1,5 +1,6 @@
+ import type { CursorRect } from '@/core/types';
+ import { VirtualScroll } from '@/view/virtual-scroll';
++import { compositionBaselineOffset } from '@/hwpxxx/composition-font';
+ 
+ /** Canvas 위에 깜박이는 캐럿을 렌더링한다 */
+ export class CaretRenderer {
+@@ -10,6 +11,10 @@ export class CaretRenderer {
+ 
+   // IME 조합 오버레이
+   private compEl: HTMLDivElement;
++  // [hwpxxx] 기준선 버팀대(높이 = 상자 위쪽에서 기준선까지)와 조합 글자. 캔버스 글자와 같은 기준선에 놓는다.
++  private compStrut: HTMLSpanElement;
++  private compText: Text;
++  private compGlyph: HTMLSpanElement;
+   private isCompMode = false;
+ 
+   constructor(
+@@ -26,7 +31,15 @@ export class CaretRenderer {
+     this.compEl.className = 'caret-composition';
+     this.compEl.style.cssText =
+       'position:absolute;background:#000;color:#fff;pointer-events:none;z-index:10;display:none;' +
+-      'line-height:1;overflow:hidden;white-space:pre;text-align:center;box-sizing:border-box;';
++      'line-height:0;overflow:hidden;white-space:pre;text-align:left;box-sizing:border-box;';
++    this.compStrut = document.createElement('span');
++    this.compStrut.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline;';
++    this.compText = document.createTextNode('');
++    // [hwpxxx] 글자는 캔버스처럼 상자 왼쪽 끝에서 시작하고, 장평(가로 비율)은 왼쪽 끝을 기준으로 늘이거나 줄인다.
++    this.compGlyph = document.createElement('span');
++    this.compGlyph.style.cssText = 'transform-origin:0 50%;';
++    this.compGlyph.append(this.compText);
++    this.compEl.append(this.compStrut, this.compGlyph);
+ 
+     // scroll-content 안에 배치 (스크롤과 함께 이동)
+     const scrollContent = container.querySelector('#scroll-content');
+@@ -103,7 +116,7 @@ export class CaretRenderer {
+   }
+ 
+   /** IME 조합 오버레이를 표시한다 */
+-  showComposition(startRect: CursorRect, charWidth: number, zoom: number, text: string, fontFamily: string, font?: string): void {
++  showComposition(startRect: CursorRect, charWidth: number, zoom: number, text: string, fontFamily: string, font?: string, widthRatio = 1): void {
+     this.ensureAttached();
+     this.isCompMode = true;
+ 
+@@ -134,8 +147,14 @@ export class CaretRenderer {
+       this.compEl.style.font = font;
+       if (!this.compEl.style.fontFamily) this.compEl.style.fontFamily = fontFamily || 'sans-serif';
+     }
+-    this.compEl.style.lineHeight = `${h}px`;
+-    this.compEl.textContent = text;
++    // [hwpxxx] 줄 높이를 0 으로 두고 버팀대 높이만큼 기준선을 내린다: 글꼴의 ascent/descent 와 무관하게
++    // 캔버스가 그린 글자와 같은 기준선에 놓여, 깜빡일 때 글자가 위아래로 흔들리지 않는다.
++    this.compEl.style.lineHeight = '0';
++    this.compStrut.style.height = `${compositionBaselineOffset(startRect, box.y, box.h) * zoom}px`;
++    this.compText.data = text;
++    // 변형은 inline-block 에만 걸린다. 장평이 100% 면 보통 글자 그대로 둔다.
++    this.compGlyph.style.display = widthRatio !== 1 ? 'inline-block' : '';
++    this.compGlyph.style.transform = widthRatio !== 1 ? `scaleX(${widthRatio})` : '';
+     this.compEl.style.display = 'block';
+     this.compEl.style.opacity = '1';
+     this.visible = true;
+diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
+index af8af09..baec8db 100644
+--- a/rhwp-studio/src/engine/input-handler.ts
++++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -64,7 +64,7 @@ import { CaretLayoutReveal } from './caret-layout-reveal';
+ import { emitHeaderFooterModeChanged } from './header-footer-mode';
+ import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
+ import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
+-import { compositionCssFont } from '@/hwpxxx/composition-font';
++import { compositionCssFont, compositionWidthRatio } from '@/hwpxxx/composition-font';
+ import { ImeNavigationGuard } from './ime-navigation-guard';
+ 
+ const SVG_NS = 'http://www.w3.org/2000/svg';
+@@ -3942,16 +3942,18 @@ export class InputHandler {
+             // 현재 커서 위치의 글꼴 정보
+             let fontFamily = 'sans-serif';
+             let overlayFont: string | undefined;
++            let overlayWidthRatio = 1;
+             try {
+               const props = this.getCharPropertiesAtCursor();
+               if (props.fontFamily) fontFamily = props.fontFamily;
++              overlayWidthRatio = compositionWidthRatio(props.ratios); // [hwpxxx] 장평
+               // [hwpxxx] 오버레이도 캔버스와 같은 글꼴 해석·실제 크기·굵기·기울임을 쓴다.
+               overlayFont = compositionCssFont({
+                 fontFamily: props.fontFamily, fontSize: props.fontSize, bold: props.bold, italic: props.italic,
+                 zoom, boxHeight: startRect.height,
+               });
+             } catch { /* fallback */ }
+-            this.caret.showComposition(startRect, charWidth, zoom, text, fontFamily, overlayFont);
++            this.caret.showComposition(startRect, charWidth, zoom, text, fontFamily, overlayFont, overlayWidthRatio);
+           }
+         } catch {
+           // getCursorRect 실패 시 일반 캐럿
+diff --git a/rhwp-studio/src/hwpxxx/composition-font.ts b/rhwp-studio/src/hwpxxx/composition-font.ts
+index 8f8de6c..aac2839 100644
+--- a/rhwp-studio/src/hwpxxx/composition-font.ts
++++ b/rhwp-studio/src/hwpxxx/composition-font.ts
+@@ -89,3 +89,30 @@ export function compositionCssFont(input: CompositionFontInput, resolve: FontRes
+   const style = `${input.italic ? 'italic ' : ''}${input.bold ? 'bold ' : ''}`;
+   return resolve(`${style}${Math.round(px * 100) / 100}px ${family}`);
+ }
++
++/** 엔진의 캐럿 사각형은 `y = 기준선 - 글자 크기 × 0.8`, `height = 글자 크기` 다(`cursor_rect.rs`). */
++export const CARET_BASELINE_RATIO = 0.8;
++
++/**
++ * [hwpxxx] 조합 오버레이 상자 위쪽에서 글자 기준선까지의 거리(쪽 좌표, 줌 적용 전).
++ *
++ * 오버레이는 500ms 마다 켜졌다 꺼지며, 꺼진 동안에는 캔버스가 그린 같은 글자가 보인다. 예전에는 DOM 글자를 상자 세로 가운데
++ * (`line-height = 상자 높이`)에 두었는데, 그 위치는 글꼴의 ascent/descent 에 따라 달라 캔버스 글자의 기준선과 어긋났다.
++ * 그래서 깜빡일 때마다 글자가 위아래로 흔들려 보였다. 캔버스는 기준선을 캐럿 사각형의 `y + height × 0.8` 에 두므로
++ * 오버레이도 같은 자리에 기준선을 둔다. 셀 경계로 상자가 옮겨졌으면(`boxY`) 그만큼 보정하고, 상자 밖으로 나가지 않게 한다.
++ */
++export function compositionBaselineOffset(rect: { y: number; height: number }, boxY: number, boxHeight: number): number {
++  const offset = rect.y + rect.height * CARET_BASELINE_RATIO - boxY;
++  if (!Number.isFinite(offset)) return Math.max(0, boxHeight * CARET_BASELINE_RATIO);
++  return Math.min(Math.max(offset, 0), Math.max(0, boxHeight));
++}
++
++/**
++ * [hwpxxx] 조합 글자의 가로 비율(장평). 캔버스는 글자를 장평만큼 가로로 늘이거나 줄여 그리므로 오버레이도 같은 비율을 쓴다.
++ * `ratios` 는 언어별 값(%)이고 조합 중인 글자는 한글이므로 첫 값을 쓴다. 값이 없거나 범위(50~200%) 밖이면 1.
++ */
++export function compositionWidthRatio(ratios: readonly number[] | undefined): number {
++  const percent = ratios?.[0];
++  if (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 50 || percent > 200) return 1;
++  return percent / 100;
++}
+diff --git a/rhwp-studio/tests/hwpxxx-composition-font.test.ts b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+index 2ca5fcd..a512e2e 100644
+--- a/rhwp-studio/tests/hwpxxx-composition-font.test.ts
++++ b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
+@@ -47,8 +47,37 @@ test('글꼴 이름이 없거나 따옴표·역슬래시·줄바꿈이 섞여도
+ test('연결: 조합 오버레이가 해석된 글꼴을 받고, 못 쓰면 기존 값으로 물러난다', () => {
+   const handler = source('engine/input-handler.ts');
+   assert.match(handler, /overlayFont = compositionCssFont\(\{/);
+-  assert.match(handler, /this\.caret\.showComposition\(startRect, charWidth, zoom, text, fontFamily, overlayFont\)/);
++  assert.match(handler, /this\.caret\.showComposition\(startRect, charWidth, zoom, text, fontFamily, overlayFont, overlayWidthRatio\)/);
+   const caret = source('engine/caret-renderer.ts');
+   assert.match(caret, /if \(font\) \{\s+this\.compEl\.style\.font = font;/);
+-  assert.match(caret, /this\.compEl\.style\.lineHeight = `\$\{h\}px`;/, '줄 높이는 shorthand 뒤에 다시 정한다');
++  assert.ok(caret.indexOf("this.compEl.style.lineHeight = '0';") > caret.indexOf('this.compEl.style.font = font;'), '줄 높이는 shorthand 뒤에 다시 정한다');
++});
++
++test('조합 글자의 기준선은 캔버스와 같은 자리(캐럿 사각형 위에서 높이의 80%)에 둔다', async () => {
++  const { compositionBaselineOffset } = await import('../src/hwpxxx/composition-font.ts');
++  // 상자가 캐럿 사각형 그대로일 때
++  assert.equal(compositionBaselineOffset({ y: 100, height: 20 }, 100, 20), 16);
++  // 셀 경계로 상자가 위로 3 옮겨지면 기준선은 상자 기준으로 3 더 아래다.
++  assert.equal(compositionBaselineOffset({ y: 100, height: 20 }, 97, 20), 19);
++  // 상자 밖으로는 나가지 않는다.
++  assert.equal(compositionBaselineOffset({ y: 100, height: 20 }, 60, 12), 12);
++  assert.equal(compositionBaselineOffset({ y: 100, height: 20 }, 140, 12), 0);
++  assert.equal(compositionBaselineOffset({ y: Number.NaN, height: 20 }, 0, 10), 8);
++  // 오버레이는 줄 높이 0 + 기준선 버팀대로 글자를 놓는다(상자 가운데 정렬이 아니다).
++  const caret = source('engine/caret-renderer.ts');
++  assert.match(caret, /this\.compStrut\.style\.height = `\$\{compositionBaselineOffset\(startRect, box\.y, box\.h\) \* zoom\}px`/);
++  assert.match(caret, /this\.compEl\.style\.lineHeight = '0'/);
++  assert.doesNotMatch(caret, /this\.compEl\.style\.lineHeight = `\$\{h\}px`/);
++});
++
++test('조합 글자는 캔버스처럼 상자 왼쪽에서 시작하고 장평을 따른다', async () => {
++  const { compositionWidthRatio } = await import('../src/hwpxxx/composition-font.ts');
++  assert.equal(compositionWidthRatio([80, 100, 100]), 0.8);
++  assert.equal(compositionWidthRatio([150]), 1.5);
++  assert.equal(compositionWidthRatio([100]), 1);
++  for (const bad of [undefined, [], [0], [49], [201], [Number.NaN]]) assert.equal(compositionWidthRatio(bad as number[] | undefined), 1, JSON.stringify(bad));
++  const caret = source('engine/caret-renderer.ts');
++  assert.match(caret, /text-align:left/);
++  assert.match(caret, /this\.compGlyph\.style\.transform = widthRatio !== 1 \? `scaleX\(\$\{widthRatio\}\)` : ''/);
++  assert.match(source('engine/input-handler.ts'), /overlayWidthRatio = compositionWidthRatio\(props\.ratios\)/);
+ });

@@ -36,10 +36,15 @@ gh secret set RELEASE_KEYSTORE_PASSWORD --env release -R moulinnoirai-cell/hwpxx
 gh api -X PUT repos/moulinnoirai-cell/hwpxxx-android/environments/release
 ```
 
-### 1-3. (권장) Environment 보호
-GitHub → Settings → Environments → `release`:
-- **Required reviewers**에 본인을 추가하면 서명 직전에 승인을 한 번 더 받습니다.
-- **Deployment branches and tags**를 `v*` 태그로 제한합니다.
+### 1-3. Environment 보호 (설정됨)
+GitHub → Settings → Environments → `release`에 다음이 걸려 있습니다.
+- **Required reviewers**: 저장소 소유자. 태그를 푸시하면 `release` 작업이 서명 직전에 멈추고, Actions 실행 화면에서 **Review deployments → Approve**를 눌러야 서명·게시가 진행됩니다.
+- **Deployment branches and tags**: `v*` 태그만. 다른 브랜치·태그의 작업은 서명 키를 쓸 수 없습니다.
+
+### 1-4. 공개 저장소 안전장치
+- **커밋 작성자 주소**: `identity` 작업이 이력의 모든 커밋에서 작성자·커미터 주소가 GitHub noreply 주소인지 검사합니다(`scripts/check-commit-identity.sh`). 하나라도 아니면 실패하고 `release` 작업도 진행되지 않습니다.
+  이미 푸시된 주소는 되돌릴 수 없으므로, 작업하는 기기에서는 같은 스크립트를 pre-push 훅으로 걸어 푸시 전에 막습니다(스크립트 머리말 참고). 커밋 전에 `git config user.email`이 noreply 주소인지 확인하세요.
+- **비밀값 푸시 차단**: 저장소의 Secret scanning과 Push protection이 켜져 있습니다.
 
 ## 2. 릴리스하기
 

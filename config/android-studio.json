@@ -20,13 +20,15 @@
   "androidPatchDir": "patches/rhwp-studio/android",
   "featurePatches": {
     "0001-hwpxxx-new-modules.patch": "67144cb006935886f8161c85bdaa883affcf5b51e7e83d8fb04c6387d1acdea9",
-    "0002-hwpxxx-editor-hooks.patch": "87e731c429bd15ec5fd75f9cb9df434848df031078ddc28609d079ea0d81a9ef"
+    "0002-hwpxxx-editor-hooks.patch": "8b2bc060ba9e529a568426d11fe08af6941e1d9511d5b4102ff7816a33f9bb3c"
   },
   "androidPatches": {
     "0101-android-new-modules.patch": "7b50a63eef6791c5fab6242b413327eb76f301e519f3c6ab2cba9a4b73afe0a1",
     "0102-android-host-hooks.patch": "74bd2e7ec752590e88cc2d5b5a1a08d2194ac33360661198a84e0aa547a74383",
     "0103-android-composition-text-zoom.patch": "2b28167fc3f1aa6e3619c202210100e3ee49d5b89791aecbe272d53935ec62f4",
-    "0104-android-host-font-scan-by-name.patch": "20eb053724b9c37831a94881c2ca9daaaf0bf1ec729bffcc807d4d409f83684b"
+    "0104-android-host-font-scan-by-name.patch": "20eb053724b9c37831a94881c2ca9daaaf0bf1ec729bffcc807d4d409f83684b",
+    "0105-android-doc-scrollbar.patch": "860ce04d04c8ef78f4ad489e79d53ec8ad6c41d5b1b9c9902dd73fc93f9987d8",
+    "0106-android-composition-baseline.patch": "89d81b89bd2bc98d4d9aaa7c0128025e9040dbee9de20c7b5f028f0a55f6b8fb"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",
