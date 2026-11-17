@@ -50,7 +50,8 @@ GitHub → Settings → Environments → `release`에 다음이 걸려 있습니
 ## 2. 릴리스하기
 
 1. `app/build.gradle`의 `versionName`을 올리고, `versionCode`는 **이전 릴리스보다 큰 정수**로 올립니다
-   (v0.2.0 = 4, 현재 소스 = 5 → 첫 서명 0.3.0은 그대로 가능, 이후는 6, 7, …). PR → `main` 머지.
+   (v0.2.0 = 4, v0.3.0 = 5, v0.3.1 = 6, v0.3.2 = 7, 이후 8, 9, …). PR → `main` 머지.
+   병합 커밋 작성자가 계정 기본 메일이 되지 않게, `gh pr merge`에는 `--author-email <id>+<login>@users.noreply.github.com`을 붙입니다.
 2. `main`의 해당 커밋에 태그를 달고 푸시합니다.
    ```bash
    git checkout main && git pull
