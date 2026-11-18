@@ -257,7 +257,7 @@ index 8e1c300..15e0407 100644
  
    return {
 diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
-index be4a3d2..9c691dc 100755
+index be4a3d2..1225988 100755
 --- a/rhwp-studio/src/engine/input-handler-keyboard.ts
 +++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
 @@ -428,25 +428,27 @@ function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentP
@@ -305,7 +305,16 @@ index be4a3d2..9c691dc 100755
  }
  
  export function prepareRhwpInternalClipboardHtml(self: any, html: string, text = ''): string {
-@@ -1999,9 +2001,13 @@ export function onPaste(this: any, e: ClipboardEvent): void {
+@@ -837,6 +839,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       const cmdId = matchShortcut(e, defaultShortcuts);
+       if (cmdId) {
+         e.preventDefault();
++        // [hwpxxx] 명령 전에 조합을 확정한다(조합 중 Ctrl+Z 가 앞 글을 지우고 조합 글자를 겹치던 문제).
++        this.finishCompositionNow?.();
+         if (cmdId === 'edit:delete' && this.cursor.isInCellSelectionMode() && e.ctrlKey && !e.metaKey) {
+           if (!this.cursor.isProtectedCellSelectionMode()) {
+             this.clearSelectedCellBlock();
+@@ -1999,9 +2003,13 @@ export function onPaste(this: any, e: ClipboardEvent): void {
      this.wasm.clipboardHasControl?.() === true &&
      !!internalClipboardText &&
      text === internalClipboardText;
@@ -320,8 +329,21 @@ index be4a3d2..9c691dc 100755
  
    // 내부 복사 marker가 있으면 내부 클립보드를 사용한다.
    // 이미지 컨트롤은 브라우저가 marker 없는 plain text만 paste 이벤트에 넘기는 경우가 있어
+diff --git a/rhwp-studio/src/engine/input-handler-mouse.ts b/rhwp-studio/src/engine/input-handler-mouse.ts
+index e329faf..dcd3d1e 100644
+--- a/rhwp-studio/src/engine/input-handler-mouse.ts
++++ b/rhwp-studio/src/engine/input-handler-mouse.ts
+@@ -298,6 +298,8 @@ function promoteCellSelectionDragCandidate(this: any, e: MouseEvent): boolean {
+ }
+ 
+ export function onClick(this: any, e: MouseEvent): void {
++  // [hwpxxx] 조합 중 다른 곳을 누르면 조합을 그 자리에서 확정하고 캐럿을 옮긴다(예전에는 조합이 원래 자리로 캐럿을 되돌렸다).
++  if (this.isComposing && e.button === 0) this.finishCompositionNow?.();
+   rememberHyperlinkClick(this, e);
+   if ((this.wasm?.pageCount ?? 0) <= 0) {
+     return;
 diff --git a/rhwp-studio/src/engine/input-handler-text.ts b/rhwp-studio/src/engine/input-handler-text.ts
-index 910c009..f06d213 100644
+index 910c009..24af253 100644
 --- a/rhwp-studio/src/engine/input-handler-text.ts
 +++ b/rhwp-studio/src/engine/input-handler-text.ts
 @@ -2,6 +2,7 @@
@@ -332,7 +354,15 @@ index 910c009..f06d213 100644
  import {
    InsertTextCommand,
    DeleteTextCommand,
-@@ -384,6 +385,8 @@ export function onCompositionStart(this: any): void {
+@@ -376,6 +377,7 @@ function clearCellBlockLetterImeFollowup(this: any): void {
+ }
+ 
+ export function onCompositionStart(this: any): void {
++  this._hwpxxxCompositionFinishedEarly = false;
+   this.compositionBodyLogical = false;
+   if (this._cellBlockLetterImeGuard?.consume('compositionstart')) {
+     clearCellBlockLetterImeFollowup.call(this);
+@@ -384,6 +386,8 @@ export function onCompositionStart(this: any): void {
  
    this.resetRawTextMutationEffects();
    this.headerFooterSelectionComposition = false;
@@ -341,7 +371,20 @@ index 910c009..f06d213 100644
    // [#7489] null = 첫 조합 글자가 들어올 때 덮어쓸 글자를 정한다. 선택을 지웠으면 덮어쓰지 않는다.
    this._compositionCovered = this.cursor.hasSelection() ? '' : null;
    // 선택 영역이 있으면 삭제 후 조합 시작
-@@ -602,6 +605,26 @@ export function onInput(this: any, e?: InputEvent): void {
+@@ -439,6 +443,12 @@ export function onCompositionStart(this: any): void {
+ }
+ 
+ export function onCompositionEnd(this: any): void {
++  // [hwpxxx] finishCompositionNow() 로 이미 확정한 조합의 늦은 compositionend: 기록·유령 입력 방지 상태를 덮어쓰지 않는다.
++  if (this._hwpxxxCompositionFinishedEarly && !this.isComposing) {
++    this._hwpxxxCompositionFinishedEarly = false;
++    this.textarea.value = '';
++    return;
++  }
+   if (this._cellBlockLetterImeGuard?.consume('compositionend', this.textarea.value)) {
+     clearCellBlockLetterImeFollowup.call(this);
+     return;
+@@ -602,6 +612,26 @@ export function onInput(this: any, e?: InputEvent): void {
        }
        this.compositionLength += charCount(this._compositionCovered);
      }
@@ -369,7 +412,7 @@ index 910c009..f06d213 100644
      // replace 전마다 해제해, 지웠다 다시 넣는 조합 글자가 누름틀 안으로 끌려가지 않게 한다.
      if (this._compositionCovered && this._compositionOutsideField) this.wasm.clearActiveField();
 diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
-index 6cb2f33..bd39a40 100644
+index 6cb2f33..ce5c2fd 100644
 --- a/rhwp-studio/src/engine/input-handler.ts
 +++ b/rhwp-studio/src/engine/input-handler.ts
 @@ -2132,6 +2132,7 @@ export class InputHandler {
@@ -412,6 +455,28 @@ index 6cb2f33..bd39a40 100644
      if (CursorState.comparePositions(this.cursor.getPosition(), this.pendingCharShapeAnchor) !== 0) {
        this.pendingCharShape = null;
        this.pendingCharShapeAnchor = null;
+@@ -3538,6 +3553,21 @@ export class InputHandler {
+     this.textarea.focus({ preventScroll: true });
+   }
+ 
++  /**
++   * [hwpxxx] 조합 중인 글을 지금 확정한다(되돌리기 기록 포함). 단축키·클릭이 조합 중에 들어오면 쓴다.
++   * 블루투스 키보드 + 삼성 키보드는 띄어쓰기 전까지 낱말 전체를 조합하므로, 조합 중 Ctrl+Z·Ctrl+B 나 다른 곳 클릭이 흔하다.
++   * `commitComposition()` 은 브라우저의 compositionend 를 기다리는데, Android WebView 는 그것이 늦게(명령이 실행된 뒤) 와서
++   * 명령이 조합 앵커를 낡게 만들었다(조합 중 Ctrl+Z → 앞 글이 지워지고 조합 글자가 겹침). 여기서는 편집기 쪽 확정을 먼저 끝내고,
++   * 뒤늦게 오는 그 조합의 compositionend 는 한 번 무시한다(같은 글의 유령 input 은 기존 장치가 버린다).
++   */
++  finishCompositionNow(): void {
++    if (!this.isComposing) return;
++    _text.onCompositionEnd.call(this);
++    (this as any)._hwpxxxCompositionFinishedEarly = true;
++    this.textarea.blur();
++    this.textarea.focus({ preventScroll: true });
++  }
++
+   private onCompositionEnd(): void {
+     _text.onCompositionEnd.call(this);
+   }
 diff --git a/rhwp-studio/src/hwpxxx/ime-recompose.ts b/rhwp-studio/src/hwpxxx/ime-recompose.ts
 new file mode 100644
 index 0000000..89c2542
@@ -821,10 +886,10 @@ index 0000000..bb1bc6d
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-input-batch.test.ts b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
 new file mode 100644
-index 0000000..53b7420
+index 0000000..b476985
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,70 @@
 +// [hwpxxx] 태블릿 입력 묶음 수정: 붙여넣기 되돌리기, 캐럿 대기 서식, 내부 복사 판단, 글자 색 분할 단추, 문자표, 화살표 초점.
 +import test from 'node:test';
 +import assert from 'node:assert/strict';
@@ -883,6 +948,17 @@ index 0000000..53b7420
 +  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({ '#menu-bar': true, '.menu-dropdown': true })), false, '열린 메뉴는 그대로');
 +  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({})), false, '도구 영역 밖(본문 등)은 손대지 않는다');
 +  assert.match(source('src/main.ts'), /if \(isAndroidHost\(\)\) \{ const editor = inputHandler; installKeepArrowsInDocument\(\{ focus: \(\) => editor\.focus\(\) \}\); \}/);
++});
++
++test('조합 중 단축키·클릭은 먼저 조합을 확정하고, 늦게 오는 compositionend 는 한 번 무시한다', () => {
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /finishCompositionNow\(\): void \{\n    if \(!this\.isComposing\) return;\n    _text\.onCompositionEnd\.call\(this\);\n    \(this as any\)\._hwpxxxCompositionFinishedEarly = true;/);
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /e\.preventDefault\(\);\n        \/\/ \[hwpxxx\] 명령 전에 조합을 확정한다[^\n]*\n        this\.finishCompositionNow\?\.\(\);/);
++  assert.match(source('src/engine/input-handler-mouse.ts'), /if \(this\.isComposing && e\.button === 0\) this\.finishCompositionNow\?\.\(\);/);
++  const text = source('src/engine/input-handler-text.ts');
++  assert.match(text, /if \(this\._hwpxxxCompositionFinishedEarly && !this\.isComposing\) \{/);
++  assert.match(text, /export function onCompositionStart\(this: any\): void \{\n  this\._hwpxxxCompositionFinishedEarly = false;/);
 +});
 diff --git a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
 index a645e8c..42bfd76 100644
