@@ -16,6 +16,7 @@ rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY
 | `android/0105-android-doc-scrollbar.patch` | 문서 영역 오른쪽의 항상 보이는 세로 스크롤바: WebView 기본 스크롤바는 스크롤할 때만 잠깐 보이고 잡을 수 없어, 손잡이를 끌거나 길을 눌러 이동하는 막대를 따로 둠(`src/hwpxxx/doc-scrollbar.ts`). 끄는 동안 쪽 표시, 길 위에 메모 자리·모두 찾기 자리 표시 |
 | `android/0106-android-composition-baseline.patch` | 한글 조합 중 글자가 위아래로 흔들리던 문제: 깜빡이는 조합 오버레이(DOM)의 글자를 상자 가운데가 아니라 캔버스 글자와 같은 기준선(캐럿 사각형 높이의 80%)에 놓고, 왼쪽 끝에서 시작해 장평을 따르게 함. 낱말 전체를 조합 구간으로 두는 입력기(삼성 키보드 등)에서도 마지막 글자만 덮음 |
 | `android/0107-android-find-all.patch` | 모두 찾기: 찾기 대화상자의 **모두 찾기** 단추가 엔진의 `searchAllText` 결과를 목록(쪽 번호 + 앞뒤 글, 300곳까지)으로 보여 주고, 고르면 그 자리로 이동. 찾은 자리는 스크롤바 길 위에 표시하고 편집하면 다시 찾음(`src/hwpxxx/find-all.ts`) |
+| `android/0108-android-editor-input-batch.patch` | 태블릿 실사용 수정 묶음: HWPX 저장(저장 파일 확장자를 따름, 새 문서는 HWPX, 저장 창의 파일 형식 선택), 문자표 세로 스크롤, 도구 단추 뒤 화살표를 본문으로, 입력기가 캐럿 앞 낱말을 다시 조합할 때 글자 중복 방지, 범위 서식 뒤 옛 캐럿 서식 버림, 표식 없는 내부 복사 붙여넣기, 글자 색 분할 단추, 서식 없는 붙여넣기의 되돌리기 한 번 |
 
 `features/` → `android/` 순서(이름순)로 적용합니다. 복구(자동 저장)는 본가 방식(세션 복구 키 `RecoveryCipher`)을 따르고,
 셸의 비공개 저장소에는 봉투를 암호문 앞에 붙여 한 덩어리 바이트로 보관합니다(`src/hwpxxx/android-draft-envelope.ts`).

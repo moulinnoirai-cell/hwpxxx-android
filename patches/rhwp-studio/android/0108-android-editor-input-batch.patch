@@ -1,0 +1,906 @@
+diff --git a/rhwp-studio/index.html b/rhwp-studio/index.html
+index 978e89e..16e2e6f 100644
+--- a/rhwp-studio/index.html
++++ b/rhwp-studio/index.html
+@@ -627,11 +627,15 @@
+           <div class="sb-ribbon-group sb-color-ribbon-group">
+             <div class="sb-command-group sb-color-group">
+               <!-- 글자색 -->
+-              <span class="sb-color-wrap">
+-                <button id="btn-text-color" class="sb-btn sb-has-arrow" title="글자 색" data-i18n-title="ui.btnTextColor.tooltip">
++              <!-- [hwpxxx] 글자 색 분할 단추: 본체 = 지금 색 바로 적용, 오른쪽 ▾ = 색 팔레트(한글과 같다) -->
++              <span id="text-color-dropdown" class="sb-color-wrap sb-dropdown">
++                <button id="btn-text-color" class="sb-btn" title="글자 색 (지금 색 적용)">
+                   <span class="sb-color-visual"><span class="sb-ga" data-i18n="ui.btnTextColor.sample">가</span><span id="color-bar"></span></span>
++                </button>
++                <button id="btn-text-color-palette" class="sb-btn" title="글자 색 팔레트" aria-haspopup="true" aria-expanded="false">
+                   <span class="sb-dd">▾</span>
+                 </button>
++                <div id="text-color-palette" class="sb-hl-palette"></div>
+                 <input id="text-color-picker" type="color" value="#000000" tabindex="-1" aria-label="글자 색 선택" data-i18n-aria-label="ui.textColorPicker.ariaLabel" />
+               </span>
+               <!-- 형광펜 -->
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index 3bc8eb7..0fc0ccb 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -143,10 +143,25 @@ function flushDeferredPaginationBeforeExplicitOutput(
+   }
+ }
+ 
++/**
++ * [hwpxxx-android] 저장 창에서 고를 수 있는 형식. HWP·HWPX 문서(새 문서 포함)는 둘 다 고를 수 있고, HWPX 를 먼저 둔다
++ * (한글도 HWPX 를 기본으로 옮겨 가는 추세). HML·PDF 에서 온 문서는 원래의 형식 선택 흐름을 그대로 쓴다.
++ */
++function androidConvertibleFormats(services: CommandServices, format: SaveFormat): SaveFormat[] | null {
++  if (!isAndroidHost() || format === 'hml') return null;
++  const source = services.wasm.getSourceFormat();
++  return source === 'hml' || source === 'pdf' ? null : ['hwpx', 'hwp'];
++}
++
++/** [hwpxxx-android] 새 문서는 HWPX 로 저장한다(저장 창에서 HWP 로 바꿀 수 있다). */
++function androidDefaultFormat(services: CommandServices, format: SaveFormat, hasHandle: boolean): SaveFormat {
++  return isAndroidHost() && format === 'hwp' && services.wasm.isNewDocument && !hasHandle ? 'hwpx' : format;
++}
++
+ async function chooseSaveAsFormat(services: CommandServices): Promise<SaveFormat | null> {
+   const sourceFormat = services.wasm.getSourceFormat();
+   if (sourceFormat === 'pdf') return showPdfSaveFormatDialog();
+-  if (sourceFormat !== 'hml') return sourceFormat === 'hwpx' ? 'hwpx' : 'hwp';
++  if (sourceFormat !== 'hml') return androidDefaultFormat(services, sourceFormat === 'hwpx' ? 'hwpx' : 'hwp', !!services.wasm.currentFileHandle);
+   const context = getHmlSaveContext(services);
+   return showHmlSaveFormatDialog(
+     context.metadata,
+@@ -234,6 +249,7 @@ async function tryFileSystemSave(
+   suggestedName: string,
+   forceSaveAs: boolean,
+   currentHandle: FileSystemFileHandleLike | null,
++  convert?: { formats: SaveFormat[]; to: (format: SaveFormat) => Promise<Blob> },
+ ): Promise<SaveDocumentResult | 'cancelled'> {
+   try {
+     const saved = await saveDocumentToFileSystem({
+@@ -243,6 +259,7 @@ async function tryFileSystemSave(
+       windowLike: window as FileSystemWindowLike,
+       forceSaveAs,
+       saveFormat: format,
++      convert,
+     });
+     if (saved.method === 'fallback' && isAndroidHost()) {
+       // [hwpxxx-android] 저장 선택기가 없으면 다운로드로 돌리지 않고 실패로 알린다(문서는 dirty 로 남는다).
+@@ -408,7 +425,7 @@ async function promptSaveAsOptions(
+   return { fileName: selection.fileName, password };
+ }
+ 
+-async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<void> {
++async function saveAsFormat(services: CommandServices, format: SaveFormat, chooseInDialog = false): Promise<void> {
+   let password: string | null = null;
+   let recoveryCipher: RecoveryCipher | null = null;
+   const generation = services.wasm.documentGeneration;
+@@ -431,6 +448,14 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+     const payload = await createSavePayload(services, format, password ?? undefined, 'save-as');
+     const originalHandle = sourceFormat === 'hml' || sourceFormat === 'pdf' ? stamp.handle : null;
++    const formats = chooseInDialog ? androidConvertibleFormats(services, format) : null;
++    const convert = formats ? {
++      formats,
++      to: async (other: SaveFormat) => {
++        assertSameDocument(services, stamp);
++        return (await createSavePayload(services, other, password ?? undefined, 'save-as')).blob;
++      },
++    } : undefined;
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+       () => {
+@@ -442,6 +467,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+           saveName,
+           true,
+           originalHandle,
++          convert,
+         );
+       },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+@@ -449,7 +475,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+         services,
+         stamp,
+         sourceFormat,
+-        format,
++        (saveResult as SaveDocumentResult).format ?? format,
+         saveResult as SaveDocumentResult,
+         'save-as',
+         password !== null,
+@@ -512,6 +538,11 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       services.wasm.fileName,
+       services.wasm.currentFileHandle,
+     );
++    // [hwpxxx-android] 새 문서의 첫 저장은 HWPX(저장 창에서 HWP 로 바꿀 수 있다).
++    const defaultFormat = androidDefaultFormat(services, target.format, !!stamp.handle);
++    if (defaultFormat !== target.format) {
++      target = { ...target, format: defaultFormat, suggestedName: fileNameForFormat(services.wasm.fileName, defaultFormat) };
++    }
+     const hmlEnabled = target.format !== 'hml' || isHmlSaveEnabled(services);
+     if (requiresSaveFormatChoice(target, hmlEnabled)) {
+       const format = await chooseSaveAsFormat(services);
+@@ -536,6 +567,14 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+     recoveryCipher = password !== null ? await RecoveryCipher.create(password) : null;
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+     const payload = await createSavePayload(services, target.format, password ?? undefined, 'save');
++    const formats = target.forceSaveAs || !stamp.handle ? androidConvertibleFormats(services, target.format) : null;
++    const convert = formats ? {
++      formats,
++      to: async (other: SaveFormat) => {
++        assertSameDocument(services, stamp);
++        return (await createSavePayload(services, other, password ?? undefined, 'save')).blob;
++      },
++    } : undefined;
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+       () => {
+@@ -548,6 +587,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+           target.suggestedName,
+           target.forceSaveAs,
+           stamp.handle,
++          convert,
+         );
+       },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+@@ -555,7 +595,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+         services,
+         stamp,
+         sourceFormat,
+-        target.format,
++        (saveResult as SaveDocumentResult).format ?? target.format,
+         saveResult as SaveDocumentResult,
+         'save',
+         password !== null,
+@@ -1018,7 +1058,7 @@ export const fileCommands: CommandDef[] = [
+     canExecute: (ctx) => ctx.hasDocument,
+     async execute(services) {
+       const format = await chooseSaveAsFormat(services);
+-      if (format !== null) await saveAsFormat(services, format);
++      if (format !== null) await saveAsFormat(services, format, true);
+     },
+   },
+   {
+diff --git a/rhwp-studio/src/command/file-system-access.ts b/rhwp-studio/src/command/file-system-access.ts
+index dc61da9..d836f68 100644
+--- a/rhwp-studio/src/command/file-system-access.ts
++++ b/rhwp-studio/src/command/file-system-access.ts
+@@ -1,3 +1,4 @@
++import { saveFormatForFileName } from './save-target.ts';
+ import {
+   SAVE_FORMAT_DETAILS,
+   type FilePickerType,
+@@ -32,6 +33,8 @@ export interface FileSystemWindowLike {
+     excludeAcceptAllOption?: boolean;
+     suggestedName?: string;
+     types?: FilePickerType[];
++    /** [hwpxxx-android] 저장 창이 "파일 형식"으로 고를 수 있는 형식(셸이 읽는다). */
++    hwpxxxFormats?: SaveFormat[];
+   }) => Promise<FileSystemFileHandleLike>;
+ }
+ 
+@@ -49,12 +52,19 @@ export interface SaveDocumentOptions {
+   forceSaveAs: boolean;
+   /** 저장 picker와 확장자 검증을 결정하는 단일 출력 포맷. */
+   saveFormat: SaveFormat;
++  /**
++   * [hwpxxx-android] 저장 창에서 고를 수 있는 다른 형식과 그 형식으로 다시 내보내는 함수. 사용자가 다른 형식(예: HWP 문서를
++   * HWPX 로)을 고르면 그 형식으로 다시 만든 바이트를 쓴다. 없으면 예전처럼 한 형식만 받는다.
++   */
++  convert?: { formats: SaveFormat[]; to: (format: SaveFormat) => Promise<Blob> };
+ }
+ 
+ export interface SaveDocumentResult {
+   method: 'current-handle' | 'save-picker' | 'fallback';
+   handle: FileSystemFileHandleLike | null;
+   fileName: string;
++  /** [hwpxxx-android] 실제로 쓴 형식(저장 창에서 형식을 바꿨으면 그 형식). */
++  format?: SaveFormat;
+ }
+ 
+ export const HWP_DOCUMENT_ACCEPT: Record<string, string[]> = {
+@@ -175,21 +185,27 @@ export async function saveDocumentToFileSystem(options: SaveDocumentOptions): Pr
+   }
+ 
+   if (windowLike.showSaveFilePicker) {
++    const convert = options.convert;
+     const handle = await windowLike.showSaveFilePicker({
+       excludeAcceptAllOption: true,
+       suggestedName,
+       types: pickerTypes,
++      ...(convert && convert.formats.length > 1 ? { hwpxxxFormats: convert.formats } : {}),
+     });
++    // [hwpxxx-android] 저장 창에서 다른 형식을 골랐으면 그 형식으로 다시 내보낸다.
++    const picked = saveFormatForFileName(handle.name);
++    const format = picked && picked !== saveFormat && convert?.formats.includes(picked) ? picked : saveFormat;
+     await assertValidSaveHandle(
+       handle,
+-      expectedSaveExtension(saveFormat),
++      expectedSaveExtension(format),
+       forceSaveAs ? currentHandle : null,
+     );
+-    await writeBlobToHandle(handle, blob);
++    await writeBlobToHandle(handle, format === saveFormat ? blob : await convert!.to(format));
+     return {
+       method: 'save-picker',
+       handle,
+       fileName: handle.name,
++      format,
+     };
+   }
+ 
+diff --git a/rhwp-studio/src/command/save-target.ts b/rhwp-studio/src/command/save-target.ts
+index 8e1c300..15e0407 100644
+--- a/rhwp-studio/src/command/save-target.ts
++++ b/rhwp-studio/src/command/save-target.ts
+@@ -31,7 +31,7 @@ export function forgetConvertedHmlSaveHandle(handle: NamedSaveHandle | null): vo
+   if (handle) convertedHmlSaveHandles.delete(handle);
+ }
+ 
+-function saveFormatForFileName(fileName: string): SaveFormat | null {
++export function saveFormatForFileName(fileName: string): SaveFormat | null {
+   const normalized = fileName.trim().toLowerCase();
+   if (normalized.endsWith('.hml')) return 'hml';
+   if (normalized.endsWith('.hwpx')) return 'hwpx';
+@@ -83,7 +83,13 @@ export function resolveSaveTarget(
+   const convertedFormat = hasConvertedHmlTarget
+     ? saveFormatForFileName(convertedTarget)
+     : null;
++  // [hwpxxx] HWP·HWPX 문서는 지금 저장할 파일의 확장자를 따른다. "HWPX로 저장"한 뒤 Ctrl+S 가 원래 형식(HWP)으로 내보내려다
++  // ".hwp 확장자를 가진 파일을 선택해야 합니다" 로 멈추던 것을 막는다.
++  const handleFormat = !convertedFormat && currentHandle && (sourceFormat === 'hwp' || sourceFormat === 'hwpx')
++    ? saveFormatForFileName(currentHandle.name)
++    : null;
+   const format: SaveFormat = convertedFormat
++    ?? (handleFormat === 'hwp' || handleFormat === 'hwpx' ? handleFormat : null)
+     ?? (sourceFormat === 'hwpx' ? 'hwpx' : 'hwp');
+ 
+   return {
+diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
+index be4a3d2..9c691dc 100755
+--- a/rhwp-studio/src/engine/input-handler-keyboard.ts
++++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
+@@ -428,25 +428,27 @@ function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentP
+   return newPos;
+ }
+ 
++/**
++ * 서식 없는 글 붙여넣기.
++ * [hwpxxx] 선택 지우기와 줄마다의 삽입·문단 나누기를 스냅샷 한 번으로 묶는다. 예전에는 선택을 `deferRecord`(스냅샷 안에서만
++ * 쓰는 옵션)로 지운 뒤 줄마다 따로 기록해, 되돌리기가 지운 글을 되살리지 못하고(내용 손실) 다시 실행하면 문서가 어긋났으며,
++ * n 줄 붙여넣기를 되돌리려면 2n-1 번 눌러야 했다. 이제 붙여넣기 한 번 = 되돌리기 한 번이다.
++ */
+ function pastePlainText(this: any, text: string, hasSelection: boolean): void {
+-  if (hasSelection) {
+-    this.deleteSelection({ deferRecord: true });
+-  }
+-  if (!text) return;
+-
+-  const lines = text.split(/\r?\n/);
+-  for (let i = 0; i < lines.length; i++) {
+-    if (lines[i]) {
+-      this.executeOperation({ kind: 'command', command: new InsertTextCommand(this.cursor.getPosition(), lines[i]) });
+-    }
+-    if (i < lines.length - 1) {
+-      const position = this.cursor.getPosition();
+-      const command = this.cursor.isInCell()
+-        ? new SplitParagraphInCellCommand(position)
+-        : new SplitParagraphCommand(position);
+-      this.executeOperation({ kind: 'command', command });
++  if (!text && !hasSelection) return;
++  const lines = text ? text.split(/\r?\n/) : [];
++  this.executeOperation({ kind: 'snapshot', operationType: 'pastePlainText', operation: (wasm: WasmBridge) => {
++    if (hasSelection) this.deleteSelection({ deferRecord: true });
++    let position: DocumentPosition = this.cursor.getPosition();
++    const inCell = this.cursor.isInCell();
++    for (let i = 0; i < lines.length; i++) {
++      if (lines[i]) position = new InsertTextCommand(position, lines[i]).execute(wasm);
++      if (i < lines.length - 1) {
++        position = (inCell ? new SplitParagraphInCellCommand(position) : new SplitParagraphCommand(position)).execute(wasm);
++      }
+     }
+-  }
++    return position;
++  }});
+ }
+ 
+ export function prepareRhwpInternalClipboardHtml(self: any, html: string, text = ''): string {
+@@ -1999,9 +2001,13 @@ export function onPaste(this: any, e: ClipboardEvent): void {
+     this.wasm.clipboardHasControl?.() === true &&
+     !!internalClipboardText &&
+     text === internalClipboardText;
++  // [hwpxxx] Android 클립보드를 거치면 HTML 주석(내부 복사 표식)이 빠질 수 있다. 그때 서식 없는 글로 붙이면 글자 모양이
++  // 사라지고 캐럿 자리의 서식(옛 색 등)으로 들어갔다. 시스템 글이 마지막 내부 복사의 글과 같으면 같은 복사로 보고 서식째 붙인다.
++  const sameText = (a: string, b: string) => a.replace(/\r\n?/g, '\n') === b.replace(/\r\n?/g, '\n');
++  const hasMatchingInternalText = !!text && !!internalClipboardText && sameText(text, internalClipboardText);
+   const useInternalClipboard =
+     this.wasm.hasInternalClipboard() &&
+-    (!clipboardData || hasCurrentInternalMarker || hasMatchingInternalControlText);
++    (!clipboardData || hasCurrentInternalMarker || hasMatchingInternalControlText || hasMatchingInternalText);
+ 
+   // 내부 복사 marker가 있으면 내부 클립보드를 사용한다.
+   // 이미지 컨트롤은 브라우저가 marker 없는 plain text만 paste 이벤트에 넘기는 경우가 있어
+diff --git a/rhwp-studio/src/engine/input-handler-text.ts b/rhwp-studio/src/engine/input-handler-text.ts
+index 910c009..f06d213 100644
+--- a/rhwp-studio/src/engine/input-handler-text.ts
++++ b/rhwp-studio/src/engine/input-handler-text.ts
+@@ -2,6 +2,7 @@
+ /* eslint-disable @typescript-eslint/no-explicit-any */
+ 
+ import { normalizeTextNewlines } from '../core/text-newlines';
++import { recomposedPrefixLength } from '@/hwpxxx/ime-recompose';
+ import {
+   InsertTextCommand,
+   DeleteTextCommand,
+@@ -384,6 +385,8 @@ export function onCompositionStart(this: any): void {
+ 
+   this.resetRawTextMutationEffects();
+   this.headerFooterSelectionComposition = false;
++  // [hwpxxx] 이번 조합의 첫 갱신에서 입력기가 캐럿 앞 낱말을 다시 조합하는지 본다(선택을 지우고 시작한 조합은 제외).
++  this._hwpxxxRecomposeCheck = !this.cursor.hasSelection();
+   // [#7489] null = 첫 조합 글자가 들어올 때 덮어쓸 글자를 정한다. 선택을 지웠으면 덮어쓰지 않는다.
+   this._compositionCovered = this.cursor.hasSelection() ? '' : null;
+   // 선택 영역이 있으면 삭제 후 조합 시작
+@@ -602,6 +605,26 @@ export function onInput(this: any, e?: InputEvent): void {
+       }
+       this.compositionLength += charCount(this._compositionCovered);
+     }
++    // [hwpxxx] 입력기가 캐럿 앞 낱말을 다시 조합하면(Android 키보드), 그 글자들을 조합 구간에 넣어 겹쳐 들어가지 않게 한다.
++    if (this._hwpxxxRecomposeCheck) {
++      this._hwpxxxRecomposeCheck = false;
++      if (!this._compositionCovered && this.compositionLength === 0 && !this.compositionBodyLogical && text
++        && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()) {
++        const span = Math.min(anchor.charOffset, charCount(text));
++        const before = span > 0 ? this.getTextAt({ ...anchor, charOffset: anchor.charOffset - span }, span) : '';
++        const k = recomposedPrefixLength(text, before);
++        if (k > 0) {
++          const prefix = Array.from(before).slice(-k).join('');
++          anchor = { ...anchor, charOffset: anchor.charOffset - charCount(prefix) };
++          this.compositionAnchor = anchor;
++          this._compositionCovered = prefix;
++          this._compositionFragment = captureTextFragment(this.wasm, anchor);
++          const fi = this.wasm.getFieldInfoAt(anchor);
++          this._compositionOutsideField = !fi.inField || this.isAtExitedFieldEnd?.(anchor, fi);
++          this.compositionLength = charCount(prefix);
++        }
++      }
++    }
+     // [#7489] 덮은 글자 뒤 캐럿이 누름틀 시작에 서면 그 누름틀이 활성화된다. 앵커가 누름틀 밖이면
+     // replace 전마다 해제해, 지웠다 다시 넣는 조합 글자가 누름틀 안으로 끌려가지 않게 한다.
+     if (this._compositionCovered && this._compositionOutsideField) this.wasm.clearActiveField();
+diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
+index 6cb2f33..bd39a40 100644
+--- a/rhwp-studio/src/engine/input-handler.ts
++++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -2132,6 +2132,7 @@ export class InputHandler {
+       // F5 블록에서 Ctrl+클릭으로 모든 셀을 제외한 경우다. 빈 블록을 일반 텍스트
+       // 선택 없음으로 fallback하면 앵커 셀 하나를 바꾸므로, history도 만들지 않고 끝낸다.
+       if (block.cellIndices.length === 0) return;
++      this.dropPendingCharShape(); // [hwpxxx] 범위에 서식을 주면 캐럿 대기 서식은 버린다(한글과 같다)
+       this.applyCharFormatToCellBlock(block, props);
+       return;
+     }
+@@ -2143,10 +2144,19 @@ export class InputHandler {
+       this.stagePendingCharShape(props);
+       return;
+     }
++    // [hwpxxx] 범위에 서식을 주면 캐럿 대기 서식은 버린다. 남겨 두면 범위를 지운 뒤 같은 캐럿 자리로 돌아와 이어 쓰거나
++    // 붙여 넣을 때, 그 전에 예약했던 옛 색·서식이 다시 살아났다(색을 여러 번 바꾼 글 뒤에 옛 색으로 들어감).
++    this.dropPendingCharShape();
+     const cmd = new ApplyCharFormatCommand(sel.start, sel.end, props);
+     this.executeOperation({ kind: 'command', command: cmd });
+   }
+ 
++  /** [hwpxxx] 캐럿 대기 서식 예약을 버린다. */
++  private dropPendingCharShape(): void {
++    this.pendingCharShape = null;
++    this.pendingCharShapeAnchor = null;
++  }
++
+   private applyCharFormatInHeaderFooterSelection(props: Partial<CharProperties>): boolean {
+     const ordered = this.getNonEmptyHeaderFooterSelection();
+     if (!ordered) return false;
+@@ -2213,6 +2223,11 @@ export class InputHandler {
+   getPendingCharShape(): Partial<CharProperties> | undefined {
+     if (!this.pendingCharShape || !this.pendingCharShapeAnchor) return undefined;
+     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return undefined;
++    // [hwpxxx] 범위를 잡았다면 캐럿을 옮긴 것과 같다: 같은 자리로 돌아와도 예약은 이미 낡았다.
++    if (this.cursor.hasSelection() && this.getNonEmptySelection()) {
++      this.dropPendingCharShape();
++      return undefined;
++    }
+     if (CursorState.comparePositions(this.cursor.getPosition(), this.pendingCharShapeAnchor) !== 0) {
+       this.pendingCharShape = null;
+       this.pendingCharShapeAnchor = null;
+diff --git a/rhwp-studio/src/hwpxxx/ime-recompose.ts b/rhwp-studio/src/hwpxxx/ime-recompose.ts
+new file mode 100644
+index 0000000..89c2542
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/ime-recompose.ts
+@@ -0,0 +1,25 @@
++/**
++ * [hwpxxx] 입력기가 이미 들어간 글자를 다시 조합할 때 글자가 겹치지 않게 한다.
++ *
++ * Android 키보드(삼성 키보드, Gboard 등)는 띄어쓰기 전까지를 한 낱말로 보고, 캐럿 바로 앞 낱말을 조합 구간으로 다시 잡는다
++ * (`setComposingRegion`). 숫자처럼 바로 들어간 글자 뒤에 한글을 이어 쓰면 "21" 다음 "제"를 누를 때 조합 글이 "21제"로 온다.
++ * 편집기는 조합 글을 캐럿 자리에 새로 넣기 때문에 "21" 이 한 번 더 들어가 "2121제" 가 됐다.
++ * 조합의 첫 갱신이 캐럿 앞 글자들로 시작하면, 그 글자들을 조합 구간에 포함해(덮어쓰기와 같은 방식) 새 글로 바꾼다.
++ */
++
++/** 데스크톱 입력기처럼 한 글자씩 조합할 때와 구분하는 기준: 겹치는 부분이 두 글자 이상이거나, 겹친 뒤에 새 글자가 더 있다. */
++export function recomposedPrefixLength(text: string, before: string): number {
++  if (!text || !before) return 0;
++  const textChars = Array.from(text);
++  const beforeChars = Array.from(before);
++  // 키보드의 낱말은 빈칸·줄바꿈을 넘지 않는다.
++  let start = beforeChars.length;
++  while (start > 0 && !/\s/u.test(beforeChars[start - 1])) start--;
++  const word = beforeChars.slice(start);
++  for (let k = Math.min(word.length, textChars.length); k > 0; k--) {
++    const suffix = word.slice(word.length - k).join('');
++    if (!text.startsWith(suffix)) continue;
++    return k >= 2 || textChars.length > k ? k : 0;
++  }
++  return 0;
++}
+diff --git a/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts b/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts
+new file mode 100644
+index 0000000..1d557ff
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts
+@@ -0,0 +1,42 @@
++/**
++ * [hwpxxx-android] 화살표 키는 본문 안에서만 움직인다.
++ *
++ * 태블릿에서 메뉴·도구 상자·서식 막대의 단추를 누르면 그 단추가 키보드 초점을 가질 수 있고, 이어서 누른 화살표 키가 본문 캐럿이 아니라
++ * 도구 상자 사이를 옮겨 다녔다(한글·워드는 단추를 누른 뒤에도 화살표가 본문 캐럿을 움직인다). 열린 메뉴·입력칸·목록 상자가 아닌
++ * 도구 단추에 초점이 있을 때 화살표 키를 받으면, 초점을 본문으로 돌리고 같은 키를 본문 입력기에 넘긴다.
++ * 네이티브 쪽(MainActivity.dispatchKeyEvent)은 페이지가 쓰지 않은 화살표 키로 Android 가 초점을 WebView 밖으로 옮기지 못하게 막는다.
++ */
++const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
++const TOOL_AREAS = '#menu-bar, #icon-toolbar, #style-bar';
++/** 화살표가 원래 뜻대로 쓰여야 하는 곳: 열린 메뉴, 글·숫자 입력칸, 목록 상자, 대화상자. */
++const KEEP_NATIVE = 'input, select, textarea, [contenteditable=""], [contenteditable="true"], .menu-item.open, .menu-dropdown, [role="menu"], [role="listbox"], .dialog-wrap, .modal-overlay';
++
++export interface ArrowRedirectTarget {
++  /** 본문 입력기(숨은 textarea)로 초점을 돌린다. */
++  focus(): void;
++}
++
++/** 이 키 입력을 본문으로 돌려야 하는지(순수 판단, 시험용). */
++export function shouldRedirectArrow(event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'metaKey' | 'isComposing'>, target: Element | null): boolean {
++  if (!ARROWS.has(event.key) || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return false;
++  if (!target || !target.closest(TOOL_AREAS)) return false;
++  return !target.closest(KEEP_NATIVE);
++}
++
++export function installKeepArrowsInDocument(editor: ArrowRedirectTarget, doc: Document = document): () => void {
++  const onKeyDown = (event: KeyboardEvent) => {
++    const target = event.target instanceof Element ? event.target : doc.activeElement;
++    if (!shouldRedirectArrow(event, target)) return;
++    event.preventDefault();
++    event.stopPropagation();
++    (target as HTMLElement | null)?.blur?.();
++    editor.focus();
++    const input = doc.activeElement;
++    if (!input || input === target || input === doc.body) return;
++    input.dispatchEvent(new KeyboardEvent('keydown', {
++      key: event.key, code: event.code, shiftKey: event.shiftKey, bubbles: true, cancelable: true,
++    }));
++  };
++  doc.addEventListener('keydown', onKeyDown, true);
++  return () => doc.removeEventListener('keydown', onKeyDown, true);
++}
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 017562f..80be60a 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -35,6 +35,7 @@ import type { StudioPlugin } from '@/plugin/types';
+ import { CommandDispatcher } from '@/command/dispatcher';
+ import { installMemoMarks } from '@/hwpxxx/memo-marks';
+ import { installDocScrollbar } from '@/hwpxxx/doc-scrollbar';
++import { installKeepArrowsInDocument } from '@/hwpxxx/keep-arrows-in-document';
+ import '@/styles/hwpxxx-scrollbar.css';
+ import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
+ import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+@@ -778,6 +779,7 @@ async function initialize(): Promise<void> {
+       canvasView.getViewportManager(),
+     );
+     installInputPerfProbes(inputHandler as unknown as Record<string, any>); // [hwpxxx] 입력 경로 시간 계측(숫자만, 기록·전송 없음)
++    if (isAndroidHost()) { const editor = inputHandler; installKeepArrowsInDocument({ focus: () => editor.focus() }); } // [hwpxxx-android] 화살표는 본문 안에서만
+     inputHandler.configureCommandErrors({
+       isDirty: () => documentState.isDirty(),
+       render: () => canvasView!.refreshDocumentAgentMutation(),
+diff --git a/rhwp-studio/src/styles/style-bar.css b/rhwp-studio/src/styles/style-bar.css
+index d12c8a0..dc2a288 100644
+--- a/rhwp-studio/src/styles/style-bar.css
++++ b/rhwp-studio/src/styles/style-bar.css
+@@ -530,8 +530,9 @@
+   padding: 1px 2px;
+ }
+ 
+-/* [hwpxxx] 형광펜 분할 단추: 본체(즉시 형광펜)와 오른쪽 팔레트 단추 */
+-#style-bar #btn-highlight-palette {
++/* [hwpxxx] 형광펜·글자 색 분할 단추: 본체(즉시 적용)와 오른쪽 팔레트 단추 */
++#style-bar #btn-highlight-palette,
++#style-bar #btn-text-color-palette {
+   width: 14px;
+   min-width: 14px;
+   padding: 1px 0;
+@@ -591,6 +592,7 @@
+   box-shadow: var(--shadow-light);
+ }
+ #highlight-dropdown.open .sb-hl-palette { display: block; }
++#text-color-dropdown.open .sb-hl-palette { display: block; }
+ 
+ .sb-hl-palette-row {
+   display: flex;
+diff --git a/rhwp-studio/src/styles/symbols-dialog.css b/rhwp-studio/src/styles/symbols-dialog.css
+index e71e626..ff20392 100644
+--- a/rhwp-studio/src/styles/symbols-dialog.css
++++ b/rhwp-studio/src/styles/symbols-dialog.css
+@@ -2,7 +2,8 @@
+    문자표 입력 대화상자
+    ================================================================ */
+ .sym-dialog {
+-  width: 640px;
++  /* [hwpxxx] 태블릿 세로 화면에서도 넘치지 않게 화면 폭에 맞춘다. */
++  width: min(680px, calc(100vw - 24px));
+ }
+ 
+ .sym-body {
+@@ -78,14 +79,20 @@
+   text-align: center;
+ }
+ 
+-/* 문자 그리드 */
++/* 문자 그리드
++ * [hwpxxx] 16칸 고정 + 정사각형(aspect-ratio)이면 칸이 그리드보다 넓어져 오른쪽 칸이 잘리고 가로 스크롤도 없었다.
++ * 한글의 문자표처럼 칸 크기를 고정하고 폭에 들어가는 만큼 줄을 바꿔, 세로 스크롤만으로 모든 문자를 고르게 한다. */
+ .sym-char-grid {
+   display: grid;
+-  grid-template-columns: repeat(16, 1fr);
++  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
++  grid-auto-rows: 36px;
+   border: 1px solid var(--ui-border-strong);
+   background: var(--color-surface);
++  overflow-x: hidden;
+   overflow-y: auto;
+-  height: 250px;
++  overscroll-behavior: contain;
++  touch-action: pan-y;
++  height: min(300px, 45vh);
+   gap: 0;
+ }
+ 
+@@ -94,8 +101,9 @@
+   align-items: center;
+   justify-content: center;
+   width: 100%;
+-  aspect-ratio: 1;
+-  font-size: 15px;
++  height: 100%;
++  min-width: 0;
++  font-size: 18px;
+   cursor: pointer;
+   border: 1px solid var(--ui-border-subtle);
+   box-sizing: border-box;
+@@ -155,3 +163,10 @@
+   color: var(--color-text-hint);
+   padding: 4px 8px;
+ }
++
++/* [hwpxxx] 좁은 화면(태블릿 세로 분할 등): 문자 영역 목록을 위로 올리고 그리드에 폭을 준다. */
++@media (max-width: 600px) {
++  .sym-top { flex-direction: column; }
++  .sym-block-col { width: auto; }
++  .sym-block-list { height: 120px; }
++}
+diff --git a/rhwp-studio/src/ui/toolbar.ts b/rhwp-studio/src/ui/toolbar.ts
+index 5ca111a..0adc0a4 100644
+--- a/rhwp-studio/src/ui/toolbar.ts
++++ b/rhwp-studio/src/ui/toolbar.ts
+@@ -406,21 +406,85 @@ export class Toolbar {
+     });
+   }
+ 
+-  /** 글자색 피커 이벤트 */
++  /**
++   * 글자색 피커 이벤트.
++   * [hwpxxx] 분할 단추: 본체는 막대에 보이는 지금 색을 바로 적용하고, ▾ 는 팔레트(자주 쓰는 색 + 다른 색...)를 연다.
++   * 예전에는 단추가 곧바로 기본 색 고르기 창을 열었는데, 고른 색이 창의 기존 값과 같으면 브라우저가 input 이벤트를 내지 않아
++   * 색이 섞인 글을 잡고 같은 색을 골라도 아무것도 바뀌지 않았다. 본체 단추는 고른 적 있는 색을 항상 다시 적용한다.
++   */
+   private setupColorPicker(): void {
+-    // 선택은 mousedown에서 보존하고, 키보드도 발생시키는 click에서 활성화한다.
+-    this.btnTextColor.addEventListener('mousedown', (e) => {
+-      e.preventDefault();
++    const dropdown = this.container.querySelector<HTMLElement>('#text-color-dropdown')!;
++    const paletteButton = this.container.querySelector<HTMLButtonElement>('#btn-text-color-palette')!;
++    const palette = this.container.querySelector<HTMLElement>('#text-color-palette')!;
++    let current = '#ff0000'; // 처음 막대 색(빨강)과 같게
++    this.colorBar.style.background = current;
++    const close = () => { dropdown.classList.remove('open'); paletteButton.setAttribute('aria-expanded', 'false'); };
++    const apply = (color: string) => {
++      current = color;
++      this.colorBar.style.background = color;
++      this.colorPicker.value = color;
++      close();
++      this.eventBus.emit('format-char', { textColor: color } as CharProperties);
++    };
++    const keepSelection = (e: Event) => { e.preventDefault(); e.stopPropagation(); };
++
++    this.btnTextColor.addEventListener('mousedown', keepSelection);
++    this.btnTextColor.addEventListener('click', () => apply(current));
++    paletteButton.addEventListener('mousedown', keepSelection);
++    paletteButton.addEventListener('click', () => {
++      const open = dropdown.classList.toggle('open');
++      paletteButton.setAttribute('aria-expanded', String(open));
+     });
+-    this.btnTextColor.addEventListener('click', () => {
+-      this.colorPicker.click();
++
++    const COLORS = [
++      ['#000000', '#404040', '#808080', '#c0c0c0', '#ffffff', '#c00000', '#ff0000'],
++      ['#ff8000', '#ffc000', '#ffff00', '#92d050', '#00b050', '#00b0f0', '#0070c0'],
++      ['#002060', '#7030a0', '#ff00ff', '#996633', '#e26b0a', '#4f81bd', '#1f497d'],
++    ];
++    const actions = document.createElement('div');
++    actions.className = 'sb-hl-palette-actions';
++    const auto = document.createElement('button');
++    auto.textContent = '검정(기본)';
++    auto.addEventListener('mousedown', keepSelection);
++    auto.addEventListener('click', () => apply('#000000'));
++    const other = document.createElement('button');
++    other.textContent = '다른 색...';
++    other.addEventListener('mousedown', keepSelection);
++    other.addEventListener('click', () => { close(); this.colorPicker.click(); });
++    actions.append(auto, other);
++    palette.appendChild(actions);
++    for (const row of COLORS) {
++      const rowEl = document.createElement('div');
++      rowEl.className = 'sb-hl-palette-row';
++      for (const color of row) {
++        const swatch = document.createElement('div');
++        swatch.className = 'sb-hl-swatch';
++        swatch.style.background = color;
++        swatch.title = color;
++        swatch.addEventListener('mousedown', (e) => { keepSelection(e); apply(color); });
++        rowEl.appendChild(swatch);
++      }
++      palette.appendChild(rowEl);
++    }
++    dropdown.addEventListener('keydown', (event) => {
++      if (event.key !== 'Escape' || !dropdown.classList.contains('open')) return;
++      event.preventDefault();
++      event.stopPropagation();
++      close();
++      paletteButton.focus();
+     });
++    document.addEventListener('mousedown', (e) => { if (!dropdown.contains(e.target as Node)) close(); });
+ 
+-    this.colorPicker.addEventListener('input', () => {
++    // 기본 색 고르기 창: 고른 색을 바로 적용한다(창에서 바뀔 때마다 오는 input 과, 닫을 때 오는 change 를 한 번만 처리).
++    let last = '';
++    const fromPicker = () => {
+       const color = this.colorPicker.value;
+-      this.colorBar.style.background = color;
+-      this.eventBus.emit('format-char', { textColor: color } as CharProperties);
+-    });
++      if (color === last) return;
++      last = color;
++      apply(color);
++    };
++    this.colorPicker.addEventListener('input', fromPicker);
++    this.colorPicker.addEventListener('change', () => { last = ''; });
+   }
+ 
+   /** 형광펜 팔레트 설정 */
+@@ -748,10 +812,8 @@ export class Toolbar {
+     if (this.spacingInput && document.activeElement !== this.spacingInput && props.spacings?.length) this.spacingInput.value = Math.round(props.spacings[0]) + ' %';
+ 
+     // 글자색
+-    if (props.textColor) {
+-      this.colorBar.style.background = props.textColor;
+-      this.colorPicker.value = props.textColor;
+-    }
++    // [hwpxxx] 막대와 색 고르기 창은 본체 단추가 적용할 "지금 색"(마지막으로 고른 색)을 보여 준다. 캐럿 자리 색으로 바꾸면
++    // 색이 섞인 글을 잡고 그 색을 다시 골랐을 때 창이 변화를 알리지 않아 적용되지 않았다(한글도 마지막 고른 색을 유지한다).
+ 
+     // 형광펜 색상 표시
+     if (props.shadeColor) {
+diff --git a/rhwp-studio/tests/hwpxxx-android-save-format.test.ts b/rhwp-studio/tests/hwpxxx-android-save-format.test.ts
+new file mode 100644
+index 0000000..ec5947d
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-save-format.test.ts
+@@ -0,0 +1,70 @@
++// [hwpxxx-android] HWPX 저장: 저장할 파일의 확장자를 따르고, 저장 창에서 고른 형식으로 다시 내보낸다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++import { resolveSaveTarget } from '../src/command/save-target.ts';
++import { saveDocumentToFileSystem } from '../src/command/file-system-access.ts';
++
++function handle(name: string) {
++  const writes: Blob[] = [];
++  return {
++    writes,
++    kind: 'file' as const,
++    name,
++    async getFile() { return new File([], name); },
++    async createWritable() { return { async write(data: Blob) { writes.push(data); }, async close() {} }; },
++  };
++}
++
++test('Ctrl+S 는 지금 파일의 확장자를 따른다: HWP 문서를 HWPX 로 저장한 뒤에는 HWPX 로 저장한다', () => {
++  assert.equal(resolveSaveTarget('hwp', '보고서.hwpx', handle('보고서.hwpx')).format, 'hwpx');
++  assert.equal(resolveSaveTarget('hwpx', '보고서.hwp', handle('보고서.hwp')).format, 'hwp');
++  // 핸들이 없으면 예전처럼 원래 형식
++  assert.equal(resolveSaveTarget('hwp', '보고서.hwp', null).format, 'hwp');
++  assert.equal(resolveSaveTarget('hwpx', '보고서.hwpx', null).format, 'hwpx');
++  // HML 출처는 원래 흐름(변환 저장 핸들 표식이 있을 때만)
++  assert.equal(resolveSaveTarget('hml', '보고서.hml', handle('보고서.hwpx')).format, 'hml');
++});
++
++test('저장 창에서 다른 형식을 고르면 그 형식으로 다시 만든 바이트를 쓴다', async () => {
++  const picked = handle('보고서.hwpx');
++  let offered: unknown = null;
++  const converted: string[] = [];
++  const result = await saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']),
++    suggestedName: '보고서.hwp',
++    currentHandle: null,
++    forceSaveAs: true,
++    saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async (options) => { offered = options?.hwpxxxFormats; return picked; } },
++    convert: { formats: ['hwpx', 'hwp'], to: async (format) => { converted.push(format); return new Blob([`${format.toUpperCase()}-BYTES`]); } },
++  });
++  assert.deepEqual(offered, ['hwpx', 'hwp'], '저장 창에 고를 형식을 알린다');
++  assert.deepEqual(converted, ['hwpx']);
++  assert.equal(result.format, 'hwpx');
++  assert.equal(await picked.writes[0].text(), 'HWPX-BYTES');
++});
++
++test('같은 형식이면 다시 내보내지 않고, 변환을 주지 않은 저장은 예전처럼 확장자를 검사한다', async () => {
++  const same = handle('보고서.hwp');
++  let calls = 0;
++  const result = await saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']), suggestedName: '보고서.hwp', currentHandle: null, forceSaveAs: true, saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async () => same },
++    convert: { formats: ['hwpx', 'hwp'], to: async () => { calls++; return new Blob(['X']); } },
++  });
++  assert.equal(calls, 0);
++  assert.equal(result.format, 'hwp');
++  await assert.rejects(saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']), suggestedName: '보고서.hwp', currentHandle: null, forceSaveAs: true, saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async () => handle('보고서.hwpx') },
++  }), /\.hwp 확장자/);
++});
++
++test('새 문서의 첫 저장은 HWPX, 일반 "다른 이름으로 저장"만 형식을 고를 수 있다', () => {
++  const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
++  assert.match(file, /function androidDefaultFormat\(services: CommandServices, format: SaveFormat, hasHandle: boolean\): SaveFormat \{\n  return isAndroidHost\(\) && format === 'hwp' && services\.wasm\.isNewDocument && !hasHandle \? 'hwpx' : format;/);
++  assert.match(file, /if \(format !== null\) await saveAsFormat\(services, format, true\);/);
++  assert.match(file, /\(saveResult as SaveDocumentResult\)\.format \?\? target\.format/);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts b/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts
+new file mode 100644
+index 0000000..bb1bc6d
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts
+@@ -0,0 +1,28 @@
++// [hwpxxx] 입력기가 캐럿 앞 낱말을 다시 조합할 때 글자가 겹치지 않게: 겹침 길이 판단과 편집기 연결.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { recomposedPrefixLength } from '../src/hwpxxx/ime-recompose.ts';
++
++test('캐럿 앞 낱말로 시작하는 조합은 그 길이만큼 다시 조합하는 것으로 본다', () => {
++  assert.equal(recomposedPrefixLength('21제', '21'), 2);          // 숫자 뒤 한글: "2121제" 가 되던 경우
++  assert.equal(recomposedPrefixLength('21ㅈ', '보고서 21'), 2);    // 빈칸 앞은 낱말이 아니다
++  assert.equal(recomposedPrefixLength('안녀', '안'), 1);           // 한 글자 + 새 글자
++  assert.equal(recomposedPrefixLength('21', '21'), 2);            // 새 글자 없이 다시 잡기만 해도 두 글자 이상이면
++});
++
++test('한 글자씩 조합하는 입력기와 새 낱말은 건드리지 않는다', () => {
++  assert.equal(recomposedPrefixLength('ㄱ', '가'), 0);
++  assert.equal(recomposedPrefixLength('2', '2'), 0);               // 같은 숫자를 또 누름
++  assert.equal(recomposedPrefixLength('ㅈ', '21'), 0);
++  assert.equal(recomposedPrefixLength('제', ''), 0);
++  assert.equal(recomposedPrefixLength('21제', '21 '), 0);          // 빈칸 뒤 새 낱말
++  assert.equal(recomposedPrefixLength('', '21'), 0);
++});
++
++test('편집기는 조합 첫 갱신에서만, 덮어쓰기·선택 삭제가 없을 때 앞 글자를 조합 구간에 넣는다', () => {
++  const code = readFileSync(new URL('../src/engine/input-handler-text.ts', import.meta.url), 'utf8');
++  assert.match(code, /this\._hwpxxxRecomposeCheck = !this\.cursor\.hasSelection\(\);/);
++  assert.match(code, /if \(!this\._compositionCovered && this\.compositionLength === 0 && !this\.compositionBodyLogical && text/);
++  assert.match(code, /this\._compositionCovered = prefix;/, '되돌리기는 덮어쓰기와 같이 원래 글자를 되살린다');
++});
+diff --git a/rhwp-studio/tests/hwpxxx-input-batch.test.ts b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
+new file mode 100644
+index 0000000..53b7420
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
+@@ -0,0 +1,59 @@
++// [hwpxxx] 태블릿 입력 묶음 수정: 붙여넣기 되돌리기, 캐럿 대기 서식, 내부 복사 판단, 글자 색 분할 단추, 문자표, 화살표 초점.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { shouldRedirectArrow } from '../src/hwpxxx/keep-arrows-in-document.ts';
++
++const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
++
++test('서식 없는 글 붙여넣기는 선택 지우기까지 스냅샷 한 번(되돌리기 한 번)이다', () => {
++  const code = source('src/engine/input-handler-keyboard.ts');
++  const body = code.slice(code.indexOf('function pastePlainText('), code.indexOf('export function prepareRhwpInternalClipboardHtml'));
++  assert.match(body, /this\.executeOperation\(\{ kind: 'snapshot', operationType: 'pastePlainText'/);
++  assert.match(body, /if \(hasSelection\) this\.deleteSelection\(\{ deferRecord: true \}\);/);
++  assert.doesNotMatch(body, /kind: 'command'/, '줄마다 따로 기록하지 않는다');
++});
++
++test('범위에 서식을 주거나 범위를 잡으면 캐럿 대기 서식(옛 색)을 버린다', () => {
++  const code = source('src/engine/input-handler.ts');
++  assert.match(code, /this\.dropPendingCharShape\(\);\n    const cmd = new ApplyCharFormatCommand\(sel\.start, sel\.end, props\);/);
++  assert.match(code, /if \(this\.cursor\.hasSelection\(\) && this\.getNonEmptySelection\(\)\) \{\n      this\.dropPendingCharShape\(\);/);
++});
++
++test('붙일 글이 마지막 내부 복사의 글과 같으면 표식이 빠져도 서식째 붙인다', () => {
++  const code = source('src/engine/input-handler-keyboard.ts');
++  assert.match(code, /hasMatchingInternalText = !!text && !!internalClipboardText && sameText\(text, internalClipboardText\)/);
++  assert.match(code, /hasMatchingInternalControlText \|\| hasMatchingInternalText\);/);
++});
++
++test('글자 색은 분할 단추: 본체는 지금 색을 다시 적용하고, ▾ 는 팔레트를 연다', () => {
++  const html = source('index.html');
++  assert.match(html, /<span id="text-color-dropdown" class="sb-color-wrap sb-dropdown">/);
++  assert.match(html, /<button id="btn-text-color-palette" class="sb-btn"[^>]*aria-haspopup="true"/);
++  const toolbar = source('src/ui/toolbar.ts');
++  assert.match(toolbar, /this\.btnTextColor\.addEventListener\('click', \(\) => apply\(current\)\);/);
++  assert.doesNotMatch(toolbar, /this\.colorPicker\.value = props\.textColor;/, '캐럿 자리 색으로 고르기 창 값을 바꾸지 않는다');
++});
++
++test('문자표는 칸 크기를 고정하고 세로로만 스크롤한다', () => {
++  const css = source('src/styles/symbols-dialog.css');
++  assert.match(css, /grid-template-columns: repeat\(auto-fill, minmax\(36px, 1fr\)\);/);
++  assert.match(css, /overflow-x: hidden;\n  overflow-y: auto;/);
++  assert.doesNotMatch(css, /repeat\(16, 1fr\)/);
++});
++
++test('도구 단추에 초점이 있을 때 화살표는 본문으로 보낸다(열린 메뉴·입력칸·조합 중은 제외)', () => {
++  const doc = new (class { querySelector() { return null; } })();
++  void doc;
++  const el = (match: Record<string, boolean>) => ({ closest: (sel: string) => (Object.keys(match).some(k => match[k] && sel.includes(k)) ? {} : null) }) as unknown as Element;
++  const key = (k: string, extra: Partial<KeyboardEvent> = {}) => ({ key: k, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, ...extra });
++  const toolButton = el({ '#style-bar': true });
++  assert.equal(shouldRedirectArrow(key('ArrowLeft'), toolButton), true);
++  assert.equal(shouldRedirectArrow(key('ArrowLeft', { isComposing: true }), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('ArrowLeft', { ctrlKey: true }), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('Enter'), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({ '#style-bar': true, 'select': true })), false, '목록 상자는 그대로');
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({ '#menu-bar': true, '.menu-dropdown': true })), false, '열린 메뉴는 그대로');
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({})), false, '도구 영역 밖(본문 등)은 손대지 않는다');
++  assert.match(source('src/main.ts'), /if \(isAndroidHost\(\)\) \{ const editor = inputHandler; installKeepArrowsInDocument\(\{ focus: \(\) => editor\.focus\(\) \}\); \}/);
++});
+diff --git a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
+index a645e8c..42bfd76 100644
+--- a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
++++ b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
+@@ -89,11 +89,14 @@ test('only real menus retain dropdown affordances', () => {
+   assert.doesNotMatch(strike, /sb-has-arrow|sb-dd/);
+   assert.match(strike, /sb-strike/);
+ 
+-  for (const id of ['btn-charfx', 'btn-text-color']) {
++  for (const id of ['btn-charfx']) {
+     const button = buttonMarkup(id);
+     assert.match(button, /sb-has-arrow/);
+     assert.match(button, /sb-dd/);
+   }
++  // [hwpxxx] 글자 색도 분할 단추다: 본체(지금 색 적용)에는 ▾ 가 없고, 오른쪽 단추가 팔레트 ▾ 를 가진다.
++  assert.doesNotMatch(buttonMarkup('btn-text-color'), /sb-has-arrow|sb-dd/);
++  assert.match(buttonMarkup('btn-text-color-palette'), /sb-dd/);
+   assert.match(buttonMarkup('btn-charfx'), /sb-effect-icon/);
+   assert.match(buttonMarkup('btn-text-color'), /sb-color-visual/);
+   assert.match(buttonMarkup('btn-highlight'), /sb-highlight-visual/);

@@ -104,7 +104,7 @@ test('the checked-in lock is internally consistent (patch pins equal the patch f
  assert.deepEqual(verifyPatches(repo,config),[]);
  assert.equal(config.commit,JSON.parse(fs.readFileSync(path.join(repo,config.engineConfig),'utf8')).commit);
  assert.equal(config.upstreamTag,'v0.9.0');assert.equal(config.desktopVersion,undefined);assert.equal(config.desktopRepoCommit,undefined);
- assert.equal(Object.keys(config.featurePatches).length,2);assert.equal(Object.keys(config.androidPatches).length,7);
+ assert.equal(Object.keys(config.featurePatches).length,2);assert.equal(Object.keys(config.androidPatches).length,8);
  assert.equal(config.env.RHWP_WITHOUT_AI,'1','the AI assistant (external network) stays out of the Android build');
  for(const p of ['rhwp-shared','vendor/npm/ajv','src/renderer/square_gradient.sksl'])assert.ok(config.sourcePaths.includes(p),p);
  assert.match(config.csp,/script-src 'self' 'wasm-unsafe-eval'/);assert.doesNotMatch(config.csp,/(^|[ ;])'unsafe-eval'/);assert.doesNotMatch(config.csp,/https?:|\*/);

@@ -283,12 +283,19 @@ function operation(op, a, events) {
       const src = fresh ? 'new.' + fresh : pickedFile ? pickedFile.name : draft ? draft.name : doc(a.id), target = inside(a.target);
       const format = a.format || ext(src);
       if (a.studio && (!['hwp', 'hwpx', 'hml'].includes(format) || ext(target) !== format)) throw new Error('저장할 문서 형식이 일치하지 않아요.');
-      if (ext(target) !== ext(src) && (!a.studio || a.replace)) throw new Error('원래 문서 형식을 유지해 주세요.');
-      if (a.studio && a.replace && !/^[0-9a-f]{64}$/.test(a.sha || '')) throw new Error('원본 확인 정보가 없어요. 문서를 다시 열어 주세요.');
-      if (a.replace && target !== src) throw new Error('원본 저장 경로가 일치하지 않아요.');
-      if (!a.replace && fs.existsSync(target)) throw new Error('같은 이름의 파일이 있어요. 이름이나 폴더를 바꿔 주세요.');
+      // Same as MainActivity: a confirmed "Save as" onto another existing file replaces it (hash taken now, backup kept).
+      let replace = !!a.replace, sha = a.sha, overwrite = false;
+      if (!replace && a.overwrite) {
+        if (!fs.existsSync(target) || !fs.statSync(target).isFile()) throw new Error('덮어쓸 파일을 찾을 수 없어요. 다시 골라 주세요.');
+        if (target === src) throw new Error('지금 연 문서예요. 저장(Ctrl+S)을 눌러 주세요.');
+        overwrite = true; replace = true; sha = crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+      }
+      if (ext(target) !== ext(src) && (!a.studio || (replace && !overwrite))) throw new Error('원래 문서 형식을 유지해 주세요.');
+      if (a.studio && replace && !/^[0-9a-f]{64}$/.test(sha || '')) throw new Error('원본 확인 정보가 없어요. 문서를 다시 열어 주세요.');
+      if (replace && !overwrite && target !== src) throw new Error('원본 저장 경로가 일치하지 않아요.');
+      if (!replace && fs.existsSync(target)) throw new Error('같은 이름의 파일이 있어요. 이름이나 폴더를 바꿔 주세요.');
       if (!(a.length >= 8 && a.length <= MAX_BYTES)) throw new Error('저장할 문서가 너무 커요.');
-      upload = { token: crypto.randomUUID(), kind: 'document', target, source: a.id, studio: !!a.studio, replace: !!a.replace, backup: !!a.backup || (!!a.studio && !!a.replace), sha: a.sha, length: a.length, parts: [], seq: 0 }; return upload.token;
+      upload = { token: crypto.randomUUID(), kind: 'document', target, source: a.id, studio: !!a.studio, replace, backup: !!a.backup || (!!a.studio && replace), sha, length: a.length, parts: [], seq: 0 }; return upload.token;
     }
     case 'beginExport': {
       if (cfg.strict && upload) throw new Error('저장 중이에요. 잠시 기다려 주세요.');

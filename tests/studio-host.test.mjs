@@ -277,6 +277,39 @@ test('Save As onto an existing file is refused in the dialog (name stays editabl
   assert.match(refused.error.message, /같은 이름/); assert.deepEqual(fs.readFileSync(doc(HWPX)), victim); assert.deepEqual(fs.readFileSync(doc('Download/qa-late.hwpx')), victim);
 });
 
+test('Save As of a document onto an existing file asks "바꿀까요?" and replaces it with a backup; declining keeps the dialog open', async () => {
+  const victim = fs.readFileSync(doc(HWPX)); await openHandle(HWP);
+  const types = [{description: 'HWPX', accept: {'application/hwp+zip': ['.hwpx']}}];
+  const picking = page.evaluate(async types => { __h.b = await showSaveFilePicker({suggestedName: 'x.hwpx', types}); return __h.b.name; }, types);
+  // first answer "no": nothing is chosen, the name stays editable
+  page.once('dialog', d => { assert.match(d.message(), /이미 있어요[\s\S]*바꿀까요/); d.dismiss(); });
+  await chooseDestination({name: '프로젝트 일정.hwpx', folders: ['Download']});
+  assert.equal(await dialog().getByLabel('파일 이름').inputValue(), '프로젝트 일정.hwpx');
+  page.once('dialog', d => d.accept());
+  await dialog().getByRole('button', {name: '저장', exact: true}).click();
+  assert.equal(await picking, '프로젝트 일정.hwpx');
+  const payload = Buffer.from('HWPX replacement payload');
+  assert.deepEqual(await saveVia(payload, 'b'), {ok: true});
+  const begin = (await nativeLog()).filter(o => o.op === 'beginSave').pop();
+  assert.equal(begin.args.overwrite, true); assert.equal(begin.args.replace, false);
+  assert.deepEqual(fs.readFileSync(doc(HWPX)), payload, 'the confirmed file is replaced');
+  fs.writeFileSync(doc(HWPX), victim);
+});
+
+test('a document Save As offers the file format (HWPX/HWP); choosing one sets the extension', async () => {
+  const types = [{description: 'HWP', accept: {'application/x-hwp': ['.hwp']}}];
+  const picking = page.evaluate(async types => { __h.c = await showSaveFilePicker({suggestedName: '보고서.hwp', types, hwpxxxFormats: ['hwpx', 'hwp']}); return __h.c.name; }, types);
+  await dialog().getByRole('heading', {name: '다른 이름으로 저장'}).waitFor();
+  const format = dialog().getByLabel('파일 형식');
+  assert.equal(await format.inputValue(), 'hwp', 'starts at the format being saved');
+  await format.selectOption('hwpx');
+  assert.equal(await dialog().getByLabel('파일 이름').inputValue(), '보고서.hwpx');
+  await dialog().locator('.android-host-path').filter({hasText: '/'}).waitFor();
+  await dialog().getByLabel('파일 이름').fill('형식 시험.hwpx');
+  await dialog().getByRole('button', {name: '저장', exact: true}).click();
+  assert.equal(await picking, '형식 시험.hwpx');
+});
+
 test('destination dialog starts where the user works: the document folder, then the last save folder, then Documents; a taken name is replaced by a free one', async () => {
   const pathText = () => dialog().locator('.android-host-path').innerText();
   const openSave = suggestedName => page.evaluate(async suggestedName => { try { await showSaveFilePicker({suggestedName}); return 'picked'; } catch (error) { return error.name; } }, suggestedName);

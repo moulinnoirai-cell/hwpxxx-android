@@ -394,7 +394,13 @@ public class MainActivity extends Activity {
     }
     @Override protected void onResume(){super.onResume();activityResumed=true;for(EditorSession editor:editors.values()){if(editor.visible&&editor.web!=null)editor.web.onResume();editor.event("resume",Boolean.TRUE);}}
     @Override protected void onPause(){activityResumed=false;for(EditorSession editor:editors.values()){editor.event("pause",Boolean.TRUE);if(editor.web!=null)editor.web.onPause();}super.onPause();}
-    @Override public boolean dispatchKeyEvent(KeyEvent event){EditorSession active=activeEditor();if(active!=null&&active.web!=null&&active.visible&&event.getKeyCode()!=KeyEvent.KEYCODE_BACK&&!active.web.hasFocus())active.web.requestFocus();return super.dispatchKeyEvent(event);}
+    @Override public boolean dispatchKeyEvent(KeyEvent event){EditorSession active=activeEditor();boolean editing=active!=null&&active.web!=null&&active.visible;if(editing&&event.getKeyCode()!=KeyEvent.KEYCODE_BACK&&!active.web.hasFocus())active.web.requestFocus();
+        boolean handled=super.dispatchKeyEvent(event);
+        // An arrow key the page did not use (caret already at an edge, IME composing) would otherwise let Android move focus out of the
+        // editor to another view. Documents keep the arrows: the page decides, and an unused arrow is dropped rather than moving focus.
+        if(!handled&&editing&&isArrowKey(event.getKeyCode()))return true;
+        return handled;}
+    static boolean isArrowKey(int code){return code==KeyEvent.KEYCODE_DPAD_UP||code==KeyEvent.KEYCODE_DPAD_DOWN||code==KeyEvent.KEYCODE_DPAD_LEFT||code==KeyEvent.KEYCODE_DPAD_RIGHT;}
     @Override public void onBackPressed(){
         if(workspace==null||migrationPending){finish();return;}
         EditorSession active=activeEditor();
@@ -461,7 +467,7 @@ public class MainActivity extends Activity {
     private final NativeSessions<Upload> sessions=new NativeSessions<>();
     /** Encrypted private state (document history, recent documents). Created on first use; unavailable means every state op fails visibly, never a plaintext fallback. */
     private DraftStore drafts;
-    private final class Upload extends NativeSessions.Session {final long started=System.currentTimeMillis();String target,sha;boolean replace,backup;boolean studio;int seq,length,width,height;Map<String,String> info;ByteArrayOutputStream out=new ByteArrayOutputStream();}
+    private final class Upload extends NativeSessions.Session {final long started=System.currentTimeMillis();String target,sha;boolean replace,backup,overwrite;boolean studio;int seq,length,width,height;Map<String,String> info;ByteArrayOutputStream out=new ByteArrayOutputStream();}
 
     EditorSession(String tabId,String initialAction)throws IOException {
         this.tabId=tabId;this.initialAction=initialAction;this.initialOpenPending="open".equals(initialAction);
@@ -702,13 +708,18 @@ public class MainActivity extends Activity {
                     if(a.optBoolean("replace",false))throw new IOException("복구한 내용은 다른 이름으로 저장해 주세요.");
                     String selectedKey=u.sourceId.substring(6);ownedDraftKeys.add(selectedKey);src=new File(drafts.info(selectedKey).get("name"));
                 } else {src=linked==null?document(u.sourceId):new File(linked.name);if(linked!=null&&a.optBoolean("replace",false))throw new IOException("연결 폴더 원본은 유지해요. 다른 이름으로 저장해 주세요.");}u.target=store.resolve(a.getString("target")).getPath();u.replace=a.optBoolean("replace",false);u.backup=u.replace&&a.optBoolean("backup",false);u.sha=a.optString("sha","");u.length=a.getInt("length");
+                // "Save as" onto an existing file the user confirmed replacing (like Hancom/Word): another file than the open document. The
+                // existing file is hashed now, kept as a backup and replaced atomically only if it is still the same bytes at finishSave.
+                if(!u.replace&&a.optBoolean("overwrite",false)){File existing=new File(u.target);if(!existing.isFile())throw new IOException("덮어쓸 파일을 찾을 수 없어요. 다시 골라 주세요.");
+                    if(existing.getCanonicalPath().equals(src.getCanonicalPath()))throw new IOException("지금 연 문서예요. 저장(Ctrl+S)을 눌러 주세요.");
+                    u.overwrite=true;u.replace=true;u.backup=true;u.sha=FileStore.sha(store.read(u.target));}
                 if(u.length<8||u.length>FileStore.MAX_BYTES)throw new IOException("저장할 문서가 너무 커요.");
                 // Explicit desktop format conversion is allowed only when creating a new copy.
                 String format=a.optString("format",documentFormat(src));if(!format.matches("hwp|hwpx|hml")||!documentFormat(new File(u.target)).equals(format))throw new IOException("저장할 문서 형식이 일치하지 않아요.");
-                if(u.replace&&!format.equals(documentFormat(src)))throw new IOException("원래 문서 형식을 유지해 주세요.");
+                if(u.replace&&!u.overwrite&&!format.equals(documentFormat(src)))throw new IOException("원래 문서 형식을 유지해 주세요.");
                 // Same-file desktop saves require a baseline hash and retain the original HWP backup policy.
                 u.studio=a.optBoolean("studio",false);if(u.studio&&u.replace){if(!u.sha.matches("[0-9a-f]{64}"))throw new IOException("원본 확인 정보가 없어요. 문서를 다시 열어 주세요.");u.backup=true;}
-                if(u.replace&&!u.target.equals(src.getPath()))throw new IOException("원본 저장 경로가 일치하지 않아요.");
+                if(u.replace&&!u.overwrite&&!u.target.equals(src.getPath()))throw new IOException("원본 저장 경로가 일치하지 않아요.");
                 if(!u.replace&&new File(u.target).exists())throw new IOException("같은 이름의 파일이 있어요. 이름이나 폴더를 바꿔 주세요.");setUpload(u);return u.token;}catch(Exception|Error failed){releaseNewSource(u);throw failed;}
             }
             case "saveChunk": {Upload u=requireAnyUpload(a);if(a.getInt("seq")!=u.seq++)throw new IOException("저장 순서가 올바르지 않아요.");String b=a.getString("base64");if(b.length()>350000)throw new IOException("저장 조각이 너무 커요.");byte[] data=android.util.Base64.decode(b,android.util.Base64.DEFAULT);if(u.out.size()+data.length>u.length)throw new IOException("저장 크기가 일치하지 않아요.");u.out.write(data);return true;}
