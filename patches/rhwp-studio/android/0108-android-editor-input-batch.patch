@@ -451,7 +451,7 @@ index 8610bc1..e2e07db 100644
      if (this.undoStack.length > 0) {
        const last = this.undoStack[this.undoStack.length - 1];
 diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
-index be4a3d2..285ce2f 100755
+index be4a3d2..5c21631 100755
 --- a/rhwp-studio/src/engine/input-handler-keyboard.ts
 +++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
 @@ -428,25 +428,27 @@ function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentP
@@ -508,7 +508,35 @@ index be4a3d2..285ce2f 100755
          if (cmdId === 'edit:delete' && this.cursor.isInCellSelectionMode() && e.ctrlKey && !e.metaKey) {
            if (!this.cursor.isProtectedCellSelectionMode()) {
              this.clearSelectedCellBlock();
-@@ -1392,6 +1396,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -1314,7 +1318,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       const dr = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+       const dc = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+       const phase = this.cursor.getCellSelectionPhase();
+-      if (phase === 2) {
++      // [hwpxxx] F5 한 번(한 칸 선택)에서도 Shift+방향키는 블록을 넓힌다(한글과 같다). 예전에는 선택한 칸만 옮겨 갔다.
++      if (phase === 2 || (phase === 1 && e.shiftKey)) {
+         // phase 2: 범위 확장 (anchor 고정, focus만 이동)
+         this.cursor.expandCellSelection(dr, dc);
+       } else if (phase === 3) {
+@@ -1347,6 +1352,17 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
+       return;
+     }
++    // [hwpxxx] 셀 블록에 서식 단축키(Ctrl+B·I·U, 글자 크기, 정렬 등)는 블록을 놓지 않고 블록 전체에 적용한다(한글과 같다).
++    // 예전에는 "그 외 키" 로 떨어져 블록이 먼저 풀리고, 서식은 캐럿 자리에 예약만 되어 아무 칸에도 들어가지 않았다.
++    if ((e.ctrlKey || e.metaKey) && this.dispatcher) {
++      const cmdId = matchShortcut(e, defaultShortcuts);
++      if (cmdId && cmdId.startsWith('format:')) {
++        e.preventDefault();
++        this.dispatcher.dispatch(cmdId);
++        if (this.cursor.isInCellSelectionMode()) this.updateCellSelection();
++        return;
++      }
++    }
+     // 그 외 키 → 셀 선택 모드 종료 후 기존 처리로 넘김
+     this.cursor.exitCellSelectionMode();
+     this.cellSelectionRenderer?.clear();
+@@ -1392,6 +1408,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
    //  한컴 UX 정합 (`feedback_visual_judgment_authority`).
    if (e.key === 'Escape') {
      e.preventDefault();
@@ -522,7 +550,7 @@ index be4a3d2..285ce2f 100755
      const inCell = this.cursor.isInCell();
      const inTextBox = this.cursor.isInTextBox();
      const nestingDepth = this.cursor.nestingDepth();
-@@ -1463,7 +1474,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -1463,7 +1486,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
      case 'Enter': {
        e.preventDefault();
        if (this.isFormMode?.()) return;
@@ -531,7 +559,7 @@ index be4a3d2..285ce2f 100755
        if (e.shiftKey) {
          // Shift+Enter: 강제 줄바꿈 (문단 유지, 줄만 바꿈)
          this.executeOperation({ kind: 'command', command: new InsertLineBreakCommand(this.cursor.getPosition()) });
-@@ -1502,6 +1513,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -1502,6 +1525,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
        } else { // ArrowDown
          if (vertical) moveH = 1; else moveV = 1;
        }
@@ -548,7 +576,7 @@ index be4a3d2..285ce2f 100755
        if (e.shiftKey) {
          this.cursor.setAnchor();
        } else {
-@@ -1578,6 +1599,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+@@ -1578,6 +1611,11 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
          this.applyHangingIndentAtCursor();
          break;
        }
@@ -560,7 +588,7 @@ index be4a3d2..285ce2f 100755
        // 탭 문자 삽입 (본문·글상자 공통)
        this.executeOperation({ kind: 'command', command: new InsertTabCommand(this.cursor.getPosition()) });
        break;
-@@ -1999,9 +2025,13 @@ export function onPaste(this: any, e: ClipboardEvent): void {
+@@ -1999,9 +2037,13 @@ export function onPaste(this: any, e: ClipboardEvent): void {
      this.wasm.clipboardHasControl?.() === true &&
      !!internalClipboardText &&
      text === internalClipboardText;
@@ -731,9 +759,18 @@ index 910c009..c07c4bd 100644
      refreshClickHereGuide = this.isClickHereGuidePosition?.(insertPos) === true;
    }
 diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
-index 6cb2f33..b9a83b3 100644
+index 6cb2f33..edb069a 100644
 --- a/rhwp-studio/src/engine/input-handler.ts
 +++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -15,7 +15,7 @@ import { resolveGlyphStartRect, isCompositionBoxRepresentable } from './line-sta
+ import { FieldMarkerRenderer } from './field-marker-renderer';
+ import { SelectionRenderer } from './selection-renderer';
+ import { CommandHistory } from './history';
+-import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSnapshotCommand, SubmodeSelectionSnapshotCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharShapeModsToRange, cellAxisPath, cellParaIndexOf } from './command';
++import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSnapshotCommand, SubmodeSelectionSnapshotCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharShapeModsToRange, cellAxisPath, cellParaIndexOf, cellPathForEdit } from './command';
+ import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects, EditCommand, EditContext, HeaderFooterSelectionSnapshot, FormValueTarget } from './command';
+ import { selectCellIndicesInRange, paraFormatTargetsForCellBlock, withCellPathTarget } from './cell-block-format';
+ import type { SelectedCellBlock } from './cell-block-format';
 @@ -65,6 +65,7 @@ import { emitHeaderFooterModeChanged } from './header-footer-mode';
  import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
  import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
@@ -802,7 +839,7 @@ index 6cb2f33..b9a83b3 100644
  
      if (prop === 'emboss') {
        const newVal = !current.emboss;
-@@ -2358,7 +2376,39 @@ export class InputHandler {
+@@ -2358,7 +2376,71 @@ export class InputHandler {
        if (newVal) mods.superscript = false;
        this.applyCharFormat(mods);
      } else {
@@ -822,7 +859,8 @@ index 6cb2f33..b9a83b3 100644
 +    const sel = this.getNonEmptySelection();
 +    if (!sel || this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return null;
 +    const { start, end } = sel;
-+    if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined || start.sectionIndex !== end.sectionIndex) return null;
++    if (start.sectionIndex !== end.sectionIndex) return null;
++    if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) return this.cellSelectionAllHave(prop, start, end);
 +    try {
 +      let checked = 0;
 +      for (let para = start.paragraphIndex; para <= end.paragraphIndex; para++) {
@@ -840,10 +878,41 @@ index 6cb2f33..b9a83b3 100644
 +      return checked > 0 ? true : null;
 +    } catch {
 +      return null;
++    }
++  }
++
++  /** [hwpxxx] 같은 표 칸(같은 칸 경로) 안의 블록: 칸 문단마다 글자 모양 구간을 읽는다. 칸을 넘는 블록은 null. */
++  private cellSelectionAllHave(prop: 'bold' | 'italic' | 'underline' | 'strikethrough', start: DocumentPosition, end: DocumentPosition): boolean | null {
++    const pathOf = (pos: DocumentPosition, cellParaIndex: number) => {
++      const path = cellPathForEdit(pos);
++      path[path.length - 1].cellParaIndex = cellParaIndex;
++      return path;
++    };
++    try {
++      const a = pathOf(start, 0), b = pathOf(end, 0);
++      if (start.parentParaIndex !== end.parentParaIndex || JSON.stringify(a) !== JSON.stringify(b)) return null;
++      const firstPara = start.cellParaIndex ?? 0, lastPara = end.cellParaIndex ?? 0;
++      let checked = 0;
++      for (let para = firstPara; para <= lastPara; para++) {
++        const path = JSON.stringify(pathOf(start, para));
++        const from = para === firstPara ? start.charOffset : 0;
++        const to = para === lastPara ? end.charOffset : this.wasm.getCellParagraphLengthByPath(start.sectionIndex, start.parentParaIndex!, path);
++        if (to <= from) continue;
++        for (const run of this.wasm.getCharShapeRunsInCellByPath(start.sectionIndex, start.parentParaIndex!, path, from, to)) {
++          const at = Math.max(from, run.startOffset);
++          if (at >= Math.min(to, run.endOffset)) continue;
++          const props = this.wasm.getCellCharPropertiesAtByPath(start.sectionIndex, start.parentParaIndex!, path, at) as unknown as Record<string, unknown>;
++          if (!props[prop]) return false;
++          if (++checked > 512) return null;
++        }
++      }
++      return checked > 0 ? true : null;
++    } catch {
++      return null;
      }
    }
  
-@@ -2375,6 +2425,18 @@ export class InputHandler {
+@@ -2375,6 +2457,18 @@ export class InputHandler {
      return sel;
    }
  
@@ -862,7 +931,7 @@ index 6cb2f33..b9a83b3 100644
    /** 커서 위치의 글자 서식을 조회한다. 선택이 있으면 선택 첫 글자, 없으면 캐럿 앞 글자 기준. */
    private getCharPropertiesAtCursor(): CharProperties {
      if (this.cursor.isInHeaderFooter()) {
-@@ -2810,7 +2872,7 @@ export class InputHandler {
+@@ -2810,7 +2904,7 @@ export class InputHandler {
    private emitCursorFormatState(): void {
      if (!this.active) return;
      try {
@@ -871,7 +940,7 @@ index 6cb2f33..b9a83b3 100644
        this.eventBus.emit('cursor-format-changed', props);
      } catch {
        // 문서 없거나 위치 초과 시 무시
-@@ -3538,6 +3600,21 @@ export class InputHandler {
+@@ -3538,6 +3632,21 @@ export class InputHandler {
      this.textarea.focus({ preventScroll: true });
    }
  
@@ -893,7 +962,7 @@ index 6cb2f33..b9a83b3 100644
    private onCompositionEnd(): void {
      _text.onCompositionEnd.call(this);
    }
-@@ -5798,7 +5875,39 @@ export class InputHandler {
+@@ -5798,7 +5907,39 @@ export class InputHandler {
    performPaste(): boolean {
      if (this.editMode === 'form') return false;
      this.focusTextarea();
@@ -934,7 +1003,7 @@ index 6cb2f33..b9a83b3 100644
    }
  
    /** 잘라내기 (커맨드 시스템용 — 컨텍스트 메뉴/도구 상자에서 호출) */
-@@ -6189,14 +6298,14 @@ export class InputHandler {
+@@ -6189,14 +6330,14 @@ export class InputHandler {
    /** 글꼴 크기 증감 (커맨드 시스템용, delta: HWPUNIT, 1pt=100) */
    adjustFontSize(delta: number): void {
      // [#4162] 선택이 없어도(캐럿만) applyCharFormat 이 캐럿 대기 서식으로 예약한다.
@@ -951,7 +1020,7 @@ index 6cb2f33..b9a83b3 100644
      const currentRatio = current.ratios?.[0] ?? 100;
      const nextRatio = Math.max(50, Math.min(200, Math.round(currentRatio + delta)));
      this.applyCharFormat({ ratios: Array(7).fill(nextRatio) });
-@@ -6204,7 +6313,7 @@ export class InputHandler {
+@@ -6204,7 +6345,7 @@ export class InputHandler {
  
    /** 자간 증감 (커맨드 시스템용, delta: percent point) */
    adjustCharSpacing(delta: number): void {
@@ -960,7 +1029,7 @@ index 6cb2f33..b9a83b3 100644
      const currentSpacing = current.spacings?.[0] ?? 0;
      const nextSpacing = Math.max(-50, Math.min(50, Math.round(currentSpacing + delta)));
      this.applyCharFormat({ spacings: Array(7).fill(nextSpacing) });
-@@ -6350,7 +6459,7 @@ export class InputHandler {
+@@ -6350,7 +6491,7 @@ export class InputHandler {
  
    /** 글자 모양 대화상자용: 커서 위치의 글자 서식 조회 (커맨드 시스템용) */
    getCharProperties(): CharProperties {
@@ -1430,10 +1499,10 @@ index 0000000..ec5947d
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-block-editing.test.ts b/rhwp-studio/tests/hwpxxx-block-editing.test.ts
 new file mode 100644
-index 0000000..5bf19dd
+index 0000000..6090730
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-block-editing.test.ts
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,52 @@
 +// [hwpxxx] 블록(선택 영역) 편집: 바꿔 쓰기 되돌리기 한 번, ←·→ 로 블록 접기, Esc, Tab, 섞인 서식 토글, 두세 번 누르기, 서식 되돌리기 뒤 블록 유지.
 +import test from 'node:test';
 +import assert from 'node:assert/strict';
@@ -1476,6 +1545,15 @@ index 0000000..5bf19dd
 +  const command = source('src/engine/command.ts');
 +  assert.match(command, /selectionBefore\(\): EditSelectionSnapshot \| null \{ return \{ start: \{ \.\.\.this\.start \}, end: \{ \.\.\.this\.end \}, blockPhase: null \}; \}/);
 +  assert.match(handler, /installClickSelection\(this, container\);/);
++});
++
++test('표: 칸 안 블록의 섞인 서식 토글, F5 한 칸에서 Shift+방향키로 넓히기, 셀 블록에 서식 단축키', () => {
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /if \(start\.parentParaIndex !== undefined \|\| end\.parentParaIndex !== undefined\) return this\.cellSelectionAllHave\(prop, start, end\);/);
++  assert.match(handler, /this\.wasm\.getCharShapeRunsInCellByPath\(start\.sectionIndex, start\.parentParaIndex!, path, from, to\)/);
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /if \(phase === 2 \|\| \(phase === 1 && e\.shiftKey\)\) \{/);
++  assert.match(keyboard, /if \(cmdId && cmdId\.startsWith\('format:'\)\) \{\n        e\.preventDefault\(\);\n        this\.dispatcher\.dispatch\(cmdId\);/);
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts b/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts
 new file mode 100644
