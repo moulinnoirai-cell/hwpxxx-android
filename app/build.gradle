@@ -12,7 +12,7 @@ def passwordPath = local.getProperty('release.passwordFile')
 android {
     namespace 'kr.offline.hwp'
     compileSdk 35
-    defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 8; versionName '0.3.3' }
+    defaultConfig { applicationId 'kr.offline.hwp'; minSdk 30; targetSdk 35; versionCode 9; versionName '0.3.4' }
     buildFeatures { buildConfig true }
     signingConfigs {
         if (storePath && passwordPath) {
