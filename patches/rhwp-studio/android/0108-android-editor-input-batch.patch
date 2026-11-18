@@ -256,6 +256,63 @@ index 8e1c300..15e0407 100644
      ?? (sourceFormat === 'hwpx' ? 'hwpx' : 'hwp');
  
    return {
+diff --git a/rhwp-studio/src/engine/command.ts b/rhwp-studio/src/engine/command.ts
+index c09e1d7..3c266fd 100644
+--- a/rhwp-studio/src/engine/command.ts
++++ b/rhwp-studio/src/engine/command.ts
+@@ -693,6 +693,8 @@ export class InsertTextCommand implements EditCommand {
+   private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+   /** [#7489] 덮어쓴 입력 하나하나의 [넣은 글자, 덮은 글자]. 다시 실행할 때 입력 순서대로 되풀이한다. */
+   private steps: [string, string][];
++  /** [hwpxxx] 이 묶음에 마지막으로 더해진 입력의 시각(묶음 판단은 입력 사이 간격으로 한다). */
++  lastInputAt: number;
+ 
+   constructor(
+     private position: DocumentPosition,
+@@ -707,6 +709,7 @@ export class InsertTextCommand implements EditCommand {
+     private bodyLogical = false,
+   ) {
+     this.timestamp = timestamp ?? Date.now();
++    this.lastInputAt = this.timestamp;
+     // #8001: 삽입 범위와 되돌리기 범위는 코어가 실제로 소비하는 문자열로 맞춘다.
+     this.text = normalizeTextNewlines(text);
+     this.steps = [[this.text, replacedText]];
+@@ -817,8 +820,17 @@ export class InsertTextCommand implements EditCommand {
+     // 연속 위치 확인
+     const expectedOffset = this.position.charOffset + charCount(this.text);
+     if (other.position.charOffset !== expectedOffset) return null;
+-    // 300ms 이내
+-    if (other.timestamp - this.timestamp > 300) return null;
++    // [hwpxxx] 되돌리기 단위는 낱말(한글·워드와 같다): 입력 사이 간격이 짧고(1.5초 이내) 빈칸을 친 뒤 새 낱말이 시작되기 전까지 묶는다.
++    // 예전 기준(묶음 시작부터 300ms)은 한 음절에 여러 타가 드는 한글 조합에서 늘 끊겨, 한글은 한 음절씩 되돌려졌다.
++    // 덮어쓰기(수정 모드) 입력은 원래 기준(묶음 시작부터 300ms)을 지킨다: 되돌릴 문단 조각이 묶음마다 하나라서다.
++    const overwriting = !!(this.replacedText || other.replacedText || this.fragmentIds.length || other.fragmentIds.length);
++    if (overwriting) {
++      if (other.timestamp - this.timestamp > 300) return null;
++    } else {
++      if (other.timestamp - this.lastInputAt > INSERT_MERGE_GAP_MS) return null;
++      if (/\s$/u.test(this.text) && !/^\s/u.test(other.text)) return null;
++      if (charCount(this.text) + charCount(other.text) > INSERT_MERGE_MAX_CHARS) return null;
++    }
+     // 줄바꿈/탭 포함 시 병합 불가
+     if (other.text.includes('\n') || other.text.includes('\t')) return null;
+     // [#4162] 예약 글자 모양이 다르면 하나의 undo 단위로 묶지 않는다
+@@ -833,10 +845,15 @@ export class InsertTextCommand implements EditCommand {
+       this.bodyLogical,
+     );
+     merged.steps = [...this.steps, ...other.steps];
++    merged.lastInputAt = other.timestamp;
+     return merged;
+   }
+ }
+ 
++/** [hwpxxx] 이어지는 입력을 한 되돌리기 단위로 묶는 최대 간격과 길이. */
++export const INSERT_MERGE_GAP_MS = 1500;
++export const INSERT_MERGE_MAX_CHARS = 80;
++
+ // ─── 텍스트 삭제 명령 ─────────────────────────────────
+ 
+ export class DeleteTextCommand implements EditCommand {
 diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
 index be4a3d2..1225988 100755
 --- a/rhwp-studio/src/engine/input-handler-keyboard.ts
@@ -343,7 +400,7 @@ index e329faf..dcd3d1e 100644
    if ((this.wasm?.pageCount ?? 0) <= 0) {
      return;
 diff --git a/rhwp-studio/src/engine/input-handler-text.ts b/rhwp-studio/src/engine/input-handler-text.ts
-index 910c009..24af253 100644
+index 910c009..e5a5b78 100644
 --- a/rhwp-studio/src/engine/input-handler-text.ts
 +++ b/rhwp-studio/src/engine/input-handler-text.ts
 @@ -2,6 +2,7 @@
@@ -354,15 +411,39 @@ index 910c009..24af253 100644
  import {
    InsertTextCommand,
    DeleteTextCommand,
-@@ -376,6 +377,7 @@ function clearCellBlockLetterImeFollowup(this: any): void {
+@@ -34,6 +35,9 @@ import type { NavigationKeyInput } from './navigation-keymap';
+  * 실제보다 많이 지워 인접 문자를 잃는다 — [#2337-review] 가 undo/HF/FN 경로에 적용한
+  * 계약을 IME 조합 경로에도 맞춘다. [#7489] 조합 뒤 캐럿 오프셋도 같은 scalar 단위다.
+  */
++/** [hwpxxx] 조합 확정 뒤 같은 글의 input 을 브라우저가 한 번 더 보내는(유령 입력) 것으로 볼 시간. */
++const GHOST_INPUT_WINDOW_MS = 300;
++
+ function charCount(s: string): number {
+   return [...s].length;
+ }
+@@ -375,7 +379,21 @@ function clearCellBlockLetterImeFollowup(this: any): void {
+   this.resetRawTextMutationEffects();
  }
  
++/** [hwpxxx] 편집 상태 오류로 문서가 잠겼는지(키 입력·명령은 이미 막힌다). 잠기면 한글 조합 입력도 문서를 바꾸지 않는다. */
++function editingLocked(this: any): boolean {
++  const status = this.getCommandErrorState?.()?.status;
++  return status === 'blocked' || status === 'recovering';
++}
++
  export function onCompositionStart(this: any): void {
 +  this._hwpxxxCompositionFinishedEarly = false;
++  if (editingLocked.call(this)) {
++    this.textarea.value = '';
++    this.isComposing = false;
++    this.compositionAnchor = null;
++    this.compositionLength = 0;
++    return;
++  }
    this.compositionBodyLogical = false;
    if (this._cellBlockLetterImeGuard?.consume('compositionstart')) {
      clearCellBlockLetterImeFollowup.call(this);
-@@ -384,6 +386,8 @@ export function onCompositionStart(this: any): void {
+@@ -384,6 +402,8 @@ export function onCompositionStart(this: any): void {
  
    this.resetRawTextMutationEffects();
    this.headerFooterSelectionComposition = false;
@@ -371,7 +452,7 @@ index 910c009..24af253 100644
    // [#7489] null = 첫 조합 글자가 들어올 때 덮어쓸 글자를 정한다. 선택을 지웠으면 덮어쓰지 않는다.
    this._compositionCovered = this.cursor.hasSelection() ? '' : null;
    // 선택 영역이 있으면 삭제 후 조합 시작
-@@ -439,6 +443,12 @@ export function onCompositionStart(this: any): void {
+@@ -439,6 +459,12 @@ export function onCompositionStart(this: any): void {
  }
  
  export function onCompositionEnd(this: any): void {
@@ -384,7 +465,27 @@ index 910c009..24af253 100644
    if (this._cellBlockLetterImeGuard?.consume('compositionend', this.textarea.value)) {
      clearCellBlockLetterImeFollowup.call(this);
      return;
-@@ -602,6 +612,26 @@ export function onInput(this: any, e?: InputEvent): void {
+@@ -480,6 +506,7 @@ export function onCompositionEnd(this: any): void {
+   // 더블 자음 분리 방지: compositionEnd 시점에 조합 완료된 텍스트 기억
+   // 직후 유령 input 이벤트에서 동일 텍스트가 오면 무시
+   this._lastComposedText = (finalLength > 0 && this._lastCompositionText) ? this._lastCompositionText : '';
++  this._lastComposedAt = Date.now();
+ 
+   // 조합 중 WASM 직접 호출로 이미 문서에 삽입된 텍스트를
+   // Command로 기록하여 Undo 가능하게 한다.
+@@ -565,6 +592,11 @@ export function getTextAt(this: any, pos: DocumentPosition, count: number): stri
+ 
+ export function onInput(this: any, e?: InputEvent): void {
+   if (!this.active) return;
++  // [hwpxxx] 잠긴 문서에는 조합·일반 입력을 넣지 않는다(예전에는 조합 경로만 잠금 검사를 거치지 않아 한글이 계속 들어갔다).
++  if (editingLocked.call(this)) {
++    this.textarea.value = '';
++    return;
++  }
+ 
+   if (this._cellBlockLetterImeGuard?.consume('input', this.textarea.value)) {
+     e?.preventDefault();
+@@ -602,6 +634,26 @@ export function onInput(this: any, e?: InputEvent): void {
        }
        this.compositionLength += charCount(this._compositionCovered);
      }
@@ -411,8 +512,19 @@ index 910c009..24af253 100644
      // [#7489] 덮은 글자 뒤 캐럿이 누름틀 시작에 서면 그 누름틀이 활성화된다. 앵커가 누름틀 밖이면
      // replace 전마다 해제해, 지웠다 다시 넣는 조합 글자가 누름틀 안으로 끌려가지 않게 한다.
      if (this._compositionCovered && this._compositionOutsideField) this.wasm.clearActiveField();
+@@ -741,7 +793,9 @@ export function onInput(this: any, e?: InputEvent): void {
+ 
+   // 더블 자음 분리 방지: compositionEnd 직후 유령 input 이벤트 감지
+   // 각주/머리말꼬리말 모드에서 조합 완료 직후 동일 텍스트가 오면 무시
+-  if (this._lastComposedText && text === this._lastComposedText) {
++  // [hwpxxx] 유령 입력은 조합 확정 바로 뒤에 온다. 시간이 지난 뒤 같은 글이 들어오면(키보드 추천어, "ㅋ" 다음 "ㅋ") 사용자의 입력이다.
++  const ghostWindow = Date.now() - (this._lastComposedAt ?? 0) <= GHOST_INPUT_WINDOW_MS;
++  if (this._lastComposedText && text === this._lastComposedText && ghostWindow) {
+     this._lastComposedText = '';
+     this.textarea.value = '';
+     return;
 diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
-index 6cb2f33..ce5c2fd 100644
+index 6cb2f33..f604909 100644
 --- a/rhwp-studio/src/engine/input-handler.ts
 +++ b/rhwp-studio/src/engine/input-handler.ts
 @@ -2132,6 +2132,7 @@ export class InputHandler {
@@ -423,8 +535,11 @@ index 6cb2f33..ce5c2fd 100644
        this.applyCharFormatToCellBlock(block, props);
        return;
      }
-@@ -2143,10 +2144,19 @@ export class InputHandler {
+@@ -2141,12 +2142,22 @@ export class InputHandler {
+     const sel = this.getNonEmptySelection();
+     if (!sel) {
        this.stagePendingCharShape(props);
++      this.emitCursorFormatState(); // [hwpxxx] 예약 즉시 도구 막대에 반영
        return;
      }
 +    // [hwpxxx] 범위에 서식을 주면 캐럿 대기 서식은 버린다. 남겨 두면 범위를 지운 뒤 같은 캐럿 자리로 돌아와 이어 쓰거나
@@ -443,7 +558,7 @@ index 6cb2f33..ce5c2fd 100644
    private applyCharFormatInHeaderFooterSelection(props: Partial<CharProperties>): boolean {
      const ordered = this.getNonEmptyHeaderFooterSelection();
      if (!ordered) return false;
-@@ -2213,6 +2223,11 @@ export class InputHandler {
+@@ -2213,6 +2224,11 @@ export class InputHandler {
    getPendingCharShape(): Partial<CharProperties> | undefined {
      if (!this.pendingCharShape || !this.pendingCharShapeAnchor) return undefined;
      if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return undefined;
@@ -455,7 +570,44 @@ index 6cb2f33..ce5c2fd 100644
      if (CursorState.comparePositions(this.cursor.getPosition(), this.pendingCharShapeAnchor) !== 0) {
        this.pendingCharShape = null;
        this.pendingCharShapeAnchor = null;
-@@ -3538,6 +3553,21 @@ export class InputHandler {
+@@ -2332,7 +2348,7 @@ export class InputHandler {
+     const toggleBlock = this.getSelectedCellBlock();
+     const current = toggleBlock && toggleBlock.cellIndices.length > 0
+       ? this.getCharPropertiesAtCellBlockAnchor(toggleBlock)
+-      : this.getCharPropertiesAtCursor();
++      : this.getEffectiveCharPropertiesAtCursor();
+ 
+     if (prop === 'emboss') {
+       const newVal = !current.emboss;
+@@ -2375,6 +2391,18 @@ export class InputHandler {
+     return sel;
+   }
+ 
++  /**
++   * [hwpxxx] 다음에 칠 글자의 서식: 캐럿 앞 글자 서식에 캐럿 대기 서식(선택 없이 누른 Ctrl+B·크기·색 등)을 더한다.
++   * 토글·증감은 이 값을 기준으로 해야 한다. 문서에 있는 글자만 보면 Ctrl+B 를 두 번 눌러도 꺼지지 않고(두 번째도 "켜기"),
++   * 크기 키우기를 두 번 눌러도 +1pt 만 됐다. 범위를 잡았으면 범위 첫 글자 서식 그대로다.
++   */
++  private getEffectiveCharPropertiesAtCursor(): CharProperties {
++    const base = this.getCharPropertiesAtCursor();
++    if (this.getNonEmptySelection()) return base;
++    const pending = this.getPendingCharShape();
++    return pending ? { ...base, ...pending } as CharProperties : base;
++  }
++
+   /** 커서 위치의 글자 서식을 조회한다. 선택이 있으면 선택 첫 글자, 없으면 캐럿 앞 글자 기준. */
+   private getCharPropertiesAtCursor(): CharProperties {
+     if (this.cursor.isInHeaderFooter()) {
+@@ -2810,7 +2838,7 @@ export class InputHandler {
+   private emitCursorFormatState(): void {
+     if (!this.active) return;
+     try {
+-      const props = this.getCharPropertiesAtCursor();
++      const props = this.getEffectiveCharPropertiesAtCursor(); // [hwpxxx] 예약한 서식도 단추에 보인다(Ctrl+B 를 누르면 '가' 가 눌린 상태)
+       this.eventBus.emit('cursor-format-changed', props);
+     } catch {
+       // 문서 없거나 위치 초과 시 무시
+@@ -3538,6 +3566,21 @@ export class InputHandler {
      this.textarea.focus({ preventScroll: true });
    }
  
@@ -477,6 +629,82 @@ index 6cb2f33..ce5c2fd 100644
    private onCompositionEnd(): void {
      _text.onCompositionEnd.call(this);
    }
+@@ -5798,7 +5841,39 @@ export class InputHandler {
+   performPaste(): boolean {
+     if (this.editMode === 'form') return false;
+     this.focusTextarea();
+-    return document.execCommand('paste');
++    if (document.execCommand('paste')) return true;
++    // [hwpxxx] 메뉴·도구 상자의 '붙이기': WebView·브라우저는 스크립트의 execCommand('paste') 를 막아 아무것도 붙지 않았다.
++    // 클립보드 API(Android 셸은 기기 클립보드에 연결)로 읽어, 키보드 붙여넣기와 같은 paste 이벤트로 넘긴다(서식·내부 복사 판단 동일).
++    void this.pasteFromClipboardApi();
++    return true;
++  }
++
++  private async pasteFromClipboardApi(): Promise<void> {
++    const clipboard = navigator.clipboard as (Clipboard & { read?: () => Promise<ClipboardItem[]> }) | undefined;
++    if (!clipboard) return;
++    const data = new DataTransfer();
++    try {
++      if (clipboard.read) {
++        for (const item of await clipboard.read()) {
++          for (const type of item.types) {
++            if (type === 'text/plain' || type === 'text/html') data.setData(type, await (await item.getType(type)).text());
++            else if (type.startsWith('image/')) {
++              const blob = await item.getType(type);
++              data.items.add(new File([blob], `clipboard.${type.slice(6) || 'png'}`, { type }));
++            }
++          }
++        }
++      } else {
++        data.setData('text/plain', await clipboard.readText());
++      }
++    } catch (error) {
++      console.warn('[InputHandler] 클립보드를 읽지 못함:', error);
++      showToast({ message: '클립보드를 읽지 못했어요. Ctrl+V 로 붙여 보세요.', durationMs: 4000 });
++      return;
++    }
++    if (!data.types.length) return;
++    this.focusTextarea();
++    this.textarea.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+   }
+ 
+   /** 잘라내기 (커맨드 시스템용 — 컨텍스트 메뉴/도구 상자에서 호출) */
+@@ -6189,14 +6264,14 @@ export class InputHandler {
+   /** 글꼴 크기 증감 (커맨드 시스템용, delta: HWPUNIT, 1pt=100) */
+   adjustFontSize(delta: number): void {
+     // [#4162] 선택이 없어도(캐럿만) applyCharFormat 이 캐럿 대기 서식으로 예약한다.
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const newSize = Math.max(100, (current.fontSize ?? 1000) + delta); // 최소 1pt
+     this.applyCharFormat({ fontSize: newSize });
+   }
+ 
+   /** 장평 증감 (커맨드 시스템용, delta: percent point) */
+   adjustCharRatio(delta: number): void {
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const currentRatio = current.ratios?.[0] ?? 100;
+     const nextRatio = Math.max(50, Math.min(200, Math.round(currentRatio + delta)));
+     this.applyCharFormat({ ratios: Array(7).fill(nextRatio) });
+@@ -6204,7 +6279,7 @@ export class InputHandler {
+ 
+   /** 자간 증감 (커맨드 시스템용, delta: percent point) */
+   adjustCharSpacing(delta: number): void {
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const currentSpacing = current.spacings?.[0] ?? 0;
+     const nextSpacing = Math.max(-50, Math.min(50, Math.round(currentSpacing + delta)));
+     this.applyCharFormat({ spacings: Array(7).fill(nextSpacing) });
+@@ -6350,7 +6425,7 @@ export class InputHandler {
+ 
+   /** 글자 모양 대화상자용: 커서 위치의 글자 서식 조회 (커맨드 시스템용) */
+   getCharProperties(): CharProperties {
+-    return this.getCharPropertiesAtCursor();
++    return this.getEffectiveCharPropertiesAtCursor(); // [hwpxxx] 캐럿 대기 서식도 보여 준다
+   }
+ 
+   /** 문단 모양 대화상자용: 커서 위치의 문단 서식 조회 (커맨드 시스템용) */
 diff --git a/rhwp-studio/src/hwpxxx/ime-recompose.ts b/rhwp-studio/src/hwpxxx/ime-recompose.ts
 new file mode 100644
 index 0000000..89c2542
@@ -886,10 +1114,10 @@ index 0000000..bb1bc6d
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-input-batch.test.ts b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
 new file mode 100644
-index 0000000..b476985
+index 0000000..3d7e66b
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,99 @@
 +// [hwpxxx] 태블릿 입력 묶음 수정: 붙여넣기 되돌리기, 캐럿 대기 서식, 내부 복사 판단, 글자 색 분할 단추, 문자표, 화살표 초점.
 +import test from 'node:test';
 +import assert from 'node:assert/strict';
@@ -960,6 +1188,47 @@ index 0000000..b476985
 +  assert.match(text, /if \(this\._hwpxxxCompositionFinishedEarly && !this\.isComposing\) \{/);
 +  assert.match(text, /export function onCompositionStart\(this: any\): void \{\n  this\._hwpxxxCompositionFinishedEarly = false;/);
 +});
++
++test('서식 토글·크기 증감은 캐럿 대기 서식까지 본다(Ctrl+B 두 번 = 끄기, 크기 두 번 = +2pt), 도구 막대도 바로 보인다', () => {
++  const code = source('src/engine/input-handler.ts');
++  assert.match(code, /private getEffectiveCharPropertiesAtCursor\(\): CharProperties \{\n    const base = this\.getCharPropertiesAtCursor\(\);\n    if \(this\.getNonEmptySelection\(\)\) return base;/);
++  assert.match(code, /: this\.getEffectiveCharPropertiesAtCursor\(\);\n\n    if \(prop === 'emboss'\)/);
++  for (const name of ['adjustFontSize', 'adjustCharRatio', 'adjustCharSpacing']) {
++    assert.match(code, new RegExp(`${name}\\(delta: number\\): void \\{[\\s\\S]{0,160}const current = this\\.getEffectiveCharPropertiesAtCursor\\(\\);`), name);
++  }
++  assert.match(code, /this\.stagePendingCharShape\(props\);\n      this\.emitCursorFormatState\(\);/);
++});
++
++test('되돌리기 단위는 낱말: 입력 사이 1.5초 이내, 빈칸 뒤 새 낱말에서 끊는다', async () => {
++  const code = source('src/engine/command.ts');
++  assert.match(code, /export const INSERT_MERGE_GAP_MS = 1500;/);
++  assert.match(code, /export const INSERT_MERGE_MAX_CHARS = 80;/);
++  assert.match(code, /if \(overwriting\) \{\n      if \(other\.timestamp - this\.timestamp > 300\) return null;/, '덮어쓰기는 원래 기준');
++  assert.match(code, /if \(other\.timestamp - this\.lastInputAt > INSERT_MERGE_GAP_MS\) return null;/);
++  assert.match(code, /if \(\/\\s\$\/u\.test\(this\.text\) && !\/\^\\s\/u\.test\(other\.text\)\) return null;/);
++});
++
++test('유령 입력 방지는 조합 확정 직후(300ms)에만, 잠긴 문서는 조합 입력도 막고, 메뉴 붙이기는 클립보드 API 로 대신한다', () => {
++  const text = source('src/engine/input-handler-text.ts');
++  assert.match(text, /const GHOST_INPUT_WINDOW_MS = 300;/);
++  assert.match(text, /if \(this\._lastComposedText && text === this\._lastComposedText && ghostWindow\) \{/);
++  assert.match(text, /export function onInput\(this: any, e\?: InputEvent\): void \{\n  if \(!this\.active\) return;\n  \/\/ \[hwpxxx\][^\n]*\n  if \(editingLocked\.call\(this\)\) \{/);
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /if \(document\.execCommand\('paste'\)\) return true;[\s\S]{0,300}void this\.pasteFromClipboardApi\(\);/);
++  assert.match(handler, /this\.textarea\.dispatchEvent\(new ClipboardEvent\('paste', \{ clipboardData: data, bubbles: true, cancelable: true \}\)\);/);
++});
+diff --git a/rhwp-studio/tests/ime-shortcut-routing.test.ts b/rhwp-studio/tests/ime-shortcut-routing.test.ts
+index 209c46a..4755ec0 100644
+--- a/rhwp-studio/tests/ime-shortcut-routing.test.ts
++++ b/rhwp-studio/tests/ime-shortcut-routing.test.ts
+@@ -15,6 +15,6 @@ test('IME 조합 분기는 Ctrl+E 내용 지우기를 구분하고 나머지 단
+   const imeBranch = source.slice(imeStart, imeEnd);
+   assert.match(
+     imeBranch,
+-    /if \(\(e\.ctrlKey \|\| e\.metaKey\) && this\.dispatcher\) \{\s*const cmdId = matchShortcut\(e, defaultShortcuts\);\s*if \(cmdId\) \{\s*e\.preventDefault\(\);\s*if \(cmdId === 'edit:delete' && this\.cursor\.isInCellSelectionMode\(\) && e\.ctrlKey && !e\.metaKey\) \{[\s\S]*?this\.clearSelectedCellBlock\(\);[\s\S]*?return;\s*\}\s*this\.dispatcher\.dispatch\(cmdId\);\s*return;/,
++    /if \(\(e\.ctrlKey \|\| e\.metaKey\) && this\.dispatcher\) \{\s*const cmdId = matchShortcut\(e, defaultShortcuts\);\s*if \(cmdId\) \{\s*e\.preventDefault\(\);\s*(?:\/\/ \[hwpxxx\][^\n]*\n\s*this\.finishCompositionNow\?\.\(\);\s*)?if \(cmdId === 'edit:delete' && this\.cursor\.isInCellSelectionMode\(\) && e\.ctrlKey && !e\.metaKey\) \{[\s\S]*?this\.clearSelectedCellBlock\(\);[\s\S]*?return;\s*\}\s*this\.dispatcher\.dispatch\(cmdId\);\s*return;/,
+   );
+ });
 diff --git a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
 index a645e8c..42bfd76 100644
 --- a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
