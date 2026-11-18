@@ -1,0 +1,2655 @@
+diff --git a/rhwp-studio/index.html b/rhwp-studio/index.html
+index 978e89e..16e2e6f 100644
+--- a/rhwp-studio/index.html
++++ b/rhwp-studio/index.html
+@@ -627,11 +627,15 @@
+           <div class="sb-ribbon-group sb-color-ribbon-group">
+             <div class="sb-command-group sb-color-group">
+               <!-- 글자색 -->
+-              <span class="sb-color-wrap">
+-                <button id="btn-text-color" class="sb-btn sb-has-arrow" title="글자 색" data-i18n-title="ui.btnTextColor.tooltip">
++              <!-- [hwpxxx] 글자 색 분할 단추: 본체 = 지금 색 바로 적용, 오른쪽 ▾ = 색 팔레트(한글과 같다) -->
++              <span id="text-color-dropdown" class="sb-color-wrap sb-dropdown">
++                <button id="btn-text-color" class="sb-btn" title="글자 색 (지금 색 적용)">
+                   <span class="sb-color-visual"><span class="sb-ga" data-i18n="ui.btnTextColor.sample">가</span><span id="color-bar"></span></span>
++                </button>
++                <button id="btn-text-color-palette" class="sb-btn" title="글자 색 팔레트" aria-haspopup="true" aria-expanded="false">
+                   <span class="sb-dd">▾</span>
+                 </button>
++                <div id="text-color-palette" class="sb-hl-palette"></div>
+                 <input id="text-color-picker" type="color" value="#000000" tabindex="-1" aria-label="글자 색 선택" data-i18n-aria-label="ui.textColorPicker.ariaLabel" />
+               </span>
+               <!-- 형광펜 -->
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index 3bc8eb7..0fc0ccb 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -143,10 +143,25 @@ function flushDeferredPaginationBeforeExplicitOutput(
+   }
+ }
+ 
++/**
++ * [hwpxxx-android] 저장 창에서 고를 수 있는 형식. HWP·HWPX 문서(새 문서 포함)는 둘 다 고를 수 있고, HWPX 를 먼저 둔다
++ * (한글도 HWPX 를 기본으로 옮겨 가는 추세). HML·PDF 에서 온 문서는 원래의 형식 선택 흐름을 그대로 쓴다.
++ */
++function androidConvertibleFormats(services: CommandServices, format: SaveFormat): SaveFormat[] | null {
++  if (!isAndroidHost() || format === 'hml') return null;
++  const source = services.wasm.getSourceFormat();
++  return source === 'hml' || source === 'pdf' ? null : ['hwpx', 'hwp'];
++}
++
++/** [hwpxxx-android] 새 문서는 HWPX 로 저장한다(저장 창에서 HWP 로 바꿀 수 있다). */
++function androidDefaultFormat(services: CommandServices, format: SaveFormat, hasHandle: boolean): SaveFormat {
++  return isAndroidHost() && format === 'hwp' && services.wasm.isNewDocument && !hasHandle ? 'hwpx' : format;
++}
++
+ async function chooseSaveAsFormat(services: CommandServices): Promise<SaveFormat | null> {
+   const sourceFormat = services.wasm.getSourceFormat();
+   if (sourceFormat === 'pdf') return showPdfSaveFormatDialog();
+-  if (sourceFormat !== 'hml') return sourceFormat === 'hwpx' ? 'hwpx' : 'hwp';
++  if (sourceFormat !== 'hml') return androidDefaultFormat(services, sourceFormat === 'hwpx' ? 'hwpx' : 'hwp', !!services.wasm.currentFileHandle);
+   const context = getHmlSaveContext(services);
+   return showHmlSaveFormatDialog(
+     context.metadata,
+@@ -234,6 +249,7 @@ async function tryFileSystemSave(
+   suggestedName: string,
+   forceSaveAs: boolean,
+   currentHandle: FileSystemFileHandleLike | null,
++  convert?: { formats: SaveFormat[]; to: (format: SaveFormat) => Promise<Blob> },
+ ): Promise<SaveDocumentResult | 'cancelled'> {
+   try {
+     const saved = await saveDocumentToFileSystem({
+@@ -243,6 +259,7 @@ async function tryFileSystemSave(
+       windowLike: window as FileSystemWindowLike,
+       forceSaveAs,
+       saveFormat: format,
++      convert,
+     });
+     if (saved.method === 'fallback' && isAndroidHost()) {
+       // [hwpxxx-android] 저장 선택기가 없으면 다운로드로 돌리지 않고 실패로 알린다(문서는 dirty 로 남는다).
+@@ -408,7 +425,7 @@ async function promptSaveAsOptions(
+   return { fileName: selection.fileName, password };
+ }
+ 
+-async function saveAsFormat(services: CommandServices, format: SaveFormat): Promise<void> {
++async function saveAsFormat(services: CommandServices, format: SaveFormat, chooseInDialog = false): Promise<void> {
+   let password: string | null = null;
+   let recoveryCipher: RecoveryCipher | null = null;
+   const generation = services.wasm.documentGeneration;
+@@ -431,6 +448,14 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+     const payload = await createSavePayload(services, format, password ?? undefined, 'save-as');
+     const originalHandle = sourceFormat === 'hml' || sourceFormat === 'pdf' ? stamp.handle : null;
++    const formats = chooseInDialog ? androidConvertibleFormats(services, format) : null;
++    const convert = formats ? {
++      formats,
++      to: async (other: SaveFormat) => {
++        assertSameDocument(services, stamp);
++        return (await createSavePayload(services, other, password ?? undefined, 'save-as')).blob;
++      },
++    } : undefined;
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+       () => {
+@@ -442,6 +467,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+           saveName,
+           true,
+           originalHandle,
++          convert,
+         );
+       },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+@@ -449,7 +475,7 @@ async function saveAsFormat(services: CommandServices, format: SaveFormat): Prom
+         services,
+         stamp,
+         sourceFormat,
+-        format,
++        (saveResult as SaveDocumentResult).format ?? format,
+         saveResult as SaveDocumentResult,
+         'save-as',
+         password !== null,
+@@ -512,6 +538,11 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+       services.wasm.fileName,
+       services.wasm.currentFileHandle,
+     );
++    // [hwpxxx-android] 새 문서의 첫 저장은 HWPX(저장 창에서 HWP 로 바꿀 수 있다).
++    const defaultFormat = androidDefaultFormat(services, target.format, !!stamp.handle);
++    if (defaultFormat !== target.format) {
++      target = { ...target, format: defaultFormat, suggestedName: fileNameForFormat(services.wasm.fileName, defaultFormat) };
++    }
+     const hmlEnabled = target.format !== 'hml' || isHmlSaveEnabled(services);
+     if (requiresSaveFormatChoice(target, hmlEnabled)) {
+       const format = await chooseSaveAsFormat(services);
+@@ -536,6 +567,14 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+     recoveryCipher = password !== null ? await RecoveryCipher.create(password) : null;
+     if (services.wasm.documentGeneration !== generation) throw new Error('DOCUMENT_CHANGED_DURING_SAVE');
+     const payload = await createSavePayload(services, target.format, password ?? undefined, 'save');
++    const formats = target.forceSaveAs || !stamp.handle ? androidConvertibleFormats(services, target.format) : null;
++    const convert = formats ? {
++      formats,
++      to: async (other: SaveFormat) => {
++        assertSameDocument(services, stamp);
++        return (await createSavePayload(services, other, password ?? undefined, 'save')).blob;
++      },
++    } : undefined;
+     const result = await persistWithContentLoss(
+       payload.contentLoss,
+       () => {
+@@ -548,6 +587,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+           target.suggestedName,
+           target.forceSaveAs,
+           stamp.handle,
++          convert,
+         );
+       },
+       (saveResult) => saveResult !== 'cancelled' && saveResult.method !== 'fallback',
+@@ -555,7 +595,7 @@ export async function saveCurrentDocument(services: CommandServices): Promise<Sa
+         services,
+         stamp,
+         sourceFormat,
+-        target.format,
++        (saveResult as SaveDocumentResult).format ?? target.format,
+         saveResult as SaveDocumentResult,
+         'save',
+         password !== null,
+@@ -1018,7 +1058,7 @@ export const fileCommands: CommandDef[] = [
+     canExecute: (ctx) => ctx.hasDocument,
+     async execute(services) {
+       const format = await chooseSaveAsFormat(services);
+-      if (format !== null) await saveAsFormat(services, format);
++      if (format !== null) await saveAsFormat(services, format, true);
+     },
+   },
+   {
+diff --git a/rhwp-studio/src/command/commands/format.ts b/rhwp-studio/src/command/commands/format.ts
+index 99fa75d..4051e3d 100644
+--- a/rhwp-studio/src/command/commands/format.ts
++++ b/rhwp-studio/src/command/commands/format.ts
+@@ -256,7 +256,7 @@ export const formatCommands: CommandDef[] = [
+       const charProps = ih.getCharProperties();
+       // 대화상자 열기 전 선택 범위를 저장 (대화상자 조작 중 선택이 풀릴 수 있음)
+       const savedSel = ih.getSelection();
+-      if (!savedSel) return;
++      // [hwpxxx] 블록이 없어도 창을 열고, 적용할 때 다음 입력의 캐럿 대기 서식으로 예약한다.
+       const dialog = new CharShapeDialog(services.wasm, services.eventBus);
+       dialog.onApply = (mods) => {
+         // fontName → fontId 변환 (WASM parse_char_shape_mods는 fontId만 인식)
+@@ -265,7 +265,8 @@ export const formatCommands: CommandDef[] = [
+           if (fontId >= 0) mods.fontId = fontId;
+           delete mods.fontName;
+         }
+-        ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
++        if (savedSel) ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
++        else ih.applyCharPropsAtCursor(mods);
+       };
+       dialog.onClose = () => ih.focus();
+       dialog.show(charProps);
+diff --git a/rhwp-studio/src/command/commands/table.ts b/rhwp-studio/src/command/commands/table.ts
+index 6ecc48b..b2c43ab 100644
+--- a/rhwp-studio/src/command/commands/table.ts
++++ b/rhwp-studio/src/command/commands/table.ts
+@@ -228,6 +228,23 @@ function restoreEditorFocus(ih: TableCellCommandContext['ih']): void {
+   textarea?.focus();
+ }
+ 
++/**
++ * [hwpxxx] 줄·칸을 넣으면 칸 번호가 다시 매겨진다. 넣기 전 칸 번호를 그대로 돌려주면 캐럿이 다른 칸(예: D 대신 C)에 서서
++ * 이어 쓴 글이 엉뚱한 칸에 들어갔다. 원래 칸(위·왼쪽에 넣었으면 그만큼 밀린 줄·칸)을 새 번호로 찾아 돌려준다.
++ * 중첩 표이거나 찾지 못하면 예전처럼 원래 위치를 돌려준다.
++ */
++function sameCellAfterInsert(wasm: CommandServices['wasm'], pos: DocumentPosition, row: number, col: number): DocumentPosition {
++  if ((pos.cellPath?.length ?? 0) > 1 || pos.parentParaIndex === undefined || pos.controlIndex === undefined) return pos;
++  try {
++    const dims = wasm.getTableDimensions(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex);
++    for (let cellIdx = 0; cellIdx < dims.cellCount; cellIdx += 1) {
++      const info = wasm.getCellInfo(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex, cellIdx);
++      if (info.row === row && info.col === col) return { ...pos, cellIndex: cellIdx, cellPath: undefined };
++    }
++  } catch { /* 찾지 못하면 예전처럼 */ }
++  return pos;
++}
++
+ function applyTableInsertRowColumn(
+   services: CommandServices,
+   mode: TableInsertRowColumnMode,
+@@ -256,7 +273,8 @@ function applyTableInsertRowColumn(
+             break;
+         }
+       }
+-      return pos;
++      // [hwpxxx] 넣기 전 칸을 새 번호로 찾아 캐럿을 그 칸에 둔다(sameCellAfterInsert 참고).
++      return sameCellAfterInsert(wasm, pos, cellInfo.row + (mode === 'row-above' ? count : 0), cellInfo.col + (mode === 'col-left' ? count : 0));
+     },
+   }), '줄/칸 추가');
+   restoreEditorFocus(ih);
+@@ -498,7 +516,7 @@ export const tableCommands: CommandDef[] = [
+         operationType: 'insertTableRow',
+         operation: (wasm) => {
+           wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, false);
+-          return pos;
++          return sameCellAfterInsert(wasm, pos, cellInfo.row + 1, cellInfo.col); // [hwpxxx] 같은 칸에 캐럿을 둔다
+         },
+       }), '줄 추가');
+     },
+@@ -518,7 +536,7 @@ export const tableCommands: CommandDef[] = [
+         operationType: 'insertTableRow',
+         operation: (wasm) => {
+           wasm.insertTableRow(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.row, true);
+-          return pos;
++          return sameCellAfterInsert(wasm, pos, cellInfo.row, cellInfo.col); // [hwpxxx] 같은 칸에 캐럿을 둔다
+         },
+       }), '줄 추가');
+     },
+@@ -538,7 +556,7 @@ export const tableCommands: CommandDef[] = [
+         operationType: 'insertTableColumn',
+         operation: (wasm) => {
+           wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, false);
+-          return pos;
++          return sameCellAfterInsert(wasm, pos, cellInfo.row, cellInfo.col + 1); // [hwpxxx] 같은 칸에 캐럿을 둔다
+         },
+       }), '칸 추가');
+     },
+@@ -558,7 +576,7 @@ export const tableCommands: CommandDef[] = [
+         operationType: 'insertTableColumn',
+         operation: (wasm) => {
+           wasm.insertTableColumn(pos.sectionIndex, pos.parentParaIndex!, pos.controlIndex!, cellInfo.col, true);
+-          return pos;
++          return sameCellAfterInsert(wasm, pos, cellInfo.row, cellInfo.col); // [hwpxxx] 같은 칸에 캐럿을 둔다
+         },
+       }), '칸 추가');
+     },
+diff --git a/rhwp-studio/src/command/file-system-access.ts b/rhwp-studio/src/command/file-system-access.ts
+index dc61da9..d836f68 100644
+--- a/rhwp-studio/src/command/file-system-access.ts
++++ b/rhwp-studio/src/command/file-system-access.ts
+@@ -1,3 +1,4 @@
++import { saveFormatForFileName } from './save-target.ts';
+ import {
+   SAVE_FORMAT_DETAILS,
+   type FilePickerType,
+@@ -32,6 +33,8 @@ export interface FileSystemWindowLike {
+     excludeAcceptAllOption?: boolean;
+     suggestedName?: string;
+     types?: FilePickerType[];
++    /** [hwpxxx-android] 저장 창이 "파일 형식"으로 고를 수 있는 형식(셸이 읽는다). */
++    hwpxxxFormats?: SaveFormat[];
+   }) => Promise<FileSystemFileHandleLike>;
+ }
+ 
+@@ -49,12 +52,19 @@ export interface SaveDocumentOptions {
+   forceSaveAs: boolean;
+   /** 저장 picker와 확장자 검증을 결정하는 단일 출력 포맷. */
+   saveFormat: SaveFormat;
++  /**
++   * [hwpxxx-android] 저장 창에서 고를 수 있는 다른 형식과 그 형식으로 다시 내보내는 함수. 사용자가 다른 형식(예: HWP 문서를
++   * HWPX 로)을 고르면 그 형식으로 다시 만든 바이트를 쓴다. 없으면 예전처럼 한 형식만 받는다.
++   */
++  convert?: { formats: SaveFormat[]; to: (format: SaveFormat) => Promise<Blob> };
+ }
+ 
+ export interface SaveDocumentResult {
+   method: 'current-handle' | 'save-picker' | 'fallback';
+   handle: FileSystemFileHandleLike | null;
+   fileName: string;
++  /** [hwpxxx-android] 실제로 쓴 형식(저장 창에서 형식을 바꿨으면 그 형식). */
++  format?: SaveFormat;
+ }
+ 
+ export const HWP_DOCUMENT_ACCEPT: Record<string, string[]> = {
+@@ -175,21 +185,27 @@ export async function saveDocumentToFileSystem(options: SaveDocumentOptions): Pr
+   }
+ 
+   if (windowLike.showSaveFilePicker) {
++    const convert = options.convert;
+     const handle = await windowLike.showSaveFilePicker({
+       excludeAcceptAllOption: true,
+       suggestedName,
+       types: pickerTypes,
++      ...(convert && convert.formats.length > 1 ? { hwpxxxFormats: convert.formats } : {}),
+     });
++    // [hwpxxx-android] 저장 창에서 다른 형식을 골랐으면 그 형식으로 다시 내보낸다.
++    const picked = saveFormatForFileName(handle.name);
++    const format = picked && picked !== saveFormat && convert?.formats.includes(picked) ? picked : saveFormat;
+     await assertValidSaveHandle(
+       handle,
+-      expectedSaveExtension(saveFormat),
++      expectedSaveExtension(format),
+       forceSaveAs ? currentHandle : null,
+     );
+-    await writeBlobToHandle(handle, blob);
++    await writeBlobToHandle(handle, format === saveFormat ? blob : await convert!.to(format));
+     return {
+       method: 'save-picker',
+       handle,
+       fileName: handle.name,
++      format,
+     };
+   }
+ 
+diff --git a/rhwp-studio/src/command/save-target.ts b/rhwp-studio/src/command/save-target.ts
+index 8e1c300..15e0407 100644
+--- a/rhwp-studio/src/command/save-target.ts
++++ b/rhwp-studio/src/command/save-target.ts
+@@ -31,7 +31,7 @@ export function forgetConvertedHmlSaveHandle(handle: NamedSaveHandle | null): vo
+   if (handle) convertedHmlSaveHandles.delete(handle);
+ }
+ 
+-function saveFormatForFileName(fileName: string): SaveFormat | null {
++export function saveFormatForFileName(fileName: string): SaveFormat | null {
+   const normalized = fileName.trim().toLowerCase();
+   if (normalized.endsWith('.hml')) return 'hml';
+   if (normalized.endsWith('.hwpx')) return 'hwpx';
+@@ -83,7 +83,13 @@ export function resolveSaveTarget(
+   const convertedFormat = hasConvertedHmlTarget
+     ? saveFormatForFileName(convertedTarget)
+     : null;
++  // [hwpxxx] HWP·HWPX 문서는 지금 저장할 파일의 확장자를 따른다. "HWPX로 저장"한 뒤 Ctrl+S 가 원래 형식(HWP)으로 내보내려다
++  // ".hwp 확장자를 가진 파일을 선택해야 합니다" 로 멈추던 것을 막는다.
++  const handleFormat = !convertedFormat && currentHandle && (sourceFormat === 'hwp' || sourceFormat === 'hwpx')
++    ? saveFormatForFileName(currentHandle.name)
++    : null;
+   const format: SaveFormat = convertedFormat
++    ?? (handleFormat === 'hwp' || handleFormat === 'hwpx' ? handleFormat : null)
+     ?? (sourceFormat === 'hwpx' ? 'hwpx' : 'hwp');
+ 
+   return {
+diff --git a/rhwp-studio/src/engine/command.ts b/rhwp-studio/src/engine/command.ts
+index c09e1d7..71774be 100644
+--- a/rhwp-studio/src/engine/command.ts
++++ b/rhwp-studio/src/engine/command.ts
+@@ -693,6 +693,8 @@ export class InsertTextCommand implements EditCommand {
+   private lastMutationEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+   /** [#7489] 덮어쓴 입력 하나하나의 [넣은 글자, 덮은 글자]. 다시 실행할 때 입력 순서대로 되풀이한다. */
+   private steps: [string, string][];
++  /** [hwpxxx] 이 묶음에 마지막으로 더해진 입력의 시각(묶음 판단은 입력 사이 간격으로 한다). */
++  lastInputAt: number;
+ 
+   constructor(
+     private position: DocumentPosition,
+@@ -707,6 +709,7 @@ export class InsertTextCommand implements EditCommand {
+     private bodyLogical = false,
+   ) {
+     this.timestamp = timestamp ?? Date.now();
++    this.lastInputAt = this.timestamp;
+     // #8001: 삽입 범위와 되돌리기 범위는 코어가 실제로 소비하는 문자열로 맞춘다.
+     this.text = normalizeTextNewlines(text);
+     this.steps = [[this.text, replacedText]];
+@@ -716,6 +719,12 @@ export class InsertTextCommand implements EditCommand {
+     return this.charFormat;
+   }
+ 
++  /** [hwpxxx] 이 입력 묶음이 넣은 글과 그 끝 위치(입력기 재조합 판단용). 덮어쓰기 입력은 null. */
++  typedRun(): { end: DocumentPosition; text: string } | null {
++    if (this.replacedText || this.bodyLogical) return null;
++    return { end: { ...this.position, charOffset: this.position.charOffset + charCount(this.text) }, text: this.text };
++  }
++
+   execute(wasm: WasmBridge): DocumentPosition {
+     this.lastMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+     if (this.replacedText) {
+@@ -817,8 +826,17 @@ export class InsertTextCommand implements EditCommand {
+     // 연속 위치 확인
+     const expectedOffset = this.position.charOffset + charCount(this.text);
+     if (other.position.charOffset !== expectedOffset) return null;
+-    // 300ms 이내
+-    if (other.timestamp - this.timestamp > 300) return null;
++    // [hwpxxx] 되돌리기 단위는 낱말(한글·워드와 같다): 입력 사이 간격이 짧고(1.5초 이내) 빈칸을 친 뒤 새 낱말이 시작되기 전까지 묶는다.
++    // 예전 기준(묶음 시작부터 300ms)은 한 음절에 여러 타가 드는 한글 조합에서 늘 끊겨, 한글은 한 음절씩 되돌려졌다.
++    // 덮어쓰기(수정 모드) 입력은 원래 기준(묶음 시작부터 300ms)을 지킨다: 되돌릴 문단 조각이 묶음마다 하나라서다.
++    const overwriting = !!(this.replacedText || other.replacedText || this.fragmentIds.length || other.fragmentIds.length);
++    if (overwriting) {
++      if (other.timestamp - this.timestamp > 300) return null;
++    } else {
++      if (other.timestamp - this.lastInputAt > INSERT_MERGE_GAP_MS) return null;
++      if (/\s$/u.test(this.text) && !/^\s/u.test(other.text)) return null;
++      if (charCount(this.text) + charCount(other.text) > INSERT_MERGE_MAX_CHARS) return null;
++    }
+     // 줄바꿈/탭 포함 시 병합 불가
+     if (other.text.includes('\n') || other.text.includes('\t')) return null;
+     // [#4162] 예약 글자 모양이 다르면 하나의 undo 단위로 묶지 않는다
+@@ -833,10 +851,15 @@ export class InsertTextCommand implements EditCommand {
+       this.bodyLogical,
+     );
+     merged.steps = [...this.steps, ...other.steps];
++    merged.lastInputAt = other.timestamp;
+     return merged;
+   }
+ }
+ 
++/** [hwpxxx] 이어지는 입력을 한 되돌리기 단위로 묶는 최대 간격과 길이. */
++export const INSERT_MERGE_GAP_MS = 1500;
++export const INSERT_MERGE_MAX_CHARS = 80;
++
+ // ─── 텍스트 삭제 명령 ─────────────────────────────────
+ 
+ export class DeleteTextCommand implements EditCommand {
+@@ -1298,6 +1321,13 @@ export class ApplyCharFormatCommand implements EditCommand {
+     private props: Partial<CharProperties>,
+   ) {}
+ 
++  /**
++   * [hwpxxx] 서식을 되돌리거나 다시 실행한 뒤에도 그 블록을 다시 잡아 둔다(한글과 같다). 예전에는 되돌리면 블록이 풀리고 캐럿이
++   * 블록 시작으로 가서, 다른 서식을 다시 주려면 블록을 새로 잡아야 했다.
++   */
++  selectionBefore(): EditSelectionSnapshot | null { return { start: { ...this.start }, end: { ...this.end }, blockPhase: null }; }
++  selectionAfter(): EditSelectionSnapshot | null { return { start: { ...this.start }, end: { ...this.end }, blockPhase: null }; }
++
+   execute(wasm: WasmBridge): DocumentPosition {
+     try {
+       return this.executeFormat(wasm);
+diff --git a/rhwp-studio/src/engine/history.ts b/rhwp-studio/src/engine/history.ts
+index 8610bc1..091f6ad 100644
+--- a/rhwp-studio/src/engine/history.ts
++++ b/rhwp-studio/src/engine/history.ts
+@@ -1,7 +1,7 @@
+ import type { WasmBridge } from '@/core/wasm-bridge';
+ import type { DocumentPosition } from '@/core/types';
+ import { NO_TEXT_MUTATION_EFFECTS } from './command';
+-import type { EditCommand, TextMutationEffects } from './command';
++import type { EditCommand, EditSelectionSnapshot, TextMutationEffects } from './command';
+ import type { RollbackOutcome } from '../core/command-error';
+ 
+ /** 스택 내 모든 명령의 discard()를 호출하여 리소스 해제 */
+@@ -11,6 +11,60 @@ function discardAll(stack: EditCommand[], wasm: WasmBridge): void {
+   }
+ }
+ 
++/**
++ * [hwpxxx] 두 편집을 되돌리기 한 번으로 묶은 명령: 블록을 지운 편집과 그 자리에 쓴 글(타자·한글 조합·Tab·Enter).
++ * 한글·워드처럼 블록 위에 쓴 것을 되돌리면 한 번에 원래 글과 블록이 돌아온다(예전에는 두 번 눌러야 했고, 첫 번째에는
++ * 지운 상태가 보였다). 이어 치는 글은 마지막 명령에 계속 병합한다.
++ */
++export class JoinedCommand implements EditCommand {
++  readonly type: string;
++  readonly timestamp: number;
++  constructor(private readonly parts: EditCommand[]) {
++    this.type = parts[parts.length - 1].type;
++    this.timestamp = parts[0].timestamp;
++  }
++  /** 묶음은 통째로 성공하거나 통째로 실패한다: 중간에 실패하면 이미 한 부분을 되돌린 뒤 실패를 알린다(반쪽 상태로 남기지 않는다). */
++  execute(wasm: WasmBridge): DocumentPosition {
++    let position!: DocumentPosition;
++    let done = 0;
++    try {
++      for (const part of this.parts) { position = part.execute(wasm); done++; }
++    } catch (error) {
++      for (let i = done - 1; i >= 0; i--) { try { this.parts[i].undo(wasm); } catch { this.partial = true; } }
++      throw error;
++    }
++    return position;
++  }
++  undo(wasm: WasmBridge): DocumentPosition {
++    let position!: DocumentPosition;
++    let undone = 0;
++    try {
++      for (let i = this.parts.length - 1; i >= 0; i--) { position = this.parts[i].undo(wasm); undone++; }
++    } catch (error) {
++      for (let i = this.parts.length - undone; i < this.parts.length; i++) { try { this.parts[i].execute(wasm); } catch { this.partial = true; } }
++      throw error;
++    }
++    return position;
++  }
++  /** 실패 뒤 원래대로 되돌리지 못했으면 묶음을 버리지 않고 남겨 다시 시도할 수 있게 한다. */
++  private partial = false;
++  mergeWith(other: EditCommand): EditCommand | null {
++    const last = this.parts[this.parts.length - 1];
++    const merged = last.mergeWith(other);
++    return merged ? new JoinedCommand([...this.parts.slice(0, -1), merged]) : null;
++  }
++  discard(wasm: WasmBridge): void { for (const part of this.parts) part.discard?.(wasm); }
++  snapshotResourceCount(): number { return this.parts.reduce((sum, part) => sum + (part.snapshotResourceCount?.() ?? 0), 0); }
++  retainOnFailure(): boolean { return this.partial || this.parts.some(part => part.retainOnFailure?.() === true); }
++  // 한컴 실측(#3416): 블록 위에 쳐서 바꾼 것을 되돌리면 글은 돌아오지만 블록은 다시 잡지 않는다.
++  selectionBefore(): EditSelectionSnapshot | null { return null; }
++  editContext() { return this.parts[this.parts.length - 1].editContext?.() ?? null; }
++  typedRun(): { end: DocumentPosition; text: string } | null {
++    const last = this.parts[this.parts.length - 1] as EditCommand & { typedRun?: () => { end: DocumentPosition; text: string } | null };
++    return last.typedRun?.() ?? null;
++  }
++}
++
+ /**
+  * [Task #2328 · #7002 후속] 코어가 상한을 모를 때 쓰는 폴백.
+  *
+@@ -54,6 +108,25 @@ export class CommandHistory {
+   private undoStack: EditCommand[] = [];
+   private redoStack: EditCommand[] = [];
+   private maxSize = 1000;
++  /** [hwpxxx] 다음에 쌓는 명령을 이 명령(지금 맨 위)과 되돌리기 한 번으로 묶는다. */
++  private joinBase: EditCommand | null = null;
++
++  /** [hwpxxx] 다음에 기록되는 편집을 지금 맨 위 편집과 묶는다(블록을 지우고 그 자리에 쓰는 경우). */
++  joinNextWithPrevious(): void {
++    this.joinBase = this.undoStack[this.undoStack.length - 1] ?? null;
++  }
++
++  /** [hwpxxx] 묶기 예약을 거둔다(블록 위 조합이 글 없이 끝난 경우). */
++  cancelJoin(): void { this.joinBase = null; }
++
++  /** 막 쌓으려는 명령을 묶을 차례면 묶은 명령으로 맨 위를 바꾸고 true. */
++  private takeJoin(command: EditCommand): boolean {
++    const base = this.joinBase;
++    this.joinBase = null;
++    if (!base || this.undoStack[this.undoStack.length - 1] !== base) return false;
++    this.undoStack[this.undoStack.length - 1] = new JoinedCommand([base, command]);
++    return true;
++  }
+   private lastExecutionEffects: TextMutationEffects = NO_TEXT_MUTATION_EFFECTS;
+ 
+   /** undo/redo 양 스택의 살아있는 스냅샷 id 총합. */
+@@ -136,6 +209,13 @@ export class CommandHistory {
+       return cursorAfter;
+     }
+ 
++    // [hwpxxx] 블록을 지운 편집과 묶을 차례면 묶는다(스냅샷 예산은 평소처럼 지킨다).
++    if (this.takeJoin(command)) {
++      discardAll(this.redoStack, wasm);
++      this.redoStack = [];
++      if ((command.snapshotResourceCount?.() ?? 0) > 0) this.enforceSnapshotBudget(wasm);
++      return cursorAfter;
++    }
+     // 직전 명령과 병합 시도
+     if (this.undoStack.length > 0) {
+       const last = this.undoStack[this.undoStack.length - 1];
+@@ -195,6 +275,7 @@ export class CommandHistory {
+   /** Undo — 성공 시 커서 위치 반환, 스택 비었으면 null */
+   undo(wasm: WasmBridge): DocumentPosition | null {
+     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
++    this.joinBase = null;
+     const command = this.undoStack[this.undoStack.length - 1];
+     if (!command) return null;
+ 
+@@ -226,6 +307,7 @@ export class CommandHistory {
+   /** Redo — 성공 시 커서 위치 반환, 스택 비었으면 null */
+   redo(wasm: WasmBridge): DocumentPosition | null {
+     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
++    this.joinBase = null;
+     // 부분 Undo/Redo가 남아 있으면 기존 redo command의 시작 상태가 아니다.
+     // 먼저 Undo 복원을 완료해야 더 최신 명령을 안전하게 다시 실행할 수 있다.
+     if (this.peekUndoTop()?.retainOnFailure?.()) return null;
+@@ -255,6 +337,13 @@ export class CommandHistory {
+   /** execute() 없이 히스토리에만 기록 (IME compositionend용 — 텍스트가 이미 문서에 있는 경우) */
+   recordWithoutExecute(command: EditCommand, wasm?: WasmBridge): void {
+     this.lastExecutionEffects = NO_TEXT_MUTATION_EFFECTS;
++    // [hwpxxx] 블록을 지운 편집과 묶을 차례면 묶는다(블록 위 한글 조합).
++    if (this.takeJoin(command)) {
++      if (wasm) discardAll(this.redoStack, wasm);
++      this.redoStack = [];
++      if (wasm) this.enforceSnapshotBudget(wasm);
++      return;
++    }
+     // 직전 명령과 병합 시도
+     if (this.undoStack.length > 0) {
+       const last = this.undoStack[this.undoStack.length - 1];
+diff --git a/rhwp-studio/src/engine/input-handler-keyboard.ts b/rhwp-studio/src/engine/input-handler-keyboard.ts
+index be4a3d2..af7546f 100755
+--- a/rhwp-studio/src/engine/input-handler-keyboard.ts
++++ b/rhwp-studio/src/engine/input-handler-keyboard.ts
+@@ -428,25 +428,27 @@ function positionAfterPasteResult(pos: DocumentPosition, parsed: any): DocumentP
+   return newPos;
+ }
+ 
++/**
++ * 서식 없는 글 붙여넣기.
++ * [hwpxxx] 선택 지우기와 줄마다의 삽입·문단 나누기를 스냅샷 한 번으로 묶는다. 예전에는 선택을 `deferRecord`(스냅샷 안에서만
++ * 쓰는 옵션)로 지운 뒤 줄마다 따로 기록해, 되돌리기가 지운 글을 되살리지 못하고(내용 손실) 다시 실행하면 문서가 어긋났으며,
++ * n 줄 붙여넣기를 되돌리려면 2n-1 번 눌러야 했다. 이제 붙여넣기 한 번 = 되돌리기 한 번이다.
++ */
+ function pastePlainText(this: any, text: string, hasSelection: boolean): void {
+-  if (hasSelection) {
+-    this.deleteSelection({ deferRecord: true });
+-  }
+-  if (!text) return;
+-
+-  const lines = text.split(/\r?\n/);
+-  for (let i = 0; i < lines.length; i++) {
+-    if (lines[i]) {
+-      this.executeOperation({ kind: 'command', command: new InsertTextCommand(this.cursor.getPosition(), lines[i]) });
+-    }
+-    if (i < lines.length - 1) {
+-      const position = this.cursor.getPosition();
+-      const command = this.cursor.isInCell()
+-        ? new SplitParagraphInCellCommand(position)
+-        : new SplitParagraphCommand(position);
+-      this.executeOperation({ kind: 'command', command });
++  if (!text && !hasSelection) return;
++  const lines = text ? text.split(/\r?\n/) : [];
++  this.executeOperation({ kind: 'snapshot', operationType: 'pastePlainText', operation: (wasm: WasmBridge) => {
++    if (hasSelection) this.deleteSelection({ deferRecord: true });
++    let position: DocumentPosition = this.cursor.getPosition();
++    const inCell = this.cursor.isInCell();
++    for (let i = 0; i < lines.length; i++) {
++      if (lines[i]) position = new InsertTextCommand(position, lines[i]).execute(wasm);
++      if (i < lines.length - 1) {
++        position = (inCell ? new SplitParagraphInCellCommand(position) : new SplitParagraphCommand(position)).execute(wasm);
++      }
+     }
+-  }
++    return position;
++  }});
+ }
+ 
+ export function prepareRhwpInternalClipboardHtml(self: any, html: string, text = ''): string {
+@@ -837,6 +839,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       const cmdId = matchShortcut(e, defaultShortcuts);
+       if (cmdId) {
+         e.preventDefault();
++        // [hwpxxx] 명령 전에 조합을 확정한다(조합 중 Ctrl+Z 가 앞 글을 지우고 조합 글자를 겹치던 문제).
++        this.finishCompositionNow?.();
+         if (cmdId === 'edit:delete' && this.cursor.isInCellSelectionMode() && e.ctrlKey && !e.metaKey) {
+           if (!this.cursor.isProtectedCellSelectionMode()) {
+             this.clearSelectedCellBlock();
+@@ -1314,7 +1318,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       const dr = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+       const dc = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+       const phase = this.cursor.getCellSelectionPhase();
+-      if (phase === 2) {
++      // [hwpxxx] F5 한 번(한 칸 선택)에서도 Shift+방향키는 블록을 넓힌다(한글과 같다). 예전에는 선택한 칸만 옮겨 갔다.
++      if (phase === 2 || (phase === 1 && e.shiftKey)) {
+         // phase 2: 범위 확장 (anchor 고정, focus만 이동)
+         this.cursor.expandCellSelection(dr, dc);
+       } else if (phase === 3) {
+@@ -1347,6 +1352,17 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') {
+       return;
+     }
++    // [hwpxxx] 셀 블록에 서식 단축키(Ctrl+B·I·U, 글자 크기, 정렬 등)는 블록을 놓지 않고 블록 전체에 적용한다(한글과 같다).
++    // 예전에는 "그 외 키" 로 떨어져 블록이 먼저 풀리고, 서식은 캐럿 자리에 예약만 되어 아무 칸에도 들어가지 않았다.
++    if ((e.ctrlKey || e.metaKey || e.altKey) && this.dispatcher) {
++      const cmdId = matchShortcut(e, defaultShortcuts);
++      if (cmdId && cmdId.startsWith('format:')) {
++        e.preventDefault();
++        this.dispatcher.dispatch(cmdId);
++        if (this.cursor.isInCellSelectionMode()) this.updateCellSelection();
++        return;
++      }
++    }
+     // 그 외 키 → 셀 선택 모드 종료 후 기존 처리로 넘김
+     this.cursor.exitCellSelectionMode();
+     this.cellSelectionRenderer?.clear();
+@@ -1392,6 +1408,13 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+   //  한컴 UX 정합 (`feedback_visual_judgment_authority`).
+   if (e.key === 'Escape') {
+     e.preventDefault();
++    // [hwpxxx] 글 블록이 있으면 Esc 는 블록만 푼다(한글과 같다). 캐럿은 블록을 넓힌 쪽 끝에 남는다. 표 칸·글상자 안이면
++    // 다음 Esc 가 예전처럼 표·글상자 개체를 고른다. 예전에는 본문 블록에서 Esc 가 아무것도 하지 않았다.
++    if (this.cursor.hasSelection() && this.getNonEmptySelection?.()) {
++      this.cursor.clearSelection();
++      this.updateCaret();
++      return;
++    }
+     const inCell = this.cursor.isInCell();
+     const inTextBox = this.cursor.isInTextBox();
+     const nestingDepth = this.cursor.nestingDepth();
+@@ -1463,7 +1486,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+     case 'Enter': {
+       e.preventDefault();
+       if (this.isFormMode?.()) return;
+-      if (this.cursor.hasSelection()) this.deleteSelection();
++      if (this.cursor.hasSelection()) this.deleteSelectionForReplace(); // [hwpxxx] 블록 위 Enter 도 되돌리기 한 번
+       if (e.shiftKey) {
+         // Shift+Enter: 강제 줄바꿈 (문단 유지, 줄만 바꿈)
+         this.executeOperation({ kind: 'command', command: new InsertLineBreakCommand(this.cursor.getPosition()) });
+@@ -1502,6 +1525,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+       } else { // ArrowDown
+         if (vertical) moveH = 1; else moveV = 1;
+       }
++      // [hwpxxx] 블록이 있을 때 Shift 없이 ←·→ 를 누르면 블록의 시작·끝으로 캐럿을 접는다(워드·구글 문서와 같다).
++      // 예전에는 블록을 풀고 캐럿 자리에서 한 칸 더 움직여, 블록 시작 앞이나 끝 뒤 한 글자로 가 버렸다. ↑·↓ 는 시작·끝에서 한 줄 움직인다.
++      const block = !e.shiftKey && !vertical ? this.getNonEmptySelection?.() : null;
++      if (block && !this.cursor.isInCellSelectionMode?.()) {
++        this.cursor.clearSelection();
++        this.cursor.moveTo(moveH === 1 || moveV === 1 ? block.end : block.start);
++        if (moveV !== null) this.cursor.moveVertical(moveV);
++        this.updateCaret();
++        break;
++      }
+       if (e.shiftKey) {
+         this.cursor.setAnchor();
+       } else {
+@@ -1578,6 +1611,8 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
+         this.applyHangingIndentAtCursor();
+         break;
+       }
++      // [hwpxxx] 블록이 있으면 글을 칠 때처럼 블록을 탭으로 바꾼다(예전에는 블록을 남긴 채 캐럿 자리에 탭만 넣었다).
++      if (this.getNonEmptySelection?.()) this.deleteSelectionForReplace();
+       // 탭 문자 삽입 (본문·글상자 공통)
+       this.executeOperation({ kind: 'command', command: new InsertTabCommand(this.cursor.getPosition()) });
+       break;
+@@ -1999,9 +2034,16 @@ export function onPaste(this: any, e: ClipboardEvent): void {
+     this.wasm.clipboardHasControl?.() === true &&
+     !!internalClipboardText &&
+     text === internalClipboardText;
++  // [hwpxxx] Android 클립보드를 거치면 HTML 주석(내부 복사 표식)이 빠질 수 있다. 그때 서식 없는 글로 붙이면 글자 모양이
++  // 사라지고 캐럿 자리의 서식(옛 색 등)으로 들어갔다. 시스템 글이 마지막 내부 복사의 글과 같으면 같은 복사로 보고 서식째 붙인다.
++  const sameText = (a: string, b: string) => a.replace(/\r\n?/g, '\n') === b.replace(/\r\n?/g, '\n');
++  // 다른 앱에서 그림·표·서식 있는 글을 복사했는데 글만 우연히 같으면 그 내용을 버리면 안 된다: 그림 파일이 있거나
++  // HTML 에 그림·표가 있으면 같은 복사로 보지 않는다.
++  const hasRichExternal = Array.from(clipboardData?.files ?? []).length > 0 || /<(img|table|svg|object|video)\b/i.test(html);
++  const hasMatchingInternalText = !hasRichExternal && !!text && !!internalClipboardText && sameText(text, internalClipboardText);
+   const useInternalClipboard =
+     this.wasm.hasInternalClipboard() &&
+-    (!clipboardData || hasCurrentInternalMarker || hasMatchingInternalControlText);
++    (!clipboardData || hasCurrentInternalMarker || hasMatchingInternalControlText || hasMatchingInternalText);
+ 
+   // 내부 복사 marker가 있으면 내부 클립보드를 사용한다.
+   // 이미지 컨트롤은 브라우저가 marker 없는 plain text만 paste 이벤트에 넘기는 경우가 있어
+diff --git a/rhwp-studio/src/engine/input-handler-mouse.ts b/rhwp-studio/src/engine/input-handler-mouse.ts
+index e329faf..dcd3d1e 100644
+--- a/rhwp-studio/src/engine/input-handler-mouse.ts
++++ b/rhwp-studio/src/engine/input-handler-mouse.ts
+@@ -298,6 +298,8 @@ function promoteCellSelectionDragCandidate(this: any, e: MouseEvent): boolean {
+ }
+ 
+ export function onClick(this: any, e: MouseEvent): void {
++  // [hwpxxx] 조합 중 다른 곳을 누르면 조합을 그 자리에서 확정하고 캐럿을 옮긴다(예전에는 조합이 원래 자리로 캐럿을 되돌렸다).
++  if (this.isComposing && e.button === 0) this.finishCompositionNow?.();
+   rememberHyperlinkClick(this, e);
+   if ((this.wasm?.pageCount ?? 0) <= 0) {
+     return;
+diff --git a/rhwp-studio/src/engine/input-handler-text.ts b/rhwp-studio/src/engine/input-handler-text.ts
+index 910c009..0605572 100644
+--- a/rhwp-studio/src/engine/input-handler-text.ts
++++ b/rhwp-studio/src/engine/input-handler-text.ts
+@@ -2,6 +2,8 @@
+ /* eslint-disable @typescript-eslint/no-explicit-any */
+ 
+ import { normalizeTextNewlines } from '../core/text-newlines';
++import { recomposedPrefixLength } from '@/hwpxxx/ime-recompose';
++import { CursorState } from './cursor';
+ import {
+   InsertTextCommand,
+   DeleteTextCommand,
+@@ -34,6 +36,9 @@ import type { NavigationKeyInput } from './navigation-keymap';
+  * 실제보다 많이 지워 인접 문자를 잃는다 — [#2337-review] 가 undo/HF/FN 경로에 적용한
+  * 계약을 IME 조합 경로에도 맞춘다. [#7489] 조합 뒤 캐럿 오프셋도 같은 scalar 단위다.
+  */
++/** [hwpxxx] 조합 확정 뒤 같은 글의 input 을 브라우저가 한 번 더 보내는(유령 입력) 것으로 볼 시간. */
++const GHOST_INPUT_WINDOW_MS = 300;
++
+ function charCount(s: string): number {
+   return [...s].length;
+ }
+@@ -375,7 +380,21 @@ function clearCellBlockLetterImeFollowup(this: any): void {
+   this.resetRawTextMutationEffects();
+ }
+ 
++/** [hwpxxx] 편집 상태 오류로 문서가 잠겼는지(키 입력·명령은 이미 막힌다). 잠기면 한글 조합 입력도 문서를 바꾸지 않는다. */
++function editingLocked(this: any): boolean {
++  const status = this.getCommandErrorState?.()?.status;
++  return status === 'blocked' || status === 'recovering';
++}
++
+ export function onCompositionStart(this: any): void {
++  this._hwpxxxCompositionFinishedEarly = false;
++  if (editingLocked.call(this)) {
++    this.textarea.value = '';
++    this.isComposing = false;
++    this.compositionAnchor = null;
++    this.compositionLength = 0;
++    return;
++  }
+   this.compositionBodyLogical = false;
+   if (this._cellBlockLetterImeGuard?.consume('compositionstart')) {
+     clearCellBlockLetterImeFollowup.call(this);
+@@ -384,6 +403,8 @@ export function onCompositionStart(this: any): void {
+ 
+   this.resetRawTextMutationEffects();
+   this.headerFooterSelectionComposition = false;
++  // [hwpxxx] 이번 조합의 첫 갱신에서 입력기가 캐럿 앞 낱말을 다시 조합하는지 본다(선택을 지우고 시작한 조합은 제외).
++  this._hwpxxxRecomposeCheck = !this.cursor.hasSelection();
+   // [#7489] null = 첫 조합 글자가 들어올 때 덮어쓸 글자를 정한다. 선택을 지웠으면 덮어쓰지 않는다.
+   this._compositionCovered = this.cursor.hasSelection() ? '' : null;
+   // 선택 영역이 있으면 삭제 후 조합 시작
+@@ -400,7 +421,7 @@ export function onCompositionStart(this: any): void {
+       this.textarea.value = '';
+       return;
+     }
+-    this.deleteSelection();
++    this.deleteSelectionForReplace(); // [hwpxxx] 블록 위 한글 조합도 되돌리기 한 번으로
+   }
+   let basePos = this.cursor.isInHeaderFooter()
+     ? { ...this.cursor.getPosition(), charOffset: this.cursor.hfCharOffset }
+@@ -439,6 +460,12 @@ export function onCompositionStart(this: any): void {
+ }
+ 
+ export function onCompositionEnd(this: any): void {
++  // [hwpxxx] finishCompositionNow() 로 이미 확정한 조합의 늦은 compositionend: 기록·유령 입력 방지 상태를 덮어쓰지 않는다.
++  if (this._hwpxxxCompositionFinishedEarly && !this.isComposing) {
++    this._hwpxxxCompositionFinishedEarly = false;
++    this.textarea.value = '';
++    return;
++  }
+   if (this._cellBlockLetterImeGuard?.consume('compositionend', this.textarea.value)) {
+     clearCellBlockLetterImeFollowup.call(this);
+     return;
+@@ -480,7 +507,9 @@ export function onCompositionEnd(this: any): void {
+   // 더블 자음 분리 방지: compositionEnd 시점에 조합 완료된 텍스트 기억
+   // 직후 유령 input 이벤트에서 동일 텍스트가 오면 무시
+   this._lastComposedText = (finalLength > 0 && this._lastCompositionText) ? this._lastCompositionText : '';
++  this._lastComposedAt = Date.now();
+ 
++  if (!(anchor && finalLength > 0)) this.history?.cancelJoin?.(); // [hwpxxx] 글 없이 끝난 조합은 블록 지우기와 묶지 않는다
+   // 조합 중 WASM 직접 호출로 이미 문서에 삽입된 텍스트를
+   // Command로 기록하여 Undo 가능하게 한다.
+   // [Task #2337] 머리말/꼬리말·각주 모드도 이제 기록한다(본문 스냅샷 undo 의 무언 파괴 차단).
+@@ -565,6 +594,11 @@ export function getTextAt(this: any, pos: DocumentPosition, count: number): stri
+ 
+ export function onInput(this: any, e?: InputEvent): void {
+   if (!this.active) return;
++  // [hwpxxx] 잠긴 문서에는 조합·일반 입력을 넣지 않는다(예전에는 조합 경로만 잠금 검사를 거치지 않아 한글이 계속 들어갔다).
++  if (editingLocked.call(this)) {
++    this.textarea.value = '';
++    return;
++  }
+ 
+   if (this._cellBlockLetterImeGuard?.consume('input', this.textarea.value)) {
+     e?.preventDefault();
+@@ -572,6 +606,12 @@ export function onInput(this: any, e?: InputEvent): void {
+     return;
+   }
+ 
++  // [hwpxxx] 조합을 먼저 확정했는데(finishCompositionNow) 입력기가 새 compositionstart 없이 같은 조합을 이어 보내면, 새 조합으로
++  // 받아 들인다. 일반 입력으로 처리하면 갱신마다 글이 통째로 다시 들어가 "가가나가나다" 가 됐다. 이미 확정한 앞 글자는 재조합
++  // 판단(캐럿 바로 앞에 방금 친 글)으로 조합 구간에 들어가 겹치지 않는다.
++  if (!this.isComposing && e?.isComposing === true && e.inputType === 'insertCompositionText') {
++    onCompositionStart.call(this);
++  }
+   const text = normalizeTextNewlines(this.textarea.value);
+   // const inputType = e?.inputType ?? 'unknown';
+   // const inputData = e?.data ?? '';
+@@ -602,6 +642,30 @@ export function onInput(this: any, e?: InputEvent): void {
+       }
+       this.compositionLength += charCount(this._compositionCovered);
+     }
++    // [hwpxxx] 입력기가 캐럿 앞 낱말을 다시 조합하면(Android 키보드), 그 글자들을 조합 구간에 넣어 겹쳐 들어가지 않게 한다.
++    if (this._hwpxxxRecomposeCheck) {
++      this._hwpxxxRecomposeCheck = false;
++      if (!this._compositionCovered && this.compositionLength === 0 && !this.compositionBodyLogical && text
++        && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()) {
++        // 캐럿 앞 글자가 방금 이 자리에서 친 글(이력 맨 위 입력 묶음의 끝)일 때만 재조합으로 본다. 캐럿을 옮겨 온 자리의
++        // 기존 글과 새 조합 글이 우연히 같은 글자로 시작하는 경우를 지우지 않기 위해서다.
++        const run = this.history.peekUndoTop()?.typedRun?.() as { end: DocumentPosition; text: string } | null | undefined;
++        const typedHere = !!run && CursorState.comparePositions(run.end, anchor) === 0;
++        const span = typedHere ? Math.min(anchor.charOffset, charCount(text), charCount(run!.text)) : 0;
++        const before = span > 0 ? this.getTextAt({ ...anchor, charOffset: anchor.charOffset - span }, span) : '';
++        const k = recomposedPrefixLength(text, before);
++        if (k > 0) {
++          const prefix = Array.from(before).slice(-k).join('');
++          anchor = { ...anchor, charOffset: anchor.charOffset - charCount(prefix) };
++          this.compositionAnchor = anchor;
++          this._compositionCovered = prefix;
++          this._compositionFragment = captureTextFragment(this.wasm, anchor);
++          const fi = this.wasm.getFieldInfoAt(anchor);
++          this._compositionOutsideField = !fi.inField || this.isAtExitedFieldEnd?.(anchor, fi);
++          this.compositionLength = charCount(prefix);
++        }
++      }
++    }
+     // [#7489] 덮은 글자 뒤 캐럿이 누름틀 시작에 서면 그 누름틀이 활성화된다. 앵커가 누름틀 밖이면
+     // replace 전마다 해제해, 지웠다 다시 넣는 조합 글자가 누름틀 안으로 끌려가지 않게 한다.
+     if (this._compositionCovered && this._compositionOutsideField) this.wasm.clearActiveField();
+@@ -741,7 +805,9 @@ export function onInput(this: any, e?: InputEvent): void {
+ 
+   // 더블 자음 분리 방지: compositionEnd 직후 유령 input 이벤트 감지
+   // 각주/머리말꼬리말 모드에서 조합 완료 직후 동일 텍스트가 오면 무시
+-  if (this._lastComposedText && text === this._lastComposedText) {
++  // [hwpxxx] 유령 입력은 조합 확정 바로 뒤에 온다. 시간이 지난 뒤 같은 글이 들어오면(키보드 추천어, "ㅋ" 다음 "ㅋ") 사용자의 입력이다.
++  const ghostWindow = Date.now() - (this._lastComposedAt ?? 0) <= GHOST_INPUT_WINDOW_MS;
++  if (this._lastComposedText && text === this._lastComposedText && ghostWindow) {
+     this._lastComposedText = '';
+     this.textarea.value = '';
+     return;
+@@ -807,7 +873,7 @@ export function onInput(this: any, e?: InputEvent): void {
+   // 선택 영역은 삽입 모드와 똑같이 입력으로 바뀌고, 뒤 글자를 더 덮어쓰지 않는다.
+   const hadSelection = this.cursor.hasSelection();
+   if (hadSelection) {
+-    this.deleteSelection();
++    this.deleteSelectionForReplace(); // [hwpxxx] 블록 지우기와 그 자리에 친 글을 되돌리기 한 번으로
+     insertPos = this.prepareClickHereInputPosition?.() ?? this.cursor.getPosition();
+     refreshClickHereGuide = this.isClickHereGuidePosition?.(insertPos) === true;
+   }
+diff --git a/rhwp-studio/src/engine/input-handler.ts b/rhwp-studio/src/engine/input-handler.ts
+index 6cb2f33..e1e8cdc 100644
+--- a/rhwp-studio/src/engine/input-handler.ts
++++ b/rhwp-studio/src/engine/input-handler.ts
+@@ -15,7 +15,7 @@ import { resolveGlyphStartRect, isCompositionBoxRepresentable } from './line-sta
+ import { FieldMarkerRenderer } from './field-marker-renderer';
+ import { SelectionRenderer } from './selection-renderer';
+ import { CommandHistory } from './history';
+-import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSnapshotCommand, SubmodeSelectionSnapshotCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharShapeModsToRange, cellAxisPath, cellParaIndexOf } from './command';
++import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSnapshotCommand, SubmodeSelectionSnapshotCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharShapeModsToRange, cellAxisPath, cellParaIndexOf, cellPathForEdit } from './command';
+ import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects, EditCommand, EditContext, HeaderFooterSelectionSnapshot, FormValueTarget } from './command';
+ import { selectCellIndicesInRange, paraFormatTargetsForCellBlock, withCellPathTarget } from './cell-block-format';
+ import type { SelectedCellBlock } from './cell-block-format';
+@@ -65,6 +65,7 @@ import { emitHeaderFooterModeChanged } from './header-footer-mode';
+ import { CellBlockLetterImeGuard } from '@/command/contextual-shortcut';
+ import { DEFAULT_FORMAT_COPY_OPTIONS, type FormatCopyOptions } from '@/ui/format-copy-dialog';
+ import { compositionCssFont, compositionWidthRatio, compositionOverlayTail } from '@/hwpxxx/composition-font';
++import { installClickSelection } from '@/hwpxxx/select-by-click';
+ import { ImeNavigationGuard } from './ime-navigation-guard';
+ 
+ const SVG_NS = 'http://www.w3.org/2000/svg';
+@@ -705,6 +706,7 @@ export class InputHandler {
+ 
+     container.addEventListener('mousedown', this.onClickBound);
+     container.addEventListener('dblclick', this.onDblClickBound);
++    installClickSelection(this, container); // [hwpxxx] 두 번 누르면 낱말, 세 번 누르면 문단 블록
+     container.addEventListener('contextmenu', this.onContextMenuBound);
+     container.addEventListener('mousemove', this.onMouseMoveBound);
+     this.textarea.addEventListener('keydown', this.onKeyDownBound);
+@@ -2132,6 +2134,7 @@ export class InputHandler {
+       // F5 블록에서 Ctrl+클릭으로 모든 셀을 제외한 경우다. 빈 블록을 일반 텍스트
+       // 선택 없음으로 fallback하면 앵커 셀 하나를 바꾸므로, history도 만들지 않고 끝낸다.
+       if (block.cellIndices.length === 0) return;
++      this.dropPendingCharShape(); // [hwpxxx] 범위에 서식을 주면 캐럿 대기 서식은 버린다(한글과 같다)
+       this.applyCharFormatToCellBlock(block, props);
+       return;
+     }
+@@ -2141,12 +2144,22 @@ export class InputHandler {
+     const sel = this.getNonEmptySelection();
+     if (!sel) {
+       this.stagePendingCharShape(props);
++      this.emitCursorFormatState(); // [hwpxxx] 예약 즉시 도구 막대에 반영
+       return;
+     }
++    // [hwpxxx] 범위에 서식을 주면 캐럿 대기 서식은 버린다. 남겨 두면 범위를 지운 뒤 같은 캐럿 자리로 돌아와 이어 쓰거나
++    // 붙여 넣을 때, 그 전에 예약했던 옛 색·서식이 다시 살아났다(색을 여러 번 바꾼 글 뒤에 옛 색으로 들어감).
++    this.dropPendingCharShape();
+     const cmd = new ApplyCharFormatCommand(sel.start, sel.end, props);
+     this.executeOperation({ kind: 'command', command: cmd });
+   }
+ 
++  /** [hwpxxx] 캐럿 대기 서식 예약을 버린다. */
++  private dropPendingCharShape(): void {
++    this.pendingCharShape = null;
++    this.pendingCharShapeAnchor = null;
++  }
++
+   private applyCharFormatInHeaderFooterSelection(props: Partial<CharProperties>): boolean {
+     const ordered = this.getNonEmptyHeaderFooterSelection();
+     if (!ordered) return false;
+@@ -2213,6 +2226,11 @@ export class InputHandler {
+   getPendingCharShape(): Partial<CharProperties> | undefined {
+     if (!this.pendingCharShape || !this.pendingCharShapeAnchor) return undefined;
+     if (this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return undefined;
++    // [hwpxxx] 범위를 잡았다면 캐럿을 옮긴 것과 같다: 같은 자리로 돌아와도 예약은 이미 낡았다.
++    if (this.cursor.hasSelection() && this.getNonEmptySelection()) {
++      this.dropPendingCharShape();
++      return undefined;
++    }
+     if (CursorState.comparePositions(this.cursor.getPosition(), this.pendingCharShapeAnchor) !== 0) {
+       this.pendingCharShape = null;
+       this.pendingCharShapeAnchor = null;
+@@ -2332,7 +2350,7 @@ export class InputHandler {
+     const toggleBlock = this.getSelectedCellBlock();
+     const current = toggleBlock && toggleBlock.cellIndices.length > 0
+       ? this.getCharPropertiesAtCellBlockAnchor(toggleBlock)
+-      : this.getCharPropertiesAtCursor();
++      : this.getEffectiveCharPropertiesAtCursor();
+ 
+     if (prop === 'emboss') {
+       const newVal = !current.emboss;
+@@ -2358,7 +2376,72 @@ export class InputHandler {
+       if (newVal) mods.superscript = false;
+       this.applyCharFormat(mods);
+     } else {
+-      this.applyCharFormat({ [prop]: !current[prop] });
++      // [hwpxxx] 블록 안 글자가 섞여 있으면(일부만 진하게 등) 먼저 모두 켠다(한글·워드와 같다). 예전에는 블록 첫 글자만 보고
++      // 첫 글자가 진하면 블록 전체의 진하게를 꺼 버렸다. 모든 글자가 이미 켜져 있을 때만 끈다.
++      const allOn = toggleBlock ? null : this.selectionAllHave(prop);
++      this.applyCharFormat({ [prop]: allOn === null ? !current[prop] : !allOn });
++    }
++  }
++
++  /**
++   * [hwpxxx] 본문 블록의 모든 글자가 이 서식을 가졌는가. 글자 모양 구간마다 첫 글자만 읽는다(구간 안은 모양이 같다).
++   * 블록이 없거나, 표 칸·머리말 등 본문 밖이거나, 구간을 읽지 못하면 null(예전 기준: 블록 첫 글자).
++   */
++  private selectionAllHave(prop: 'bold' | 'italic' | 'underline' | 'strikethrough'): boolean | null {
++    const sel = this.getNonEmptySelection();
++    if (!sel || this.cursor.isInHeaderFooter() || this.cursor.isInFootnote()) return null;
++    const { start, end } = sel;
++    if (start.sectionIndex !== end.sectionIndex) return null;
++    if (start.parentParaIndex !== undefined || end.parentParaIndex !== undefined) return this.cellSelectionAllHave(prop, start, end);
++    try {
++      let checked = 0;
++      for (let para = start.paragraphIndex; para <= end.paragraphIndex; para++) {
++        const from = para === start.paragraphIndex ? start.charOffset : 0;
++        const to = para === end.paragraphIndex ? end.charOffset : this.wasm.getParagraphLength(start.sectionIndex, para);
++        if (to <= from) continue;
++        for (const run of this.wasm.getCharShapeRuns(start.sectionIndex, para, from, to)) {
++          const at = Math.max(from, run.startOffset);
++          if (at >= Math.min(to, run.endOffset)) continue;
++          const props = this.wasm.getCharPropertiesAt(start.sectionIndex, para, at) as unknown as Record<string, unknown>;
++          if (!props[prop]) return false;
++          if (++checked > 512) return null; // 아주 큰 블록은 예전 기준으로
++        }
++      }
++      return checked > 0 ? true : null;
++    } catch {
++      return null;
++    }
++  }
++
++  /** [hwpxxx] 같은 표 칸(같은 칸 경로) 안의 블록: 칸 문단마다 글자 모양 구간을 읽는다. 칸을 넘는 블록은 null. */
++  private cellSelectionAllHave(prop: 'bold' | 'italic' | 'underline' | 'strikethrough', start: DocumentPosition, end: DocumentPosition): boolean | null {
++    const pathOf = (pos: DocumentPosition, cellParaIndex: number) => {
++      const path = cellPathForEdit(pos);
++      path[path.length - 1].cellParaIndex = cellParaIndex;
++      return path;
++    };
++    try {
++      const a = pathOf(start, 0), b = pathOf(end, 0);
++      if (start.parentParaIndex !== end.parentParaIndex || JSON.stringify(a) !== JSON.stringify(b)) return null;
++      // 중첩 칸의 평면 cellParaIndex 는 바깥 문단 번호다 → 안쪽 칸 문단 번호를 쓴다.
++      const firstPara = cellParaIndexOf(start), lastPara = cellParaIndexOf(end);
++      let checked = 0;
++      for (let para = firstPara; para <= lastPara; para++) {
++        const path = JSON.stringify(pathOf(start, para));
++        const from = para === firstPara ? start.charOffset : 0;
++        const to = para === lastPara ? end.charOffset : this.wasm.getCellParagraphLengthByPath(start.sectionIndex, start.parentParaIndex!, path);
++        if (to <= from) continue;
++        for (const run of this.wasm.getCharShapeRunsInCellByPath(start.sectionIndex, start.parentParaIndex!, path, from, to)) {
++          const at = Math.max(from, run.startOffset);
++          if (at >= Math.min(to, run.endOffset)) continue;
++          const props = this.wasm.getCellCharPropertiesAtByPath(start.sectionIndex, start.parentParaIndex!, path, at) as unknown as Record<string, unknown>;
++          if (!props[prop]) return false;
++          if (++checked > 512) return null;
++        }
++      }
++      return checked > 0 ? true : null;
++    } catch {
++      return null;
+     }
+   }
+ 
+@@ -2375,6 +2458,18 @@ export class InputHandler {
+     return sel;
+   }
+ 
++  /**
++   * [hwpxxx] 다음에 칠 글자의 서식: 캐럿 앞 글자 서식에 캐럿 대기 서식(선택 없이 누른 Ctrl+B·크기·색 등)을 더한다.
++   * 토글·증감은 이 값을 기준으로 해야 한다. 문서에 있는 글자만 보면 Ctrl+B 를 두 번 눌러도 꺼지지 않고(두 번째도 "켜기"),
++   * 크기 키우기를 두 번 눌러도 +1pt 만 됐다. 범위를 잡았으면 범위 첫 글자 서식 그대로다.
++   */
++  private getEffectiveCharPropertiesAtCursor(): CharProperties {
++    const base = this.getCharPropertiesAtCursor();
++    if (this.getNonEmptySelection()) return base;
++    const pending = this.getPendingCharShape();
++    return pending ? { ...base, ...pending } as CharProperties : base;
++  }
++
+   /** 커서 위치의 글자 서식을 조회한다. 선택이 있으면 선택 첫 글자, 없으면 캐럿 앞 글자 기준. */
+   private getCharPropertiesAtCursor(): CharProperties {
+     if (this.cursor.isInHeaderFooter()) {
+@@ -2810,7 +2905,7 @@ export class InputHandler {
+   private emitCursorFormatState(): void {
+     if (!this.active) return;
+     try {
+-      const props = this.getCharPropertiesAtCursor();
++      const props = this.getEffectiveCharPropertiesAtCursor(); // [hwpxxx] 예약한 서식도 단추에 보인다(Ctrl+B 를 누르면 '가' 가 눌린 상태)
+       this.eventBus.emit('cursor-format-changed', props);
+     } catch {
+       // 문서 없거나 위치 초과 시 무시
+@@ -3048,6 +3143,9 @@ export class InputHandler {
+       // "AAAABBBBCCCC" 에서 BBBB 선택+붙여넣기 → XYZ 가 끝에 붙는다).
+       // executeOperation('command') 의 moveTo·resetPreferredX 에 해당하는 최소 배선.
+       const newPos = cmd.execute(this.wasm);
++      // [hwpxxx] 기록하지 않는 삭제 명령이 잡은 복원 자료(표 칸 삭제의 스냅샷 등)를 바로 돌려준다. 호출자의 스냅샷이 되돌리기를
++      // 맡으므로 필요 없고, 남겨 두면 이력 예산에 잡히지 않은 채 쌓여 되돌리기가 '스냅샷 없음' 으로 실패했다.
++      cmd.discard?.(this.wasm);
+       this.cursor.moveTo(newPos);
+       this.cursor.resetPreferredX();
+     } else {
+@@ -3055,6 +3153,19 @@ export class InputHandler {
+     }
+   }
+ 
++  /**
++   * [hwpxxx] 블록을 지우고 그 자리에 쓸 때: 지우기가 실제로 이력에 기록됐을 때만 다음 편집과 되돌리기 한 번으로 묶는다.
++   * 지우지 못했으면(거절·선택 없음) 묶지 않는다 — 예전에는 그때도 묶기를 예약해 무관한 이전 편집에 붙었다.
++   */
++  private deleteSelectionForReplace(): boolean {
++    const before = this.history.peekUndoTop();
++    this.deleteSelection();
++    const after = this.history.peekUndoTop();
++    if (!after || after === before) return false;
++    this.history.joinNextWithPrevious();
++    return true;
++  }
++
+   /** Undo 처리 */
+   private handleUndo(): void {
+     this.withCommandErrorBoundary('undo', () => {
+@@ -3538,6 +3649,21 @@ export class InputHandler {
+     this.textarea.focus({ preventScroll: true });
+   }
+ 
++  /**
++   * [hwpxxx] 조합 중인 글을 지금 확정한다(되돌리기 기록 포함). 단축키·클릭이 조합 중에 들어오면 쓴다.
++   * 블루투스 키보드 + 삼성 키보드는 띄어쓰기 전까지 낱말 전체를 조합하므로, 조합 중 Ctrl+Z·Ctrl+B 나 다른 곳 클릭이 흔하다.
++   * `commitComposition()` 은 브라우저의 compositionend 를 기다리는데, Android WebView 는 그것이 늦게(명령이 실행된 뒤) 와서
++   * 명령이 조합 앵커를 낡게 만들었다(조합 중 Ctrl+Z → 앞 글이 지워지고 조합 글자가 겹침). 여기서는 편집기 쪽 확정을 먼저 끝내고,
++   * 뒤늦게 오는 그 조합의 compositionend 는 한 번 무시한다(같은 글의 유령 input 은 기존 장치가 버린다).
++   */
++  finishCompositionNow(): void {
++    if (!this.isComposing) return;
++    _text.onCompositionEnd.call(this);
++    (this as any)._hwpxxxCompositionFinishedEarly = true;
++    this.textarea.blur();
++    this.textarea.focus({ preventScroll: true });
++  }
++
+   private onCompositionEnd(): void {
+     _text.onCompositionEnd.call(this);
+   }
+@@ -5798,7 +5924,39 @@ export class InputHandler {
+   performPaste(): boolean {
+     if (this.editMode === 'form') return false;
+     this.focusTextarea();
+-    return document.execCommand('paste');
++    if (document.execCommand('paste')) return true;
++    // [hwpxxx] 메뉴·도구 상자의 '붙이기': WebView·브라우저는 스크립트의 execCommand('paste') 를 막아 아무것도 붙지 않았다.
++    // 클립보드 API(Android 셸은 기기 클립보드에 연결)로 읽어, 키보드 붙여넣기와 같은 paste 이벤트로 넘긴다(서식·내부 복사 판단 동일).
++    void this.pasteFromClipboardApi();
++    return true;
++  }
++
++  private async pasteFromClipboardApi(): Promise<void> {
++    const clipboard = navigator.clipboard as (Clipboard & { read?: () => Promise<ClipboardItem[]> }) | undefined;
++    if (!clipboard) return;
++    const data = new DataTransfer();
++    try {
++      if (clipboard.read) {
++        for (const item of await clipboard.read()) {
++          for (const type of item.types) {
++            if (type === 'text/plain' || type === 'text/html') data.setData(type, await (await item.getType(type)).text());
++            else if (type.startsWith('image/')) {
++              const blob = await item.getType(type);
++              data.items.add(new File([blob], `clipboard.${type.slice(6) || 'png'}`, { type }));
++            }
++          }
++        }
++      } else {
++        data.setData('text/plain', await clipboard.readText());
++      }
++    } catch (error) {
++      console.warn('[InputHandler] 클립보드를 읽지 못함:', error);
++      showToast({ message: '클립보드를 읽지 못했어요. Ctrl+V 로 붙여 보세요.', durationMs: 4000 });
++      return;
++    }
++    if (!data.types.length) return;
++    this.focusTextarea();
++    this.textarea.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+   }
+ 
+   /** 잘라내기 (커맨드 시스템용 — 컨텍스트 메뉴/도구 상자에서 호출) */
+@@ -6189,14 +6347,14 @@ export class InputHandler {
+   /** 글꼴 크기 증감 (커맨드 시스템용, delta: HWPUNIT, 1pt=100) */
+   adjustFontSize(delta: number): void {
+     // [#4162] 선택이 없어도(캐럿만) applyCharFormat 이 캐럿 대기 서식으로 예약한다.
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const newSize = Math.max(100, (current.fontSize ?? 1000) + delta); // 최소 1pt
+     this.applyCharFormat({ fontSize: newSize });
+   }
+ 
+   /** 장평 증감 (커맨드 시스템용, delta: percent point) */
+   adjustCharRatio(delta: number): void {
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const currentRatio = current.ratios?.[0] ?? 100;
+     const nextRatio = Math.max(50, Math.min(200, Math.round(currentRatio + delta)));
+     this.applyCharFormat({ ratios: Array(7).fill(nextRatio) });
+@@ -6204,7 +6362,7 @@ export class InputHandler {
+ 
+   /** 자간 증감 (커맨드 시스템용, delta: percent point) */
+   adjustCharSpacing(delta: number): void {
+-    const current = this.getCharPropertiesAtCursor();
++    const current = this.getEffectiveCharPropertiesAtCursor();
+     const currentSpacing = current.spacings?.[0] ?? 0;
+     const nextSpacing = Math.max(-50, Math.min(50, Math.round(currentSpacing + delta)));
+     this.applyCharFormat({ spacings: Array(7).fill(nextSpacing) });
+@@ -6245,6 +6403,14 @@ export class InputHandler {
+   changeOutlineLevel(delta: number): void {
+     const pos = this.cursor.getPosition();
+     try {
++      // [hwpxxx] 번호·글머리표는 개요 스타일 이름 대신 문단 수준을 바꾸고 기존 서식 명령으로 되돌리기를 기록한다.
++      const props = this.getParaProperties();
++      if (props.headType === 'Number' || props.headType === 'Bullet') {
++        const currentLevel = props.paraLevel ?? 0;
++        const targetLevel = Math.max(0, Math.min(6, currentLevel + delta));
++        if (targetLevel !== currentLevel) this.applyParaFormat({ paraLevel: targetLevel });
++        return;
++      }
+       const inCell = pos.parentParaIndex !== undefined;
+       const currentStyle = inCell
+         ? this.wasm.getCellStyleAt(
+@@ -6275,11 +6441,11 @@ export class InputHandler {
+     }
+   }
+ 
+-  /** 문단 번호 토글: None→Number, Number/Outline→None */
++  /** [hwpxxx] 문단 번호 토글: 글머리표도 번호로 전환하고, Number/Outline만 해제한다. */
+   toggleNumbering(): void {
+     try {
+       const props = this.getParaProperties();
+-      if (props.headType && props.headType !== 'None') {
++      if (props.headType === 'Number' || props.headType === 'Outline') {
+         // 번호 해제
+         this.applyParaFormat({ headType: 'None' } as Partial<import('@/core/types').ParaProperties>);
+       } else {
+@@ -6350,7 +6516,7 @@ export class InputHandler {
+ 
+   /** 글자 모양 대화상자용: 커서 위치의 글자 서식 조회 (커맨드 시스템용) */
+   getCharProperties(): CharProperties {
+-    return this.getCharPropertiesAtCursor();
++    return this.getEffectiveCharPropertiesAtCursor(); // [hwpxxx] 캐럿 대기 서식도 보여 준다
+   }
+ 
+   /** 문단 모양 대화상자용: 커서 위치의 문단 서식 조회 (커맨드 시스템용) */
+@@ -6412,10 +6578,20 @@ export class InputHandler {
+     end: DocumentPosition,
+     props: Partial<CharProperties>,
+   ): void {
++    // [hwpxxx] 클릭만 해 생긴 빈 선택도 블록 없음으로 처리해 다음 입력 서식을 예약한다.
++    if (CursorState.comparePositions(start, end) === 0) {
++      this.applyCharFormat(props);
++      return;
++    }
+     const cmd = new ApplyCharFormatCommand(start, end, props);
+     this.executeOperation({ kind: 'command', command: cmd });
+   }
+ 
++  /** [hwpxxx] 블록 없는 글자 모양 대화상자도 도구 막대와 같은 캐럿 대기 서식 경로를 쓴다. */
++  applyCharPropsAtCursor(props: Partial<CharProperties>): void {
++    this.applyCharFormat(props);
++  }
++
+   /** 지정된 선택 범위에 문단 서식을 적용한다 (커맨드 시스템용) */
+   applyParaPropsToRange(
+     start: DocumentPosition,
+@@ -6423,6 +6599,8 @@ export class InputHandler {
+     props: Partial<ParaProperties>,
+   ): void {
+     try {
++      // [hwpxxx] 머리말·꼬리말·각주는 본문 범위가 비므로 도구 막대와 같은 문맥별 스냅샷 경로를 쓴다.
++      if (this.applyParaFormatInNoteOrHeader(props as Record<string, unknown>)) return;
+       const targets = this.getParaFormatTargetsForRange(start, end);
+       this.executeParaFormatCommand(targets, props as Record<string, unknown>);
+     } catch (err) {
+diff --git a/rhwp-studio/src/hwpxxx/ime-recompose.ts b/rhwp-studio/src/hwpxxx/ime-recompose.ts
+new file mode 100644
+index 0000000..89c2542
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/ime-recompose.ts
+@@ -0,0 +1,25 @@
++/**
++ * [hwpxxx] 입력기가 이미 들어간 글자를 다시 조합할 때 글자가 겹치지 않게 한다.
++ *
++ * Android 키보드(삼성 키보드, Gboard 등)는 띄어쓰기 전까지를 한 낱말로 보고, 캐럿 바로 앞 낱말을 조합 구간으로 다시 잡는다
++ * (`setComposingRegion`). 숫자처럼 바로 들어간 글자 뒤에 한글을 이어 쓰면 "21" 다음 "제"를 누를 때 조합 글이 "21제"로 온다.
++ * 편집기는 조합 글을 캐럿 자리에 새로 넣기 때문에 "21" 이 한 번 더 들어가 "2121제" 가 됐다.
++ * 조합의 첫 갱신이 캐럿 앞 글자들로 시작하면, 그 글자들을 조합 구간에 포함해(덮어쓰기와 같은 방식) 새 글로 바꾼다.
++ */
++
++/** 데스크톱 입력기처럼 한 글자씩 조합할 때와 구분하는 기준: 겹치는 부분이 두 글자 이상이거나, 겹친 뒤에 새 글자가 더 있다. */
++export function recomposedPrefixLength(text: string, before: string): number {
++  if (!text || !before) return 0;
++  const textChars = Array.from(text);
++  const beforeChars = Array.from(before);
++  // 키보드의 낱말은 빈칸·줄바꿈을 넘지 않는다.
++  let start = beforeChars.length;
++  while (start > 0 && !/\s/u.test(beforeChars[start - 1])) start--;
++  const word = beforeChars.slice(start);
++  for (let k = Math.min(word.length, textChars.length); k > 0; k--) {
++    const suffix = word.slice(word.length - k).join('');
++    if (!text.startsWith(suffix)) continue;
++    return k >= 2 || textChars.length > k ? k : 0;
++  }
++  return 0;
++}
+diff --git a/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts b/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts
+new file mode 100644
+index 0000000..1d557ff
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/keep-arrows-in-document.ts
+@@ -0,0 +1,42 @@
++/**
++ * [hwpxxx-android] 화살표 키는 본문 안에서만 움직인다.
++ *
++ * 태블릿에서 메뉴·도구 상자·서식 막대의 단추를 누르면 그 단추가 키보드 초점을 가질 수 있고, 이어서 누른 화살표 키가 본문 캐럿이 아니라
++ * 도구 상자 사이를 옮겨 다녔다(한글·워드는 단추를 누른 뒤에도 화살표가 본문 캐럿을 움직인다). 열린 메뉴·입력칸·목록 상자가 아닌
++ * 도구 단추에 초점이 있을 때 화살표 키를 받으면, 초점을 본문으로 돌리고 같은 키를 본문 입력기에 넘긴다.
++ * 네이티브 쪽(MainActivity.dispatchKeyEvent)은 페이지가 쓰지 않은 화살표 키로 Android 가 초점을 WebView 밖으로 옮기지 못하게 막는다.
++ */
++const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
++const TOOL_AREAS = '#menu-bar, #icon-toolbar, #style-bar';
++/** 화살표가 원래 뜻대로 쓰여야 하는 곳: 열린 메뉴, 글·숫자 입력칸, 목록 상자, 대화상자. */
++const KEEP_NATIVE = 'input, select, textarea, [contenteditable=""], [contenteditable="true"], .menu-item.open, .menu-dropdown, [role="menu"], [role="listbox"], .dialog-wrap, .modal-overlay';
++
++export interface ArrowRedirectTarget {
++  /** 본문 입력기(숨은 textarea)로 초점을 돌린다. */
++  focus(): void;
++}
++
++/** 이 키 입력을 본문으로 돌려야 하는지(순수 판단, 시험용). */
++export function shouldRedirectArrow(event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'metaKey' | 'isComposing'>, target: Element | null): boolean {
++  if (!ARROWS.has(event.key) || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return false;
++  if (!target || !target.closest(TOOL_AREAS)) return false;
++  return !target.closest(KEEP_NATIVE);
++}
++
++export function installKeepArrowsInDocument(editor: ArrowRedirectTarget, doc: Document = document): () => void {
++  const onKeyDown = (event: KeyboardEvent) => {
++    const target = event.target instanceof Element ? event.target : doc.activeElement;
++    if (!shouldRedirectArrow(event, target)) return;
++    event.preventDefault();
++    event.stopPropagation();
++    (target as HTMLElement | null)?.blur?.();
++    editor.focus();
++    const input = doc.activeElement;
++    if (!input || input === target || input === doc.body) return;
++    input.dispatchEvent(new KeyboardEvent('keydown', {
++      key: event.key, code: event.code, shiftKey: event.shiftKey, bubbles: true, cancelable: true,
++    }));
++  };
++  doc.addEventListener('keydown', onKeyDown, true);
++  return () => doc.removeEventListener('keydown', onKeyDown, true);
++}
+diff --git a/rhwp-studio/src/hwpxxx/select-by-click.ts b/rhwp-studio/src/hwpxxx/select-by-click.ts
+new file mode 100644
+index 0000000..b45f6ba
+--- /dev/null
++++ b/rhwp-studio/src/hwpxxx/select-by-click.ts
+@@ -0,0 +1,67 @@
++/**
++ * [hwpxxx] 두 번 누르면 낱말, 세 번 누르면 문단을 블록으로 잡는다(한글·워드와 같다).
++ *
++ * 편집기는 두 번 누르기를 머리말·개체 편집에만 써서, 본문 글을 두 번·세 번 눌러도 블록이 잡히지 않았다.
++ * 클릭(mousedown → mouseup) 처리가 캐럿을 옮긴 뒤 오는 click 이벤트의 횟수(`detail`)로 판단한다. 본문과 표 칸 안 글에 쓴다.
++ */
++
++/** 한글·영문·숫자는 낱말 글자, 나머지(빈칸·문장부호)는 경계. */
++export function isWordChar(ch: string): boolean {
++  return /[\p{L}\p{N}_]/u.test(ch);
++}
++
++/**
++ * 글 안에서 offset 자리의 낱말 범위(글자 위치, UTF-16 아님: 문자 단위 배열 기준).
++ * 낱말 바로 뒤(빈칸 앞)를 눌렀으면 앞 낱말을 잡는다. 낱말이 아닌 곳(빈칸 줄)은 같은 종류가 이어진 범위를 잡는다.
++ */
++export function wordRangeAt(chars: readonly string[], offset: number): { start: number; end: number } | null {
++  if (!chars.length) return null;
++  let at = Math.max(0, Math.min(offset, chars.length - 1));
++  if (!isWordChar(chars[at]) && at > 0 && isWordChar(chars[at - 1])) at -= 1;
++  const word = isWordChar(chars[at]);
++  let start = at;
++  let end = at + 1;
++  while (start > 0 && isWordChar(chars[start - 1]) === word) start--;
++  while (end < chars.length && isWordChar(chars[end]) === word) end++;
++  return { start, end };
++}
++
++interface Position { charOffset: number; [key: string]: unknown }
++
++/** 문단 전체 글(캐럿 문단). 길이를 모르므로 덜 돌아올 때까지 넓혀 읽는다. */
++function paragraphText(handler: any, pos: Position): string {
++  for (let n = 256; n <= 1 << 20; n *= 2) {
++    const text: string = handler.getTextAt({ ...pos, charOffset: 0 }, n) ?? '';
++    if (Array.from(text).length < n) return text;
++  }
++  return '';
++}
++
++export function installClickSelection(handler: any, container: HTMLElement): () => void {
++  const onClick = (e: MouseEvent) => {
++    if (e.button !== 0 || (e.detail !== 2 && e.detail !== 3) || e.shiftKey) return;
++    if (!handler.active || handler.isComposing) return;
++    const cursor = handler.cursor;
++    if (cursor.isInHeaderFooter?.() || cursor.isInFootnote?.() || cursor.isInPictureObjectSelection?.()
++      || cursor.isInTableObjectSelection?.() || cursor.isInCellSelectionMode?.()) return;
++    const target = e.target as HTMLElement | null;
++    if (target?.closest?.('#menu-bar, #icon-toolbar, #style-bar')) return;
++    const pos = cursor.getPosition() as Position;
++    let text: string;
++    try { text = paragraphText(handler, pos); } catch { return; }
++    const chars = Array.from(text);
++    let range: { start: number; end: number } | null;
++    if (e.detail === 3) range = { start: 0, end: chars.length };
++    else range = wordRangeAt(chars, pos.charOffset);
++    if (!range || range.end <= range.start) return;
++    // 편집기의 글자 위치는 문자(코드 포인트) 단위다(charCount 와 같다).
++    cursor.clearSelection();
++    cursor.moveTo({ ...pos, charOffset: range.start });
++    cursor.setAnchor();
++    cursor.moveTo({ ...pos, charOffset: range.end });
++    handler.updateCaret?.();
++    handler.updateSelection?.();
++  };
++  container.addEventListener('click', onClick);
++  return () => container.removeEventListener('click', onClick);
++}
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index 017562f..80be60a 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -35,6 +35,7 @@ import type { StudioPlugin } from '@/plugin/types';
+ import { CommandDispatcher } from '@/command/dispatcher';
+ import { installMemoMarks } from '@/hwpxxx/memo-marks';
+ import { installDocScrollbar } from '@/hwpxxx/doc-scrollbar';
++import { installKeepArrowsInDocument } from '@/hwpxxx/keep-arrows-in-document';
+ import '@/styles/hwpxxx-scrollbar.css';
+ import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
+ import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+@@ -778,6 +779,7 @@ async function initialize(): Promise<void> {
+       canvasView.getViewportManager(),
+     );
+     installInputPerfProbes(inputHandler as unknown as Record<string, any>); // [hwpxxx] 입력 경로 시간 계측(숫자만, 기록·전송 없음)
++    if (isAndroidHost()) { const editor = inputHandler; installKeepArrowsInDocument({ focus: () => editor.focus() }); } // [hwpxxx-android] 화살표는 본문 안에서만
+     inputHandler.configureCommandErrors({
+       isDirty: () => documentState.isDirty(),
+       render: () => canvasView!.refreshDocumentAgentMutation(),
+diff --git a/rhwp-studio/src/styles/style-bar.css b/rhwp-studio/src/styles/style-bar.css
+index d12c8a0..dc2a288 100644
+--- a/rhwp-studio/src/styles/style-bar.css
++++ b/rhwp-studio/src/styles/style-bar.css
+@@ -530,8 +530,9 @@
+   padding: 1px 2px;
+ }
+ 
+-/* [hwpxxx] 형광펜 분할 단추: 본체(즉시 형광펜)와 오른쪽 팔레트 단추 */
+-#style-bar #btn-highlight-palette {
++/* [hwpxxx] 형광펜·글자 색 분할 단추: 본체(즉시 적용)와 오른쪽 팔레트 단추 */
++#style-bar #btn-highlight-palette,
++#style-bar #btn-text-color-palette {
+   width: 14px;
+   min-width: 14px;
+   padding: 1px 0;
+@@ -591,6 +592,7 @@
+   box-shadow: var(--shadow-light);
+ }
+ #highlight-dropdown.open .sb-hl-palette { display: block; }
++#text-color-dropdown.open .sb-hl-palette { display: block; }
+ 
+ .sb-hl-palette-row {
+   display: flex;
+diff --git a/rhwp-studio/src/styles/symbols-dialog.css b/rhwp-studio/src/styles/symbols-dialog.css
+index e71e626..ff20392 100644
+--- a/rhwp-studio/src/styles/symbols-dialog.css
++++ b/rhwp-studio/src/styles/symbols-dialog.css
+@@ -2,7 +2,8 @@
+    문자표 입력 대화상자
+    ================================================================ */
+ .sym-dialog {
+-  width: 640px;
++  /* [hwpxxx] 태블릿 세로 화면에서도 넘치지 않게 화면 폭에 맞춘다. */
++  width: min(680px, calc(100vw - 24px));
+ }
+ 
+ .sym-body {
+@@ -78,14 +79,20 @@
+   text-align: center;
+ }
+ 
+-/* 문자 그리드 */
++/* 문자 그리드
++ * [hwpxxx] 16칸 고정 + 정사각형(aspect-ratio)이면 칸이 그리드보다 넓어져 오른쪽 칸이 잘리고 가로 스크롤도 없었다.
++ * 한글의 문자표처럼 칸 크기를 고정하고 폭에 들어가는 만큼 줄을 바꿔, 세로 스크롤만으로 모든 문자를 고르게 한다. */
+ .sym-char-grid {
+   display: grid;
+-  grid-template-columns: repeat(16, 1fr);
++  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
++  grid-auto-rows: 36px;
+   border: 1px solid var(--ui-border-strong);
+   background: var(--color-surface);
++  overflow-x: hidden;
+   overflow-y: auto;
+-  height: 250px;
++  overscroll-behavior: contain;
++  touch-action: pan-y;
++  height: min(300px, 45vh);
+   gap: 0;
+ }
+ 
+@@ -94,8 +101,9 @@
+   align-items: center;
+   justify-content: center;
+   width: 100%;
+-  aspect-ratio: 1;
+-  font-size: 15px;
++  height: 100%;
++  min-width: 0;
++  font-size: 18px;
+   cursor: pointer;
+   border: 1px solid var(--ui-border-subtle);
+   box-sizing: border-box;
+@@ -155,3 +163,10 @@
+   color: var(--color-text-hint);
+   padding: 4px 8px;
+ }
++
++/* [hwpxxx] 좁은 화면(태블릿 세로 분할 등): 문자 영역 목록을 위로 올리고 그리드에 폭을 준다. */
++@media (max-width: 600px) {
++  .sym-top { flex-direction: column; }
++  .sym-block-col { width: auto; }
++  .sym-block-list { height: 120px; }
++}
+diff --git a/rhwp-studio/src/ui/find-dialog.ts b/rhwp-studio/src/ui/find-dialog.ts
+index 0f44f0b..fd01141 100644
+--- a/rhwp-studio/src/ui/find-dialog.ts
++++ b/rhwp-studio/src/ui/find-dialog.ts
+@@ -1,5 +1,5 @@
+ import type { CommandServices } from '@/command/types';
+-import type { SearchResult, ReplaceResult, ReplaceAllResult } from '@/core/types';
++import type { SearchResult, SearchHit, ReplaceResult, ReplaceAllResult, DocumentPosition } from '@/core/types';
+ 
+ import { t } from '../i18n/index.ts';
+ import { FindAllPanel } from '@/hwpxxx/find-all';
+@@ -197,6 +197,7 @@ export class FindDialog {
+       this.searchedQuery = null;
+       this.clearMatchCount();
+       this.statusLabel.textContent = '';
++      this.findAll?.clear(); // [hwpxxx] 찾을 말이 바뀌면 예전 '모두 찾기' 목록은 지운다(남은 행으로 엉뚱한 글을 바꾸던 문제)
+     });
+     this.queryInput.addEventListener('compositionstart', () => {
+       this.queryComposing = true;
+@@ -242,6 +243,7 @@ export class FindDialog {
+       this.searchedQuery = null;
+       this.clearMatchCount();
+       this.statusLabel.textContent = '';
++      this.findAll?.clear(); // [hwpxxx] 대소문자 조건이 바뀌어도 예전 목록은 맞지 않는다
+     });
+     const caseLabel = document.createElement('label');
+     caseLabel.htmlFor = 'find-case-sensitive';
+@@ -354,6 +356,14 @@ export class FindDialog {
+         return;
+       }
+ 
++      // [hwpxxx] '모두 찾기' 목록의 줄에서 Enter·Space 는 그 자리로 간다(예전에는 일반 '다음 찾기'가 실행됐다).
++      if (isInDialog && (e.key === 'Enter' || e.key === ' ') && target instanceof HTMLElement && target.closest('.hwpxxx-find-all-list li')) {
++        e.preventDefault();
++        e.stopPropagation();
++        target.closest<HTMLElement>('.hwpxxx-find-all-list li')!.click();
++        return;
++      }
++
+       if (isInDialog && target instanceof HTMLButtonElement && e.key === 'Enter') {
+         e.stopPropagation();
+         return;
+@@ -429,7 +439,10 @@ export class FindDialog {
+     }
+ 
+     const hadHit = Boolean(this.currentHit?.found);
+-    const result = this.services.wasm.searchText(
++    // [hwpxxx] 이미 찾은 곳에서 다음·이전은 문서 전체 결과 목록 순서로 옮긴다. 엔진의 이어 찾기는 표 칸 안의 위치를 받지
++    // 못해, 칸에서 '다음'을 누르면 본문과 첫 칸만 오가며 다른 칸을 건너뛰었다.
++    const stepped = this.currentHit?.found ? this.stepThroughAll(query, this.currentHit, forward) : null;
++    const result = stepped ?? this.services.wasm.searchText(
+       query,
+       fromSec,
+       fromPara,
+@@ -487,6 +500,24 @@ export class FindDialog {
+     this.matchCountLabel.hidden = true;
+   }
+ 
++  /** [hwpxxx] 결과 자리의 지금 글이 찾을 말과 같은가(대소문자 조건 포함). 읽지 못하면 같다고 본다(예전 동작). */
++  private hitMatchesQuery(hit: SearchResult): boolean {
++    const query = this.queryInput.value;
++    if (!query || hit.charOffset === undefined || hit.length === undefined) return true;
++    let text: string;
++    try {
++      const w = this.services.wasm;
++      const cell = hit.cellContext;
++      if (hit.cellPath && hit.cellPath.length > 1) return true;
++      text = cell
++        ? w.getTextInCell(hit.sec!, cell.parentPara, cell.ctrlIdx, cell.cellIdx, cell.cellPara, hit.charOffset, hit.length)
++        : w.getTextRange(hit.sec!, hit.para!, hit.charOffset, hit.length);
++    } catch {
++      return true;
++    }
++    return this.caseSensitiveCheck.checked ? text === query : text.toLocaleLowerCase() === query.toLocaleLowerCase();
++  }
++
+   private navigateToHit(hit: SearchResult): void {
+     navigateToSearchHit(this.services.getInputHandler(), hit);
+   }
+@@ -499,6 +530,13 @@ export class FindDialog {
+ 
+     const newText = this.replaceInput.value;
+     const hit = this.currentHit;
++    // [hwpxxx] 바꾸기 직전에 그 자리 글이 지금 찾을 말(대소문자 조건 포함)과 같은지 확인한다. 찾을 말을 바꾼 뒤 예전 결과,
++    // 다른 편집으로 밀린 위치를 그대로 바꾸면 엉뚱한 글을 고친다. 맞지 않으면 바꾸지 않고 다시 찾는다.
++    if (!this.hitMatchesQuery(hit)) {
++      this.currentHit = null;
++      this.doSearch(true);
++      return;
++    }
+ 
+     // 텍스트 치환도 undo 대상 — 편집 라우터의 snapshot 명령으로 기록한다
+     // (#1320 계약, pasteImage/objectProps 와 동일 패턴). services 미주입
+@@ -522,11 +560,15 @@ export class FindDialog {
+     };
+ 
+     let result: ReplaceResult = { ok: false };
++    const query = this.queryInput.value;
++    const before = this.allHits(query);
++    const replacedIndex = before.findIndex((h) => sameHit(h, hit));
+     const ih = this.services.getInputHandler();
+     if (ih) {
+       ih.executeOperation({ kind: 'snapshot', operationType: 'replaceText', operation: (wasm) => {
+         result = applyReplace(wasm);
+-        return ih.getCursorPosition();
++        // [hwpxxx] 다음 찾기는 바꾼 글 뒤에서 시작한다. 바꿀 말에 찾을 말이 들어 있으면(a → aaa) 방금 바꾼 글을 또 바꾸던 문제.
++        return (result.ok ? positionAfterReplace(hit, newText) : null) ?? ih.getCursorPosition();
+       }});
+     } else {
+       result = applyReplace(this.services.wasm);
+@@ -536,10 +578,58 @@ export class FindDialog {
+     if (result.ok) {
+       // 바꾼 뒤 다음 검색
+       this.currentHit = null;
++      // [hwpxxx] 바꾼 글 안에서 다시 찾지 않고 그 뒤의 결과로 간다(목록 순서 기준). 알 수 없으면 예전처럼 캐럿에서 찾는다.
++      const next = replacedIndex >= 0 ? this.hitAfterReplace(query, replacedIndex, hit, newText) : null;
++      if (next) {
++        this.currentHit = next;
++        this.showMatchCount(next.totalMatchCount ?? 0);
++        this.navigateToHit(next);
++        this.statusLabel.dataset.state = next.wrapped ? 'wrapped' : '';
++        this.statusLabel.textContent = next.wrapped ? t('dialog.find.statusLabel.text') : '';
++        return;
++      }
++      if (replacedIndex >= 0 && this.allHits(query).length === 0) {
++        this.showMatchCount(0);
++        this.statusLabel.dataset.state = '';
++        this.statusLabel.textContent = t('dialog.find.statusLabel.text.x88cec1');
++        return;
++      }
+       this.doSearch(true);
+     }
+   }
+ 
++  /** [hwpxxx] 문서 전체 결과(표 칸 포함, 문서 순서). */
++  private allHits(query: string): SearchHit[] {
++    if (!query) return [];
++    try { return this.services.wasm.searchAllText(query, this.caseSensitiveCheck.checked, true); } catch { return []; }
++  }
++
++  /** [hwpxxx] 현재 결과에서 목록 순서로 다음·이전 결과(끝에서 처음으로 돈다). 현재 결과를 목록에서 못 찾으면 null. */
++  private stepThroughAll(query: string, current: SearchResult, forward: boolean): SearchResult | null {
++    const hits = this.allHits(query);
++    const index = hits.findIndex((h) => sameHit(h, current));
++    if (index < 0 || hits.length === 0) return null;
++    const nextIndex = forward ? index + 1 : index - 1;
++    const wrapped = nextIndex >= hits.length || nextIndex < 0;
++    const hit = hits[(nextIndex + hits.length) % hits.length];
++    return { found: true, ...hit, totalMatchCount: hits.length, wrapped };
++  }
++
++  /** [hwpxxx] 바꾼 자리 뒤의 첫 결과. 앞쪽 결과 수는 그대로이므로 바꾼 결과의 순번부터, 바꾼 글 안의 결과만 건너뛴다. */
++  private hitAfterReplace(query: string, replacedIndex: number, replaced: SearchResult, newText: string): SearchResult | null {
++    const hits = this.allHits(query);
++    if (hits.length === 0) return null;
++    const end = (replaced.charOffset ?? 0) + [...newText].length;
++    for (let j = replacedIndex; j < hits.length; j++) {
++      const h = hits[j];
++      if (sameContainer(h, replaced) && h.charOffset < end) continue;
++      return { found: true, ...h, totalMatchCount: hits.length, wrapped: false };
++    }
++    // 뒤에 더 없으면 처음으로 돈다(바꾼 글 안의 결과는 건너뛴다).
++    const first = hits.find((h) => !(sameContainer(h, replaced) && h.charOffset >= (replaced.charOffset ?? 0) && h.charOffset < end));
++    return first ? { found: true, ...first, totalMatchCount: hits.length, wrapped: true } : null;
++  }
++
+   private doReplaceAll(): void {
+     const query = this.queryInput.value;
+     if (!query) return;
+@@ -553,7 +643,10 @@ export class FindDialog {
+     if (ih) {
+       ih.executeOperation({ kind: 'snapshot', operationType: 'replaceAll', operation: (wasm) => {
+         result = wasm.replaceAll(query, newText, this.caseSensitiveCheck.checked);
+-        return ih.getCursorPosition();
++        // [hwpxxx] 하나도 바꾸지 않았으면 기록하지 않는다(되돌리기 한 번을 헛되이 쓰던 문제).
++        if (!result.ok || !result.count) return null;
++        // [hwpxxx] 글이 줄었으면 캐럿이 문단 밖에 남을 수 있다 → 문단 길이 안으로 당긴다.
++        return clampToParagraph(wasm, ih.getCursorPosition());
+       }});
+     } else {
+       result = this.services.wasm.replaceAll(
+@@ -595,3 +688,40 @@ export class FindDialog {
+     });
+   }
+ }
++
++/** [hwpxxx] 바꾼 글 바로 뒤 위치(본문·한 단계 표 칸). 중첩 칸 등 알 수 없으면 null. */
++function positionAfterReplace(hit: SearchResult, newText: string): DocumentPosition | null {
++  if (hit.sec === undefined || hit.charOffset === undefined || (hit.cellPath && hit.cellPath.length > 1)) return null;
++  const charOffset = hit.charOffset + [...newText].length;
++  const cell = hit.cellContext;
++  return cell
++    ? { sectionIndex: hit.sec, paragraphIndex: cell.parentPara, charOffset, parentParaIndex: cell.parentPara,
++        controlIndex: cell.ctrlIdx, cellIndex: cell.cellIdx, cellParaIndex: cell.cellPara }
++    : hit.para === undefined ? null : { sectionIndex: hit.sec, paragraphIndex: hit.para, charOffset };
++}
++
++/** [hwpxxx] 캐럿을 그 문단(본문·한 단계 표 칸) 길이 안으로 당긴다. */
++function clampToParagraph(wasm: CommandServices['wasm'], pos: DocumentPosition): DocumentPosition {
++  try {
++    if ((pos.cellPath?.length ?? 0) > 1) return pos;
++    const length = pos.parentParaIndex !== undefined
++      ? wasm.getCellParagraphLength(pos.sectionIndex, pos.parentParaIndex, pos.controlIndex!, pos.cellIndex!, pos.cellParaIndex!)
++      : wasm.getParagraphLength(pos.sectionIndex, pos.paragraphIndex);
++    return pos.charOffset > length ? { ...pos, charOffset: length } : pos;
++  } catch {
++    return pos;
++  }
++}
++
++/** [hwpxxx] 같은 문단(본문 또는 같은 표 칸 문단) 안의 결과인가. */
++function sameContainer(a: Pick<SearchResult, 'sec' | 'para' | 'cellContext' | 'cellPath'>, b: Pick<SearchResult, 'sec' | 'para' | 'cellContext' | 'cellPath'>): boolean {
++  if (a.sec !== b.sec || a.para !== b.para) return false;
++  const pathKey = (h: typeof a) => h.cellPath?.length ? JSON.stringify(h.cellPath)
++    : h.cellContext ? `${h.cellContext.ctrlIdx}/${h.cellContext.cellIdx}/${h.cellContext.cellPara}` : '';
++  return pathKey(a) === pathKey(b);
++}
++
++/** [hwpxxx] 같은 결과(같은 문단·같은 시작 위치)인가. */
++function sameHit(a: Pick<SearchResult, 'sec' | 'para' | 'charOffset' | 'cellContext' | 'cellPath'>, b: Pick<SearchResult, 'sec' | 'para' | 'charOffset' | 'cellContext' | 'cellPath'>): boolean {
++  return a.charOffset === b.charOffset && sameContainer(a, b);
++}
+diff --git a/rhwp-studio/src/ui/toolbar.ts b/rhwp-studio/src/ui/toolbar.ts
+index 5ca111a..2655fe5 100644
+--- a/rhwp-studio/src/ui/toolbar.ts
++++ b/rhwp-studio/src/ui/toolbar.ts
+@@ -30,6 +30,8 @@ export class Toolbar {
+   private styleName: HTMLSelectElement;
+   private fontName: HTMLSelectElement;
+   private fontSize: HTMLInputElement;
++  // [hwpxxx] 잘못된 크기 입력을 되돌리고 change·blur의 중복 적용을 막을 마지막 확정값이다.
++  private lastFontSize = '10.0';
+   private btnBold: HTMLButtonElement;
+   private btnItalic: HTMLButtonElement;
+   private btnUnderline: HTMLButtonElement;
+@@ -375,18 +377,39 @@ export class Toolbar {
+       this.updateFontNameByLang();
+     });
+ 
+-    // 크기 입력 (Enter 키로 확정)
++    // [hwpxxx] Enter뿐 아니라 Tab·본문 클릭으로 떠날 때도 확정한다. 값 전체를 검사하고 잘못된 입력은 복원한다.
++    // [hwpxxx] 같은 크기를 다시 입력해도 혼합 서식 블록 전체에는 적용해야 한다.
++    let fontSizeEdited = false;
++    this.fontSize.addEventListener('input', () => { fontSizeEdited = true; });
++    const commitFontSize = (force = false) => {
++      const pt = Number(this.fontSize.value.trim());
++      if (!Number.isFinite(pt) || pt <= 0) {
++        fontSizeEdited = false;
++        this.fontSize.value = this.lastFontSize;
++        return;
++      }
++      const clampedPt = Math.min(4096, Math.max(1, pt));
++      const fontSize = Math.round(clampedPt * 100);
++      const previousSize = Math.round(Number(this.lastFontSize) * 100);
++      this.fontSize.value = String(fontSize / 100);
++      // [hwpxxx] 서식 적용이 포커스를 본문으로 옮겨 blur를 다시 일으키므로 이벤트 발행 전에 확정값을 갱신한다.
++      this.lastFontSize = this.fontSize.value;
++      const shouldApply = force || fontSizeEdited || fontSize !== previousSize;
++      fontSizeEdited = false;
++      if (shouldApply) this.eventBus.emit('format-char', { fontSize } as CharProperties);
++    };
+     this.fontSize.addEventListener('keydown', (e) => {
+       if (e.key === 'Enter') {
+         e.preventDefault();
+-        const pt = parseFloat(this.fontSize.value);
+-        if (!isNaN(pt) && pt > 0) {
+-          const clampedPt = Math.min(4096, Math.max(1, pt));
+-          this.fontSize.value = String(clampedPt);
+-          this.eventBus.emit('format-char', { fontSize: Math.round(clampedPt * 100) } as CharProperties);
+-        }
++        commitFontSize(true);
+       }
+     });
++    this.fontSize.addEventListener('change', () => commitFontSize());
++    this.fontSize.addEventListener('blur', () => commitFontSize());
++    // [hwpxxx] 본문 mousedown이 선택·캐럿을 바꾸기 전에 기존 대상에 크기를 적용한다.
++    document.addEventListener('mousedown', (event) => {
++      if (document.activeElement === this.fontSize && event.target !== this.fontSize) commitFontSize();
++    }, true);
+ 
+     // 크기 증감 버튼 (char-shape-dialog.ts의 fontSize 범위 100~409600과 동일한 1~4096pt로 clamp)
+     this.btnSizeUp.addEventListener('mousedown', (e) => {
+@@ -394,7 +417,7 @@ export class Toolbar {
+       const pt = parseFloat(this.fontSize.value) || 10;
+       const newPt = Math.min(4096, pt + 1);
+       this.fontSize.value = String(newPt);
+-      this.eventBus.emit('format-char', { fontSize: Math.round(newPt * 100) } as CharProperties);
++      commitFontSize();
+     });
+ 
+     this.btnSizeDown.addEventListener('mousedown', (e) => {
+@@ -402,25 +425,89 @@ export class Toolbar {
+       const pt = parseFloat(this.fontSize.value) || 10;
+       const newPt = Math.max(1, pt - 1);
+       this.fontSize.value = String(newPt);
+-      this.eventBus.emit('format-char', { fontSize: Math.round(newPt * 100) } as CharProperties);
++      commitFontSize();
+     });
+   }
+ 
+-  /** 글자색 피커 이벤트 */
++  /**
++   * 글자색 피커 이벤트.
++   * [hwpxxx] 분할 단추: 본체는 막대에 보이는 지금 색을 바로 적용하고, ▾ 는 팔레트(자주 쓰는 색 + 다른 색...)를 연다.
++   * 예전에는 단추가 곧바로 기본 색 고르기 창을 열었는데, 고른 색이 창의 기존 값과 같으면 브라우저가 input 이벤트를 내지 않아
++   * 색이 섞인 글을 잡고 같은 색을 골라도 아무것도 바뀌지 않았다. 본체 단추는 고른 적 있는 색을 항상 다시 적용한다.
++   */
+   private setupColorPicker(): void {
+-    // 선택은 mousedown에서 보존하고, 키보드도 발생시키는 click에서 활성화한다.
+-    this.btnTextColor.addEventListener('mousedown', (e) => {
+-      e.preventDefault();
++    const dropdown = this.container.querySelector<HTMLElement>('#text-color-dropdown')!;
++    const paletteButton = this.container.querySelector<HTMLButtonElement>('#btn-text-color-palette')!;
++    const palette = this.container.querySelector<HTMLElement>('#text-color-palette')!;
++    let current = '#ff0000'; // 처음 막대 색(빨강)과 같게
++    this.colorBar.style.background = current;
++    const close = () => { dropdown.classList.remove('open'); paletteButton.setAttribute('aria-expanded', 'false'); };
++    const apply = (color: string) => {
++      current = color;
++      this.colorBar.style.background = color;
++      this.colorPicker.value = color;
++      close();
++      this.eventBus.emit('format-char', { textColor: color } as CharProperties);
++    };
++    const keepSelection = (e: Event) => { e.preventDefault(); e.stopPropagation(); };
++
++    this.btnTextColor.addEventListener('mousedown', keepSelection);
++    this.btnTextColor.addEventListener('click', () => apply(current));
++    paletteButton.addEventListener('mousedown', keepSelection);
++    paletteButton.addEventListener('click', () => {
++      const open = dropdown.classList.toggle('open');
++      paletteButton.setAttribute('aria-expanded', String(open));
+     });
+-    this.btnTextColor.addEventListener('click', () => {
+-      this.colorPicker.click();
++
++    const COLORS = [
++      ['#000000', '#404040', '#808080', '#c0c0c0', '#ffffff', '#c00000', '#ff0000'],
++      ['#ff8000', '#ffc000', '#ffff00', '#92d050', '#00b050', '#00b0f0', '#0070c0'],
++      ['#002060', '#7030a0', '#ff00ff', '#996633', '#e26b0a', '#4f81bd', '#1f497d'],
++    ];
++    const actions = document.createElement('div');
++    actions.className = 'sb-hl-palette-actions';
++    const auto = document.createElement('button');
++    auto.textContent = '검정(기본)';
++    auto.addEventListener('mousedown', keepSelection);
++    auto.addEventListener('click', () => apply('#000000'));
++    const other = document.createElement('button');
++    other.textContent = '다른 색...';
++    other.addEventListener('mousedown', keepSelection);
++    other.addEventListener('click', () => { close(); this.colorPicker.click(); });
++    actions.append(auto, other);
++    palette.appendChild(actions);
++    for (const row of COLORS) {
++      const rowEl = document.createElement('div');
++      rowEl.className = 'sb-hl-palette-row';
++      for (const color of row) {
++        const swatch = document.createElement('div');
++        swatch.className = 'sb-hl-swatch';
++        swatch.style.background = color;
++        swatch.title = color;
++        swatch.addEventListener('mousedown', (e) => { keepSelection(e); apply(color); });
++        rowEl.appendChild(swatch);
++      }
++      palette.appendChild(rowEl);
++    }
++    dropdown.addEventListener('keydown', (event) => {
++      if (event.key !== 'Escape' || !dropdown.classList.contains('open')) return;
++      event.preventDefault();
++      event.stopPropagation();
++      close();
++      paletteButton.focus();
+     });
++    document.addEventListener('mousedown', (e) => { if (!dropdown.contains(e.target as Node)) close(); });
+ 
+-    this.colorPicker.addEventListener('input', () => {
++    // 기본 색 고르기 창: 고른 색을 바로 적용한다(창에서 바뀔 때마다 오는 input 과, 닫을 때 오는 change 를 한 번만 처리).
++    let last = '';
++    const fromPicker = () => {
+       const color = this.colorPicker.value;
+-      this.colorBar.style.background = color;
+-      this.eventBus.emit('format-char', { textColor: color } as CharProperties);
+-    });
++      if (color === last) return;
++      last = color;
++      apply(color);
++    };
++    this.colorPicker.addEventListener('input', fromPicker);
++    this.colorPicker.addEventListener('change', () => { last = ''; });
+   }
+ 
+   /** 형광펜 팔레트 설정 */
+@@ -740,7 +827,9 @@ export class Toolbar {
+     // 글자 크기 (HWPUNIT → pt, 1pt = 100 HWPUNIT)
+     if (props.fontSize !== undefined) {
+       const pt = props.fontSize / 100;
+-      this.fontSize.value = pt.toFixed(1);
++      // [hwpxxx] 복원 기준은 현재 서식으로 갱신하되 입력 중인 값은 커서 알림으로 덮어쓰지 않는다.
++      this.lastFontSize = String(pt);
++      if (document.activeElement !== this.fontSize) this.fontSize.value = this.lastFontSize;
+     }
+ 
+     // [hwpxxx] 장평·자간 — 입력 중인 칸은 덮어쓰지 않는다.
+@@ -748,10 +837,8 @@ export class Toolbar {
+     if (this.spacingInput && document.activeElement !== this.spacingInput && props.spacings?.length) this.spacingInput.value = Math.round(props.spacings[0]) + ' %';
+ 
+     // 글자색
+-    if (props.textColor) {
+-      this.colorBar.style.background = props.textColor;
+-      this.colorPicker.value = props.textColor;
+-    }
++    // [hwpxxx] 막대와 색 고르기 창은 본체 단추가 적용할 "지금 색"(마지막으로 고른 색)을 보여 준다. 캐럿 자리 색으로 바꾸면
++    // 색이 섞인 글을 잡고 그 색을 다시 골랐을 때 창이 변화를 알리지 않아 적용되지 않았다(한글도 마지막 고른 색을 유지한다).
+ 
+     // 형광펜 색상 표시
+     if (props.shadeColor) {
+diff --git a/rhwp-studio/tests/cell-block-format.test.ts b/rhwp-studio/tests/cell-block-format.test.ts
+index 7662d18..18e785d 100644
+--- a/rhwp-studio/tests/cell-block-format.test.ts
++++ b/rhwp-studio/tests/cell-block-format.test.ts
+@@ -225,7 +225,7 @@ test('[#4151] 토글 방향은 셀 블록 모드에서 블록 앵커 셀의 서
+   assert.match(body, /this\.getSelectedCellBlock\(\)/,
+     '토글 방향 산출에 셀 블록 분기가 없다');
+   assert.match(body,
+-    /\?\s*this\.getCharPropertiesAtCellBlockAnchor\(\w+\)\s*\n?\s*:\s*this\.getCharPropertiesAtCursor\(\)/,
++    /\?\s*this\.getCharPropertiesAtCellBlockAnchor\(\w+\)\s*\n?\s*:\s*this\.(?:getCharPropertiesAtCursor|getEffectiveCharPropertiesAtCursor)\(\)/,
+     '셀 블록 모드에서 블록 앵커 셀 대신 커서 위치의 서식으로 토글 방향을 정한다');
+ });
+ 
+diff --git a/rhwp-studio/tests/hwpxxx-android-save-format.test.ts b/rhwp-studio/tests/hwpxxx-android-save-format.test.ts
+new file mode 100644
+index 0000000..ec5947d
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-android-save-format.test.ts
+@@ -0,0 +1,70 @@
++// [hwpxxx-android] HWPX 저장: 저장할 파일의 확장자를 따르고, 저장 창에서 고른 형식으로 다시 내보낸다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++
++import { resolveSaveTarget } from '../src/command/save-target.ts';
++import { saveDocumentToFileSystem } from '../src/command/file-system-access.ts';
++
++function handle(name: string) {
++  const writes: Blob[] = [];
++  return {
++    writes,
++    kind: 'file' as const,
++    name,
++    async getFile() { return new File([], name); },
++    async createWritable() { return { async write(data: Blob) { writes.push(data); }, async close() {} }; },
++  };
++}
++
++test('Ctrl+S 는 지금 파일의 확장자를 따른다: HWP 문서를 HWPX 로 저장한 뒤에는 HWPX 로 저장한다', () => {
++  assert.equal(resolveSaveTarget('hwp', '보고서.hwpx', handle('보고서.hwpx')).format, 'hwpx');
++  assert.equal(resolveSaveTarget('hwpx', '보고서.hwp', handle('보고서.hwp')).format, 'hwp');
++  // 핸들이 없으면 예전처럼 원래 형식
++  assert.equal(resolveSaveTarget('hwp', '보고서.hwp', null).format, 'hwp');
++  assert.equal(resolveSaveTarget('hwpx', '보고서.hwpx', null).format, 'hwpx');
++  // HML 출처는 원래 흐름(변환 저장 핸들 표식이 있을 때만)
++  assert.equal(resolveSaveTarget('hml', '보고서.hml', handle('보고서.hwpx')).format, 'hml');
++});
++
++test('저장 창에서 다른 형식을 고르면 그 형식으로 다시 만든 바이트를 쓴다', async () => {
++  const picked = handle('보고서.hwpx');
++  let offered: unknown = null;
++  const converted: string[] = [];
++  const result = await saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']),
++    suggestedName: '보고서.hwp',
++    currentHandle: null,
++    forceSaveAs: true,
++    saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async (options) => { offered = options?.hwpxxxFormats; return picked; } },
++    convert: { formats: ['hwpx', 'hwp'], to: async (format) => { converted.push(format); return new Blob([`${format.toUpperCase()}-BYTES`]); } },
++  });
++  assert.deepEqual(offered, ['hwpx', 'hwp'], '저장 창에 고를 형식을 알린다');
++  assert.deepEqual(converted, ['hwpx']);
++  assert.equal(result.format, 'hwpx');
++  assert.equal(await picked.writes[0].text(), 'HWPX-BYTES');
++});
++
++test('같은 형식이면 다시 내보내지 않고, 변환을 주지 않은 저장은 예전처럼 확장자를 검사한다', async () => {
++  const same = handle('보고서.hwp');
++  let calls = 0;
++  const result = await saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']), suggestedName: '보고서.hwp', currentHandle: null, forceSaveAs: true, saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async () => same },
++    convert: { formats: ['hwpx', 'hwp'], to: async () => { calls++; return new Blob(['X']); } },
++  });
++  assert.equal(calls, 0);
++  assert.equal(result.format, 'hwp');
++  await assert.rejects(saveDocumentToFileSystem({
++    blob: new Blob(['HWP-BYTES']), suggestedName: '보고서.hwp', currentHandle: null, forceSaveAs: true, saveFormat: 'hwp',
++    windowLike: { showSaveFilePicker: async () => handle('보고서.hwpx') },
++  }), /\.hwp 확장자/);
++});
++
++test('새 문서의 첫 저장은 HWPX, 일반 "다른 이름으로 저장"만 형식을 고를 수 있다', () => {
++  const file = readFileSync(new URL('../src/command/commands/file.ts', import.meta.url), 'utf8');
++  assert.match(file, /function androidDefaultFormat\(services: CommandServices, format: SaveFormat, hasHandle: boolean\): SaveFormat \{\n  return isAndroidHost\(\) && format === 'hwp' && services\.wasm\.isNewDocument && !hasHandle \? 'hwpx' : format;/);
++  assert.match(file, /if \(format !== null\) await saveAsFormat\(services, format, true\);/);
++  assert.match(file, /\(saveResult as SaveDocumentResult\)\.format \?\? target\.format/);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-block-editing.test.ts b/rhwp-studio/tests/hwpxxx-block-editing.test.ts
+new file mode 100644
+index 0000000..26a8a9e
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-block-editing.test.ts
+@@ -0,0 +1,56 @@
++// [hwpxxx] 블록(선택 영역) 편집: 바꿔 쓰기 되돌리기 한 번, ←·→ 로 블록 접기, Esc, Tab, 섞인 서식 토글, 두세 번 누르기, 서식 되돌리기 뒤 블록 유지.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { wordRangeAt, isWordChar } from '../src/hwpxxx/select-by-click.ts';
++
++const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
++
++test('낱말 범위: 낱말 위·낱말 바로 뒤·빈칸·한글', () => {
++  const chars = Array.from('alpha beta  gamma');
++  assert.deepEqual(wordRangeAt(chars, 7), { start: 6, end: 10 });   // beta 안
++  assert.deepEqual(wordRangeAt(chars, 10), { start: 6, end: 10 });  // beta 바로 뒤(빈칸 앞)
++  assert.deepEqual(wordRangeAt(chars, 11), { start: 10, end: 12 }); // 빈칸 두 칸
++  assert.deepEqual(wordRangeAt(Array.from('대한민국 만세'), 1), { start: 0, end: 4 });
++  assert.equal(wordRangeAt([], 0), null);
++  assert.equal(isWordChar('가'), true); assert.equal(isWordChar(','), false);
++});
++
++test('블록 위에 쓴 글·한글 조합·Enter·Tab 은 블록 지우기와 되돌리기 한 번으로 묶는다', () => {
++  const history = source('src/engine/history.ts');
++  assert.match(history, /export class JoinedCommand implements EditCommand/);
++  assert.match(history, /joinNextWithPrevious\(\): void \{\n    this\.joinBase = this\.undoStack\[this\.undoStack\.length - 1\] \?\? null;/);
++  assert.match(history, /if \(this\.takeJoin\(command\)\) \{/);
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /private deleteSelectionForReplace\(\): boolean \{\n    const before = this\.history\.peekUndoTop\(\);\n    this\.deleteSelection\(\);\n    const after = this\.history\.peekUndoTop\(\);\n    if \(!after \|\| after === before\) return false;/, '지우기가 실제로 기록됐을 때만 묶는다');
++  assert.match(handler, /cmd\.discard\?\.\(this\.wasm\);/, '기록하지 않는 삭제의 복원 자료는 바로 돌려준다');
++  assert.equal((source('src/engine/input-handler-text.ts').match(/this\.deleteSelectionForReplace\(\);/g) ?? []).length, 2);
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /if \(this\.cursor\.hasSelection\(\)\) this\.deleteSelectionForReplace\(\);/);
++  assert.match(keyboard, /if \(this\.getNonEmptySelection\?\.\(\)\) this\.deleteSelectionForReplace\(\);\n      \/\/ 탭 문자 삽입/);
++  assert.match(history, /for \(let i = done - 1; i >= 0; i--\) \{ try \{ this\.parts\[i\]\.undo\(wasm\); \}/, '묶음 다시 실행이 중간에 실패하면 한 부분을 되돌린다');
++});
++
++test('←·→ 는 블록 시작·끝으로 접고, Esc 는 블록만 푼다', () => {
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /this\.cursor\.moveTo\(moveH === 1 \|\| moveV === 1 \? block\.end : block\.start\);/);
++  assert.match(keyboard, /if \(e\.key === 'Escape'\) \{\n    e\.preventDefault\(\);\n    \/\/ \[hwpxxx\][^\n]*\n[^\n]*\n    if \(this\.cursor\.hasSelection\(\) && this\.getNonEmptySelection\?\.\(\)\) \{/);
++});
++
++test('섞인 서식 블록에 토글하면 먼저 모두 켜고, 서식을 되돌려도 블록은 남는다', () => {
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /const allOn = toggleBlock \? null : this\.selectionAllHave\(prop\);/);
++  assert.match(handler, /if \(!props\[prop\]\) return false;/);
++  const command = source('src/engine/command.ts');
++  assert.match(command, /selectionBefore\(\): EditSelectionSnapshot \| null \{ return \{ start: \{ \.\.\.this\.start \}, end: \{ \.\.\.this\.end \}, blockPhase: null \}; \}/);
++  assert.match(handler, /installClickSelection\(this, container\);/);
++});
++
++test('표: 칸 안 블록의 섞인 서식 토글, F5 한 칸에서 Shift+방향키로 넓히기, 셀 블록에 서식 단축키', () => {
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /if \(start\.parentParaIndex !== undefined \|\| end\.parentParaIndex !== undefined\) return this\.cellSelectionAllHave\(prop, start, end\);/);
++  assert.match(handler, /this\.wasm\.getCharShapeRunsInCellByPath\(start\.sectionIndex, start\.parentParaIndex!, path, from, to\)/);
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /if \(phase === 2 \|\| \(phase === 1 && e\.shiftKey\)\) \{/);
++  assert.match(keyboard, /if \(cmdId && cmdId\.startsWith\('format:'\)\) \{\n        e\.preventDefault\(\);\n        this\.dispatcher\.dispatch\(cmdId\);/);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-format-fixes.test.ts b/rhwp-studio/tests/hwpxxx-format-fixes.test.ts
+new file mode 100644
+index 0000000..ce382fb
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-format-fixes.test.ts
+@@ -0,0 +1,372 @@
++// [hwpxxx] 서식 결함 5건의 회귀 시험. 실제 소스에서 메서드·명령을 분리해 실행하고 DOM/WASM 경계만 대역으로 둔다.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { stripTypeScriptTypes } from 'node:module';
++
++const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
++const input = source('engine/input-handler.ts');
++const toolbar = source('ui/toolbar.ts');
++const format = source('command/commands/format.ts');
++const commands = source('engine/command.ts');
++const position = { sectionIndex: 0, paragraphIndex: 3, charOffset: 2 };
++
++// [hwpxxx] 구현을 복사하지 않고 저장된 소스를 실행해 실제 분기와 이벤트 연결을 검증한다.
++function method(text: string, name: string): string {
++  const start = text.search(new RegExp(`^  (?:private )?${name}\\(`, 'm'));
++  assert.notEqual(start, -1, `${name} 메서드가 있어야 한다`);
++  const end = text.indexOf('\n  }', start);
++  assert.notEqual(end, -1);
++  return text.slice(start, end + 4);
++}
++function evaluate(code: string, result: string, dependencies: Record<string, any> = {}): any {
++  const js = stripTypeScriptTypes(code, { mode: 'transform' });
++  return new Function(...Object.keys(dependencies), `${js}\nreturn ${result};`)(...Object.values(dependencies));
++}
++function subject(text: string, names: string[], dependencies: Record<string, any> = {}): any {
++  const Subject = evaluate(`class Subject {\n${names.map(name => method(text, name)).join('\n')}\n}`, 'Subject', dependencies);
++  return new Subject();
++}
++function classSource(name: string): string {
++  const start = commands.indexOf(`export class ${name} `);
++  assert.notEqual(start, -1);
++  return commands.slice(start, commands.indexOf('\n}', start) + 2).replace('export class', 'class');
++}
++function dialogCommand(id: string, dependencies: Record<string, any>): any {
++  const start = format.indexOf(`id: 'format:${id}'`);
++  const end = format.indexOf('\n  },', start);
++  const block = format.slice(start, end);
++  const execute = block.slice(block.indexOf('    execute('), block.lastIndexOf('\n    },') + 6);
++  return evaluate(`class Command { ${execute} }`, 'new Command()', dependencies);
++}
++const paraStart = commands.indexOf('function getParaShapeId(');
++const paraCode = commands.slice(paraStart, commands.indexOf('// ─── 문단 끝에서 Delete', paraStart)).replace('export class', 'class');
++const { ApplyParaFormatCommand, SubmodeSnapshotCommand } = evaluate(
++  `${paraCode}\n${classSource('SnapshotCommand')}\n${classSource('SubmodeSnapshotCommand')}`,
++  '({ ApplyParaFormatCommand, SubmodeSnapshotCommand })',
++);
++
++// [hwpxxx] 모양 ID와 스냅샷 저장소를 대역으로 두고 실제 서식 명령의 undo/redo를 왕복한다.
++function paragraph(initial: Record<string, unknown>) {
++  const shapes = [{ ...initial }];
++  let shapeId = 0;
++  const snapshots = new Map<number, number>();
++  let nextSnapshot = 0;
++  const state = () => ({ ...shapes[shapeId], paraShapeId: shapeId });
++  const apply = (json: string) => { shapes.push({ ...shapes[shapeId], ...JSON.parse(json) }); shapeId = shapes.length - 1; };
++  const wasm: any = {
++    getParaPropertiesAt: state,
++    applyParaFormat: (_sec: number, _para: number, json: string) => apply(json),
++    setParaShapeId: (_sec: number, _para: number, id: number) => { shapeId = id; },
++    runInBatch: (callback: () => void) => callback(),
++    saveSnapshot: () => { snapshots.set(++nextSnapshot, shapeId); return nextSnapshot; },
++    restoreSnapshot: (id: number) => { assert.ok(snapshots.has(id)); shapeId = snapshots.get(id)!; },
++    discardSnapshot: (id: number) => snapshots.delete(id),
++    ensureDefaultNumbering: () => 17,
++  };
++  const handler = subject(input, [
++    'applyParaPropsToRange', 'applyParaFormatInNoteOrHeader', 'applyParaFormat',
++    'executeParaFormatCommand', 'changeOutlineLevel', 'toggleNumbering',
++  ], { ApplyParaFormatCommand });
++  handler.wasm = wasm;
++  handler.cursor = { getPosition: () => ({ ...position }), isInHeaderFooter: () => false, isInFootnote: () => false };
++  handler.getParaProperties = state;
++  handler.getParaFormatTargetsForRange = () => [{ kind: 'body', sec: 0, para: 3 }];
++  handler.getParaFormatTargetsAtCursor = () => [{ kind: 'body', sec: 0, para: 3 }];
++  handler.focusTextarea = () => {};
++  handler.focus = () => {};
++  const history: any[] = [];
++  handler.executeOperation = (descriptor: any) => {
++    const command = descriptor.kind === 'command' ? descriptor.command : new SubmodeSnapshotCommand(
++      descriptor.operationType, position, position, descriptor.operation, descriptor.editContext,
++    );
++    history.push(command);
++    command.execute(wasm);
++  };
++  return { handler, wasm, history, state, apply };
++}
++
++for (const mode of ['header', 'footer', 'footnote']) {
++  test(`문단 모양 대화상자: ${mode} 적용 대상과 되돌리기·다시 실행 문맥을 유지한다`, () => {
++    const { handler, wasm, history, state, apply } = paragraph({ alignment: 'left', lineSpacing: 160 });
++    const cursor = handler.cursor;
++    Object.assign(cursor, {
++      isInHeaderFooter: () => mode !== 'footnote', isInFootnote: () => mode === 'footnote',
++      headerFooterMode: mode, hfSectionIdx: 2, hfApplyTo: 1, hfParaIdx: 4, hfCharOffset: 5, hfPreviewPage: 6,
++      fnSectionIdx: 2, fnParaIdx: 7, fnControlIdx: 3, fnInnerParaIdx: 4, fnCharOffset: 5, fnFootnoteIndex: 1, fnPageNum: 6,
++    });
++    handler.getSelection = () => null;
++    handler.getCursorPosition = () => position;
++    handler.getParaFormatTargetsForRange = () => assert.fail('머리말·각주를 본문 범위로 처리하면 안 된다');
++    const calls: any[] = [];
++    wasm.applyParaFormatInHf = (...args: any[]) => { calls.push(args.slice(0, -1)); apply(args.at(-1)); };
++    wasm.applyParaFormatInFootnote = (...args: any[]) => { calls.push(args.slice(0, -1)); apply(args.at(-1)); };
++    let dialog: any;
++    class ParaShapeDialog {
++      constructor() { dialog = this; }
++      show(props: any) { assert.equal(props.alignment, 'left'); }
++    }
++    dialogCommand('para-shape', { ParaShapeDialog }).execute({ getInputHandler: () => handler, wasm });
++    dialog.onApply({ alignment: 'center', lineSpacing: 200 });
++    assert.deepEqual(calls, [mode === 'footnote' ? [2, 7, 3, 4] : [2, mode === 'header', 1, 4]]);
++    assert.equal(state().alignment, 'center');
++    const command = history.at(-1);
++    assert.equal(command.editContext().mode, mode === 'footnote' ? 'footnote' : 'headerFooter');
++    assert.equal(command.editContext().charOffset, 5);
++    command.undo(wasm);
++    assert.equal(state().alignment, 'left');
++    assert.equal(state().lineSpacing, 160);
++    command.execute(wasm);
++    assert.equal(state().alignment, 'center');
++    assert.equal(state().lineSpacing, 200);
++    assert.match(input, /desc\.editContext[\s\S]*?new SubmodeSnapshotCommand\(/);
++  });
++}
++
++test('본문 문단 모양은 저장한 범위를 기존 서식 명령으로 적용한다', () => {
++  const { handler, history, state, wasm } = paragraph({ alignment: 'left' });
++  const end = { ...position, paragraphIndex: 4 };
++  handler.getParaFormatTargetsForRange = (start: any, to: any) => {
++    assert.deepEqual(start, position); assert.deepEqual(to, end);
++    return [{ kind: 'body', sec: 0, para: 3 }];
++  };
++  handler.applyParaPropsToRange(position, end, { alignment: 'right' });
++  assert.ok(history[0] instanceof ApplyParaFormatCommand);
++  assert.equal(state().alignment, 'right');
++  history[0].undo(wasm);
++  assert.equal(state().alignment, 'left');
++});
++
++for (const headType of ['Number', 'Bullet']) {
++  test(`${headType} 수준: 증감·0~6 경계·되돌리기·다시 실행`, () => {
++    const { handler, history, state, wasm } = paragraph({ headType, paraLevel: 2, numberingId: 8 });
++    wasm.getStyleAt = () => assert.fail('일반 번호·글머리표는 스타일 이름을 요구하지 않는다');
++    handler.changeOutlineLevel(1);
++    assert.equal(state().paraLevel, 3);
++    assert.equal(state().headType, headType);
++    assert.equal(state().numberingId, 8);
++    history.at(-1).undo(wasm);
++    assert.equal(state().paraLevel, 2);
++    history.at(-1).execute(wasm);
++    assert.equal(state().paraLevel, 3);
++    handler.changeOutlineLevel(-1);
++    assert.equal(state().paraLevel, 2);
++    handler.changeOutlineLevel(20);
++    assert.equal(state().paraLevel, 6);
++    const count = history.length;
++    handler.changeOutlineLevel(1);
++    assert.equal(history.length, count, '상한에서 불필요한 명령을 만들지 않는다');
++    handler.changeOutlineLevel(-20);
++    assert.equal(state().paraLevel, 0);
++    handler.changeOutlineLevel(-1);
++    assert.equal(history.length, count + 1, '하한에서도 불필요한 명령을 만들지 않는다');
++  });
++}
++
++test('수준 없는 번호는 0부터 시작하고 기존 개요 스타일 전환도 유지한다', () => {
++  const { handler, state, wasm } = paragraph({ headType: 'Number' });
++  handler.changeOutlineLevel(1);
++  assert.equal(state().paraLevel, 1);
++  handler.getParaProperties = () => ({ headType: 'Outline' });
++  wasm.getStyleAt = () => ({ name: '개요 2' });
++  wasm.getStyleList = () => [{ name: '개요 3', id: 9 }];
++  const styles: number[] = [];
++  handler.applyStyle = (id: number) => styles.push(id);
++  handler.changeOutlineLevel(1);
++  assert.deepEqual(styles, [9]);
++  wasm.getStyleAt = () => ({ name: '바탕글' });
++  handler.changeOutlineLevel(1);
++  assert.deepEqual(styles, [9], '일반 문단의 스타일은 바꾸지 않는다');
++});
++
++test('글머리표→번호→해제 및 되돌리기·다시 실행', () => {
++  const { handler, history, state, wasm } = paragraph({ headType: 'Bullet', numberingId: 8, paraLevel: 0 });
++  handler.toggleNumbering();
++  assert.equal(state().headType, 'Number');
++  assert.equal(state().numberingId, 17, '글머리표 ID 대신 번호 정의를 사용한다');
++  history[0].undo(wasm);
++  assert.equal(state().headType, 'Bullet');
++  assert.equal(state().numberingId, 8);
++  history[0].execute(wasm);
++  assert.equal(state().headType, 'Number');
++  handler.toggleNumbering();
++  assert.equal(state().headType, 'None');
++  history[1].undo(wasm);
++  assert.equal(state().headType, 'Number');
++});
++
++test('번호 토글은 일반 문단에 번호를 만들고 기존 개요는 해제한다', () => {
++  for (const [headType, expected] of [['None', 'Number'], ['Outline', 'None']]) {
++    const { handler, state } = paragraph({ headType });
++    handler.toggleNumbering();
++    assert.equal(state().headType, expected);
++  }
++});
++
++test('글자 모양: 블록 없이 열고 캐럿 앞 글자 모양을 표시하며 새 입력 서식으로 전달한다', () => {
++  let dialog: any;
++  const initial = { fontSize: 1200, bold: true };
++  const applied: any[] = [];
++  let focused = false;
++  class CharShapeDialog {
++    constructor() { dialog = this; }
++    show(props: any) { assert.deepEqual(props, initial); }
++  }
++  const handler = {
++    getCharProperties: () => initial, getSelection: () => null,
++    applyCharPropsAtCursor: (props: any) => applied.push(props), focus: () => { focused = true; },
++  };
++  dialogCommand('char-shape', { CharShapeDialog }).execute({
++    getInputHandler: () => handler, wasm: { findOrCreateFontId: () => 11 },
++  });
++  assert.ok(dialog, '선택 없이도 창이 열린다');
++  dialog.onApply({ fontName: '바탕', fontSize: 1400 });
++  assert.deepEqual(applied, [{ fontId: 11, fontSize: 1400 }]);
++  dialog.onClose();
++  assert.equal(focused, true);
++  assert.match(method(input, 'getCharProperties'), /getEffectiveCharPropertiesAtCursor\(\)/);
++  assert.match(method(input, 'getCharPropertiesAtCursor'), /pos\.charOffset > 0 \? pos\.charOffset - 1 : 0/);
++});
++
++test('글자 모양: 빈 선택·선택 없음은 기존 글을 바꾸지 않고 대기 서식으로 예약한다', () => {
++  const handler = subject(input, ['applyCharPropsToRange', 'applyCharPropsAtCursor', 'applyCharFormat'], {
++    CursorState: { comparePositions: (a: any, b: any) => a.charOffset - b.charOffset },
++  });
++  handler.cursor = { isInHeaderFooter: () => false, isInFootnote: () => false };
++  handler.getSelectedCellBlock = () => null;
++  handler.getNonEmptySelection = () => null;
++  const pending: any[] = [];
++  let updates = 0;
++  handler.stagePendingCharShape = (props: any) => pending.push(props);
++  handler.emitCursorFormatState = () => { updates++; };
++  handler.executeOperation = () => assert.fail('기존 글에 서식 명령을 적용하면 안 된다');
++  handler.applyCharPropsAtCursor({ fontSize: 1400 });
++  handler.applyCharPropsToRange(position, { ...position }, { bold: true });
++  assert.deepEqual(pending, [{ fontSize: 1400 }, { bold: true }]);
++  assert.equal(updates, 2);
++});
++
++test('글자 모양: 창을 조작해 선택이 없어져도 저장한 블록에 적용한다', () => {
++  let dialog: any;
++  let selection: any = { start: position, end: { ...position, charOffset: 8 } };
++  const saved = selection;
++  const calls: any[] = [];
++  class CharShapeDialog { constructor() { dialog = this; } show() {} }
++  dialogCommand('char-shape', { CharShapeDialog }).execute({ getInputHandler: () => ({
++    getCharProperties: () => ({}), getSelection: () => selection,
++    applyCharPropsToRange: (...args: any[]) => calls.push(args),
++    applyCharPropsAtCursor: () => assert.fail('저장된 블록에 적용해야 한다'),
++  }) });
++  selection = null;
++  dialog.onApply({ italic: true });
++  assert.deepEqual(calls, [[saved.start, saved.end, { italic: true }]]);
++});
++
++// [hwpxxx] DOM 이벤트 대역은 캡처 등록 여부와 동기 blur 재진입까지 재현한다.
++class Element {
++  value = '10.0';
++  listeners = new Map<string, Function[]>();
++  addEventListener(name: string, callback: Function) {
++    this.listeners.set(name, [...(this.listeners.get(name) ?? []), callback]);
++  }
++  fire(name: string, props: any = {}) {
++    const event = { key: '', target: this, preventDefault() {}, ...props };
++    for (const callback of this.listeners.get(name) ?? []) callback(event);
++  }
++}
++function sizeControls() {
++  const mouseListeners: any[] = [];
++  const document: any = { activeElement: null, addEventListener: (name: string, callback: Function, capture: boolean) => {
++    mouseListeners.push({ name, callback, capture });
++  } };
++  const handler = subject(toolbar, ['setupFontControls', 'updateState'], { document });
++  handler.fontSize = new Element();
++  handler.lastFontSize = '10.0';
++  handler.fontName = new Element(); handler.fontLang = new Element();
++  handler.btnSizeUp = new Element(); handler.btnSizeDown = new Element();
++  handler.populateFontSetOptions = () => {};
++  handler.setActive = () => {};
++  handler.getDisplayFontFamily = () => '';
++  handler.charfxMenu = { querySelectorAll: () => [] };
++  const emitted: any[] = [];
++  handler.eventBus = { emit: (name: string, props: any) => {
++    emitted.push({ name, props });
++    // [hwpxxx] 실제 format-char 수신부처럼 알림 후 포커스를 본문으로 옮긴다.
++    handler.updateState(props);
++    if (document.activeElement === handler.fontSize) {
++      document.activeElement = null;
++      handler.fontSize.fire('blur');
++    }
++  } };
++  handler.setupFontControls();
++  const enter = (value: string) => {
++    document.activeElement = handler.fontSize;
++    handler.fontSize.value = value;
++    handler.fontSize.fire('input');
++  };
++  return { handler, document, emitted, enter, mouseListeners };
++}
++
++for (const event of ['change', 'blur', 'keydown']) {
++  test(`크기 ${event}: 유효한 값을 한 번 적용하고 후속 change·blur는 중복 적용하지 않는다`, () => {
++    const { handler, emitted, enter } = sizeControls();
++    enter('12.34');
++    handler.fontSize.fire(event, { key: 'Enter' });
++    handler.fontSize.fire('change');
++    handler.fontSize.fire('blur');
++    assert.deepEqual(emitted, [{ name: 'format-char', props: { fontSize: 1234 } }]);
++    assert.equal(handler.fontSize.value, '12.34');
++  });
++}
++
++test('크기: 본문 클릭은 캐럿 이동 전에 기존 선택에 적용한다', () => {
++  const { handler, emitted, enter, mouseListeners } = sizeControls();
++  enter('15');
++  const listener = mouseListeners.find(entry => entry.name === 'mousedown');
++  assert.equal(listener.capture, true);
++  listener.callback({ target: handler.fontSize });
++  assert.equal(emitted.length, 0, '입력칸 내부 클릭은 확정하지 않는다');
++  listener.callback({ target: {} });
++  assert.deepEqual(emitted, [{ name: 'format-char', props: { fontSize: 1500 } }]);
++});
++
++test('크기: 잘못된 입력은 마지막 문서 값으로 복원하고 서식을 발행하지 않는다', () => {
++  const { handler, emitted, enter } = sizeControls();
++  handler.updateState({ fontSize: 1650 });
++  for (const invalid of ['', ' ', 'abc', '12pt', '12abc', 'Infinity', 'NaN', '0', '-2']) {
++    enter(invalid);
++    handler.fontSize.fire('change');
++    handler.fontSize.fire('blur');
++    assert.equal(handler.fontSize.value, '16.5', invalid);
++  }
++  assert.deepEqual(emitted, []);
++});
++
++test('크기: 범위 보정·백분의 일 pt·재입력·증감 버튼을 함께 처리한다', () => {
++  const { handler, emitted, enter } = sizeControls();
++  for (const [value, expected] of [['0.5', 100], ['9999', 409600], ['12.345', 1235], [' 14.5 ', 1450]]) {
++    enter(value);
++    handler.fontSize.fire('blur');
++    assert.equal(emitted.at(-1).props.fontSize, expected);
++  }
++  enter('14.5');
++  handler.fontSize.fire('change');
++  assert.equal(emitted.length, 5, '같은 값을 다시 입력하면 혼합 서식 블록도 통일한다');
++  handler.fontSize.fire('keydown', { key: 'Enter' });
++  assert.equal(emitted.length, 6, '기존 Enter 확정도 유지한다');
++  handler.btnSizeUp.fire('mousedown');
++  assert.equal(emitted.at(-1).props.fontSize, 1550);
++  handler.btnSizeDown.fire('mousedown');
++  assert.equal(emitted.at(-1).props.fontSize, 1450);
++  assert.equal(handler.fontSize.value, '14.5');
++});
++
++test('크기: 입력 중 커서 알림이 와도 편집값은 유지하고 잘못된 값의 복원 기준은 갱신한다', () => {
++  const { handler, enter, emitted } = sizeControls();
++  enter('잘못된 값');
++  handler.updateState({ fontSize: 1800 });
++  assert.equal(handler.fontSize.value, '잘못된 값');
++  handler.fontSize.fire('blur');
++  assert.equal(handler.fontSize.value, '18');
++  assert.deepEqual(emitted, []);
++});
+diff --git a/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts b/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts
+new file mode 100644
+index 0000000..bb1bc6d
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-ime-recompose.test.ts
+@@ -0,0 +1,28 @@
++// [hwpxxx] 입력기가 캐럿 앞 낱말을 다시 조합할 때 글자가 겹치지 않게: 겹침 길이 판단과 편집기 연결.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { recomposedPrefixLength } from '../src/hwpxxx/ime-recompose.ts';
++
++test('캐럿 앞 낱말로 시작하는 조합은 그 길이만큼 다시 조합하는 것으로 본다', () => {
++  assert.equal(recomposedPrefixLength('21제', '21'), 2);          // 숫자 뒤 한글: "2121제" 가 되던 경우
++  assert.equal(recomposedPrefixLength('21ㅈ', '보고서 21'), 2);    // 빈칸 앞은 낱말이 아니다
++  assert.equal(recomposedPrefixLength('안녀', '안'), 1);           // 한 글자 + 새 글자
++  assert.equal(recomposedPrefixLength('21', '21'), 2);            // 새 글자 없이 다시 잡기만 해도 두 글자 이상이면
++});
++
++test('한 글자씩 조합하는 입력기와 새 낱말은 건드리지 않는다', () => {
++  assert.equal(recomposedPrefixLength('ㄱ', '가'), 0);
++  assert.equal(recomposedPrefixLength('2', '2'), 0);               // 같은 숫자를 또 누름
++  assert.equal(recomposedPrefixLength('ㅈ', '21'), 0);
++  assert.equal(recomposedPrefixLength('제', ''), 0);
++  assert.equal(recomposedPrefixLength('21제', '21 '), 0);          // 빈칸 뒤 새 낱말
++  assert.equal(recomposedPrefixLength('', '21'), 0);
++});
++
++test('편집기는 조합 첫 갱신에서만, 덮어쓰기·선택 삭제가 없을 때 앞 글자를 조합 구간에 넣는다', () => {
++  const code = readFileSync(new URL('../src/engine/input-handler-text.ts', import.meta.url), 'utf8');
++  assert.match(code, /this\._hwpxxxRecomposeCheck = !this\.cursor\.hasSelection\(\);/);
++  assert.match(code, /if \(!this\._compositionCovered && this\.compositionLength === 0 && !this\.compositionBodyLogical && text/);
++  assert.match(code, /this\._compositionCovered = prefix;/, '되돌리기는 덮어쓰기와 같이 원래 글자를 되살린다');
++});
+diff --git a/rhwp-studio/tests/hwpxxx-input-batch.test.ts b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
+new file mode 100644
+index 0000000..2287798
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-input-batch.test.ts
+@@ -0,0 +1,100 @@
++// [hwpxxx] 태블릿 입력 묶음 수정: 붙여넣기 되돌리기, 캐럿 대기 서식, 내부 복사 판단, 글자 색 분할 단추, 문자표, 화살표 초점.
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { shouldRedirectArrow } from '../src/hwpxxx/keep-arrows-in-document.ts';
++
++const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
++
++test('서식 없는 글 붙여넣기는 선택 지우기까지 스냅샷 한 번(되돌리기 한 번)이다', () => {
++  const code = source('src/engine/input-handler-keyboard.ts');
++  const body = code.slice(code.indexOf('function pastePlainText('), code.indexOf('export function prepareRhwpInternalClipboardHtml'));
++  assert.match(body, /this\.executeOperation\(\{ kind: 'snapshot', operationType: 'pastePlainText'/);
++  assert.match(body, /if \(hasSelection\) this\.deleteSelection\(\{ deferRecord: true \}\);/);
++  assert.doesNotMatch(body, /kind: 'command'/, '줄마다 따로 기록하지 않는다');
++});
++
++test('범위에 서식을 주거나 범위를 잡으면 캐럿 대기 서식(옛 색)을 버린다', () => {
++  const code = source('src/engine/input-handler.ts');
++  assert.match(code, /this\.dropPendingCharShape\(\);\n    const cmd = new ApplyCharFormatCommand\(sel\.start, sel\.end, props\);/);
++  assert.match(code, /if \(this\.cursor\.hasSelection\(\) && this\.getNonEmptySelection\(\)\) \{\n      this\.dropPendingCharShape\(\);/);
++});
++
++test('붙일 글이 마지막 내부 복사의 글과 같으면 표식이 빠져도 서식째 붙인다', () => {
++  const code = source('src/engine/input-handler-keyboard.ts');
++  assert.match(code, /hasMatchingInternalText = !hasRichExternal && !!text && !!internalClipboardText && sameText\(text, internalClipboardText\)/);
++  assert.match(code, /const hasRichExternal = Array\.from\(clipboardData\?\.files \?\? \[\]\)\.length > 0 \|\| \/<\(img\|table\|svg\|object\|video\)\\b\/i\.test\(html\);/, '외부 그림·표가 있으면 같은 복사로 보지 않는다');
++  assert.match(code, /hasMatchingInternalControlText \|\| hasMatchingInternalText\);/);
++});
++
++test('글자 색은 분할 단추: 본체는 지금 색을 다시 적용하고, ▾ 는 팔레트를 연다', () => {
++  const html = source('index.html');
++  assert.match(html, /<span id="text-color-dropdown" class="sb-color-wrap sb-dropdown">/);
++  assert.match(html, /<button id="btn-text-color-palette" class="sb-btn"[^>]*aria-haspopup="true"/);
++  const toolbar = source('src/ui/toolbar.ts');
++  assert.match(toolbar, /this\.btnTextColor\.addEventListener\('click', \(\) => apply\(current\)\);/);
++  assert.doesNotMatch(toolbar, /this\.colorPicker\.value = props\.textColor;/, '캐럿 자리 색으로 고르기 창 값을 바꾸지 않는다');
++});
++
++test('문자표는 칸 크기를 고정하고 세로로만 스크롤한다', () => {
++  const css = source('src/styles/symbols-dialog.css');
++  assert.match(css, /grid-template-columns: repeat\(auto-fill, minmax\(36px, 1fr\)\);/);
++  assert.match(css, /overflow-x: hidden;\n  overflow-y: auto;/);
++  assert.doesNotMatch(css, /repeat\(16, 1fr\)/);
++});
++
++test('도구 단추에 초점이 있을 때 화살표는 본문으로 보낸다(열린 메뉴·입력칸·조합 중은 제외)', () => {
++  const doc = new (class { querySelector() { return null; } })();
++  void doc;
++  const el = (match: Record<string, boolean>) => ({ closest: (sel: string) => (Object.keys(match).some(k => match[k] && sel.includes(k)) ? {} : null) }) as unknown as Element;
++  const key = (k: string, extra: Partial<KeyboardEvent> = {}) => ({ key: k, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, ...extra });
++  const toolButton = el({ '#style-bar': true });
++  assert.equal(shouldRedirectArrow(key('ArrowLeft'), toolButton), true);
++  assert.equal(shouldRedirectArrow(key('ArrowLeft', { isComposing: true }), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('ArrowLeft', { ctrlKey: true }), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('Enter'), toolButton), false);
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({ '#style-bar': true, 'select': true })), false, '목록 상자는 그대로');
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({ '#menu-bar': true, '.menu-dropdown': true })), false, '열린 메뉴는 그대로');
++  assert.equal(shouldRedirectArrow(key('ArrowDown'), el({})), false, '도구 영역 밖(본문 등)은 손대지 않는다');
++  assert.match(source('src/main.ts'), /if \(isAndroidHost\(\)\) \{ const editor = inputHandler; installKeepArrowsInDocument\(\{ focus: \(\) => editor\.focus\(\) \}\); \}/);
++});
++
++test('조합 중 단축키·클릭은 먼저 조합을 확정하고, 늦게 오는 compositionend 는 한 번 무시한다', () => {
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /finishCompositionNow\(\): void \{\n    if \(!this\.isComposing\) return;\n    _text\.onCompositionEnd\.call\(this\);\n    \(this as any\)\._hwpxxxCompositionFinishedEarly = true;/);
++  const keyboard = source('src/engine/input-handler-keyboard.ts');
++  assert.match(keyboard, /e\.preventDefault\(\);\n        \/\/ \[hwpxxx\] 명령 전에 조합을 확정한다[^\n]*\n        this\.finishCompositionNow\?\.\(\);/);
++  assert.match(source('src/engine/input-handler-mouse.ts'), /if \(this\.isComposing && e\.button === 0\) this\.finishCompositionNow\?\.\(\);/);
++  const text = source('src/engine/input-handler-text.ts');
++  assert.match(text, /if \(this\._hwpxxxCompositionFinishedEarly && !this\.isComposing\) \{/);
++  assert.match(text, /export function onCompositionStart\(this: any\): void \{\n  this\._hwpxxxCompositionFinishedEarly = false;/);
++});
++
++test('서식 토글·크기 증감은 캐럿 대기 서식까지 본다(Ctrl+B 두 번 = 끄기, 크기 두 번 = +2pt), 도구 막대도 바로 보인다', () => {
++  const code = source('src/engine/input-handler.ts');
++  assert.match(code, /private getEffectiveCharPropertiesAtCursor\(\): CharProperties \{\n    const base = this\.getCharPropertiesAtCursor\(\);\n    if \(this\.getNonEmptySelection\(\)\) return base;/);
++  assert.match(code, /: this\.getEffectiveCharPropertiesAtCursor\(\);\n\n    if \(prop === 'emboss'\)/);
++  for (const name of ['adjustFontSize', 'adjustCharRatio', 'adjustCharSpacing']) {
++    assert.match(code, new RegExp(`${name}\\(delta: number\\): void \\{[\\s\\S]{0,160}const current = this\\.getEffectiveCharPropertiesAtCursor\\(\\);`), name);
++  }
++  assert.match(code, /this\.stagePendingCharShape\(props\);\n      this\.emitCursorFormatState\(\);/);
++});
++
++test('되돌리기 단위는 낱말: 입력 사이 1.5초 이내, 빈칸 뒤 새 낱말에서 끊는다', async () => {
++  const code = source('src/engine/command.ts');
++  assert.match(code, /export const INSERT_MERGE_GAP_MS = 1500;/);
++  assert.match(code, /export const INSERT_MERGE_MAX_CHARS = 80;/);
++  assert.match(code, /if \(overwriting\) \{\n      if \(other\.timestamp - this\.timestamp > 300\) return null;/, '덮어쓰기는 원래 기준');
++  assert.match(code, /if \(other\.timestamp - this\.lastInputAt > INSERT_MERGE_GAP_MS\) return null;/);
++  assert.match(code, /if \(\/\\s\$\/u\.test\(this\.text\) && !\/\^\\s\/u\.test\(other\.text\)\) return null;/);
++});
++
++test('유령 입력 방지는 조합 확정 직후(300ms)에만, 잠긴 문서는 조합 입력도 막고, 메뉴 붙이기는 클립보드 API 로 대신한다', () => {
++  const text = source('src/engine/input-handler-text.ts');
++  assert.match(text, /const GHOST_INPUT_WINDOW_MS = 300;/);
++  assert.match(text, /if \(this\._lastComposedText && text === this\._lastComposedText && ghostWindow\) \{/);
++  assert.match(text, /export function onInput\(this: any, e\?: InputEvent\): void \{\n  if \(!this\.active\) return;\n  \/\/ \[hwpxxx\][^\n]*\n  if \(editingLocked\.call\(this\)\) \{/);
++  const handler = source('src/engine/input-handler.ts');
++  assert.match(handler, /if \(document\.execCommand\('paste'\)\) return true;[\s\S]{0,300}void this\.pasteFromClipboardApi\(\);/);
++  assert.match(handler, /this\.textarea\.dispatchEvent\(new ClipboardEvent\('paste', \{ clipboardData: data, bubbles: true, cancelable: true \}\)\);/);
++});
+diff --git a/rhwp-studio/tests/ime-shortcut-routing.test.ts b/rhwp-studio/tests/ime-shortcut-routing.test.ts
+index 209c46a..4755ec0 100644
+--- a/rhwp-studio/tests/ime-shortcut-routing.test.ts
++++ b/rhwp-studio/tests/ime-shortcut-routing.test.ts
+@@ -15,6 +15,6 @@ test('IME 조합 분기는 Ctrl+E 내용 지우기를 구분하고 나머지 단
+   const imeBranch = source.slice(imeStart, imeEnd);
+   assert.match(
+     imeBranch,
+-    /if \(\(e\.ctrlKey \|\| e\.metaKey\) && this\.dispatcher\) \{\s*const cmdId = matchShortcut\(e, defaultShortcuts\);\s*if \(cmdId\) \{\s*e\.preventDefault\(\);\s*if \(cmdId === 'edit:delete' && this\.cursor\.isInCellSelectionMode\(\) && e\.ctrlKey && !e\.metaKey\) \{[\s\S]*?this\.clearSelectedCellBlock\(\);[\s\S]*?return;\s*\}\s*this\.dispatcher\.dispatch\(cmdId\);\s*return;/,
++    /if \(\(e\.ctrlKey \|\| e\.metaKey\) && this\.dispatcher\) \{\s*const cmdId = matchShortcut\(e, defaultShortcuts\);\s*if \(cmdId\) \{\s*e\.preventDefault\(\);\s*(?:\/\/ \[hwpxxx\][^\n]*\n\s*this\.finishCompositionNow\?\.\(\);\s*)?if \(cmdId === 'edit:delete' && this\.cursor\.isInCellSelectionMode\(\) && e\.ctrlKey && !e\.metaKey\) \{[\s\S]*?this\.clearSelectedCellBlock\(\);[\s\S]*?return;\s*\}\s*this\.dispatcher\.dispatch\(cmdId\);\s*return;/,
+   );
+ });
+diff --git a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
+index a645e8c..42bfd76 100644
+--- a/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
++++ b/rhwp-studio/tests/style-toolbar-grouped-ribbon.test.ts
+@@ -89,11 +89,14 @@ test('only real menus retain dropdown affordances', () => {
+   assert.doesNotMatch(strike, /sb-has-arrow|sb-dd/);
+   assert.match(strike, /sb-strike/);
+ 
+-  for (const id of ['btn-charfx', 'btn-text-color']) {
++  for (const id of ['btn-charfx']) {
+     const button = buttonMarkup(id);
+     assert.match(button, /sb-has-arrow/);
+     assert.match(button, /sb-dd/);
+   }
++  // [hwpxxx] 글자 색도 분할 단추다: 본체(지금 색 적용)에는 ▾ 가 없고, 오른쪽 단추가 팔레트 ▾ 를 가진다.
++  assert.doesNotMatch(buttonMarkup('btn-text-color'), /sb-has-arrow|sb-dd/);
++  assert.match(buttonMarkup('btn-text-color-palette'), /sb-dd/);
+   assert.match(buttonMarkup('btn-charfx'), /sb-effect-icon/);
+   assert.match(buttonMarkup('btn-text-color'), /sb-color-visual/);
+   assert.match(buttonMarkup('btn-highlight'), /sb-highlight-visual/);

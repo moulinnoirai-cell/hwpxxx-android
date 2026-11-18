@@ -133,6 +133,7 @@
   function installStyles() {
     const style = element('style');
     style.textContent = '.android-host-dialog{box-sizing:border-box;width:min(800px,94vw);max-height:90vh;padding:24px;border:1px solid #9da7b5;border-radius:10px;color:CanvasText;background:Canvas;font:14px system-ui;box-shadow:0 16px 70px #0007}.android-host-dialog::backdrop{background:#0006}.android-host-dialog h2{margin:0 0 18px;font-size:19px}.android-host-dialog button,.android-host-dialog input,.android-host-dialog select{font:inherit;padding:9px 12px;border:1px solid #a7b0be;border-radius:5px;color:CanvasText;background:Canvas}.android-host-dialog button{cursor:pointer}.android-host-dialog button:hover{background:color-mix(in srgb,Highlight 14%,Canvas)}.android-host-dialog button:focus-visible,.android-host-dialog input:focus-visible{outline:2px solid Highlight;outline-offset:2px}.android-host-body{display:grid;gap:12px}.android-host-actions,.android-host-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.android-host-list{max-height:46vh;overflow:auto;display:grid;gap:5px}.android-host-list button{text-align:left;white-space:normal;overflow-wrap:anywhere}.android-host-list small{display:block;opacity:.7}.android-host-error{color:#b33535;min-height:1.4em;white-space:pre-wrap}.android-host-path{overflow-wrap:anywhere;font-size:12px}.android-host-dialog input{box-sizing:border-box;width:100%}.android-host-notice{margin:0;padding:10px 12px;border-radius:6px;background:color-mix(in srgb,Highlight 12%,Canvas)}.android-host-file{margin:0;padding:6px 12px;opacity:.65;overflow-wrap:anywhere}.android-host-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.android-host-list>div>button{flex:none}.android-host-dialog button:disabled{opacity:.5;cursor:default}.android-host-dialog [hidden]{display:none}@media (pointer:coarse){.android-host-dialog button,.android-host-dialog input,.android-host-dialog select{min-height:44px}}.android-host-config{position:fixed;bottom:28px;right:8px;z-index:110;padding:4px 8px;font:12px system-ui;color:CanvasText;background:Canvas;border:1px solid #a7b0be;border-radius:5px}';
+    style.textContent += '.android-host-format{display:block;margin:12px 0 4px;font-weight:600}';
     document.head.append(style);
   }
   // The list is rebuilt at most once per frame-ish tick and shows one page at a time: a device scan reports up to 10,000 documents in
@@ -207,10 +208,35 @@
     for (let index = 2; index < 1000; index++) { const candidate = `${stem} (${index})${tail}`; if (!taken.has(candidate.toLocaleLowerCase())) return candidate; }
     return wanted;
   }
-  async function pickDestination(suggestedName, allowed = null, startFolder = null) {
+  const FORMAT_LABELS = {hwpx: '한글 문서 HWPX (*.hwpx)', hwp: '한글 97~ 문서 HWP (*.hwp)'};
+  /**
+   * Save destination dialog (folder, file name and, for documents, the file format). Like Hancom/Word:
+   * - `options.formats` (e.g. ['hwpx', 'hwp']) adds a "파일 형식" choice; the name's extension follows it and typing a listed extension selects it.
+   * - `options.allowOverwrite`: an existing name asks "바꿀까요?" and, when confirmed, returns `overwrite: true` (the shell keeps a backup).
+   *   Without it (exports), an existing name is refused as before.
+   */
+  async function pickDestination(suggestedName, allowed = null, startFolder = null, options = {}) {
     const info = await request('status');
-    const suggested = String(suggestedName || '문서.hwp');
+    let suggested = String(suggestedName || '문서.hwp');
+    const formats = Array.isArray(options.formats) ? options.formats.filter(format => FORMAT_LABELS[format]) : [];
     const ui = openDialog('다른 이름으로 저장'), name = element('input', null, {value: suggested});
+    let formatSelect = null;
+    if (formats.length > 1) {
+      formatSelect = element('select');
+      formatSelect.setAttribute('aria-label', '파일 형식');
+      for (const format of formats) formatSelect.append(element('option', FORMAT_LABELS[format], {value: format}));
+      const initial = extension(suggested);
+      formatSelect.value = formats.includes(initial) ? initial : formats[0];
+      allowed = ['.' + formatSelect.value];
+      if (initial !== formatSelect.value) suggested = stemOf(suggested) + '.' + formatSelect.value;
+      name.value = suggested;
+      formatSelect.addEventListener('change', () => {
+        allowed = ['.' + formatSelect.value];
+        const current = name.value || suggested;
+        name.value = (extension(current) && formats.includes(extension(current)) ? stemOf(current) : current) + '.' + formatSelect.value;
+        suggested = name.value;
+      });
+    }
     name.setAttribute('aria-label', '파일 이름'); name.setAttribute('enterkeyhint', 'done');
     const location = element('select'), pathText = element('p', '', {className: 'android-host-path'}), list = element('div', null, {className: 'android-host-list'});
     location.setAttribute('aria-label', '저장공간');
@@ -245,21 +271,29 @@
     }
     location.addEventListener('change', () => enter(location.value).catch(ui.error));
     ui.body.append(location, pathText, list, name);
+    if (formatSelect) ui.body.append(element('label', '파일 형식', {className: 'android-host-format'}), formatSelect);
     ui.footer.prepend(up, button('새 폴더', async () => {
       const folderName = window.prompt('새 폴더 이름'); if (!folderName) return;
       await request('mkdir', {parent: path, name: folderName}); await enter(path);
     }));
     const save = button('저장', () => {
       let value = name.value;
+      // A typed extension of another offered format selects that format (보고서.hwpx -> HWPX).
+      if (formatSelect && formats.includes(extension(value)) && extension(value) !== formatSelect.value) { formatSelect.value = extension(value); allowed = ['.' + formatSelect.value]; }
       // A name typed without an extension gets the one being saved; a different extension is still refused below.
       if (value && !value.includes('.') && allowed?.length) { value += allowed[0]; name.value = value; }
       if (!value || value.trim() !== value || /[\\/\x00-\x1f\x7f]/.test(value)) throw new Error('파일 이름을 확인해 주세요.');
       if (allowed && !allowed.includes('.' + extension(value))) throw new Error('선택한 저장 형식의 확장자를 유지해 주세요.');
       if (!path) throw new Error('저장할 폴더를 선택해 주세요.');
-      // Native refuses to overwrite through this dialog; say so here, while the name can still be changed.
-      if (complete && taken.has(value.toLocaleLowerCase())) throw new Error(`이 폴더에 같은 이름의 파일이 있어요. 이름을 바꿔 주세요. (예: ${freeName(value, taken)})`);
+      // An existing name: documents may replace it after an explicit "바꿀까요?" (the shell backs the old file up); exports may not.
+      let overwrite = false;
+      if (taken.has(value.toLocaleLowerCase())) {
+        if (!options.allowOverwrite) throw new Error(`이 폴더에 같은 이름의 파일이 있어요. 이름을 바꿔 주세요. (예: ${freeName(value, taken)})`);
+        if (!window.confirm(`'${value}' 파일이 이미 있어요.\n바꿀까요? (기존 파일은 백업해 둬요)`)) return;
+        overwrite = true;
+      }
       rememberFolder(path);
-      ui.finish({name: value, target: path + '/' + value});
+      ui.finish({name: value, target: path + '/' + value, overwrite, format: extension(value)});
     });
     ui.footer.append(save);
     name.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); save.click(); } });
@@ -278,7 +312,10 @@
     return state?.fileHandle ? handles.get(state.fileHandle) : null;
   }
   function makeHandle(info) {
-    const record = {meta: info.meta || null, target: info.target || info.meta?.path || null, name: String(info.name || info.meta?.name || '문서.hwp'), sha: info.sha || null, source: info.source || null};
+    const record = {meta: info.meta || null, target: info.target || info.meta?.path || null, name: String(info.name || info.meta?.name || '문서.hwp'), sha: info.sha || null, source: info.source || null, overwrite: info.overwrite === true};
+    // "Replacing" the very document that is open is an ordinary save of it (its own baseline hash), not an overwrite of another file.
+    const own = record.source?.meta;
+    if (record.overwrite && own && !own.external && !own.draft && own.path === record.target) { record.meta = own; record.sha = record.source.sha || null; record.overwrite = false; }
     let writing = false;
     const handle = {
       kind: 'file', get name() { return record.name; },
@@ -305,8 +342,8 @@
             try {
               // SAF/Termux/recovery handles are read-only. Their first Save creates a copy.
               if (!record.target || record.meta?.external || record.meta?.draft) {
-                const picked = await pickDestination(record.name, ['.' + extension(record.name)], sourceFolder(record.source || record));
-                record.target = picked.target; record.name = picked.name;
+                const picked = await pickDestination(record.name, ['.' + extension(record.name)], sourceFolder(record.source || record), {allowOverwrite: true});
+                record.target = picked.target; record.name = picked.name; record.overwrite = picked.overwrite === true;
               }
               const bytes = new Uint8Array(size); let offset = 0;
               for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
@@ -320,10 +357,10 @@
               if (!id) id = (await request('newDocument', {format: extension(record.name)})).id;
               const replace = !!(record.meta && !record.meta.external && !record.meta.draft && record.target === record.meta.path);
               if (replace && !record.sha) throw new Error('원본 확인 정보가 없어요. 문서를 다시 열어 주세요.');
-              token = await request('beginSave', {id, target: record.target, replace, sha: replace ? record.sha : '', backup: replace, length: bytes.length, format: extension(record.name), studio: true});
+              token = await request('beginSave', {id, target: record.target, replace, overwrite: !replace && record.overwrite, sha: replace ? record.sha : '', backup: replace, length: bytes.length, format: extension(record.name), studio: true});
               await upload(token, bytes);
               const result = await request('finishSave', {token}); token = null;
-              record.meta = result.meta; record.target = result.meta.path; record.sha = result.sha; record.source = null;
+              record.meta = result.meta; record.target = result.meta.path; record.sha = result.sha; record.source = null; record.overwrite = false;
               if (result.backup) announce('저장했어요. 원본 백업: ' + result.backup.name);
             } catch (error) {
               // One visible report: Studio's save flow alerts with this message and keeps the document dirty. A host modal here would
@@ -353,7 +390,10 @@
   });
   installWindowApi('showSaveFilePicker', async (options = {}) => {
     const types = (options.types || []).flatMap(type => Object.values(type.accept || {}).flat());
-    const picked = await pickDestination(options.suggestedName, types.length ? types : null, sourceFolder());
+    // Documents (HWP/HWPX/HML) may replace an existing file after confirmation; the editor passes the formats it can convert to.
+    const documentSave = types.length > 0 && types.every(type => ['.hwp', '.hwpx', '.hml'].includes(type));
+    const picked = await pickDestination(options.suggestedName, types.length ? types : null, sourceFolder(),
+      {allowOverwrite: documentSave, formats: documentSave ? options.hwpxxxFormats : null});
     return makeHandle({...picked, source: activeSource()});
   });
   // Menu clipboard actions use Android's foreground clipboard. Keyboard paste/copy
