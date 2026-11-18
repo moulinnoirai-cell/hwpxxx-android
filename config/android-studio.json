@@ -30,7 +30,7 @@
     "0105-android-doc-scrollbar.patch": "379f5dabae337df88d3057f91771fdf56aaa01d21472d8bd57af3966cdc92796",
     "0106-android-composition-baseline.patch": "6ee8ffaea9f1896f8d33328b8acccf12eadc322f268ed1196c3e433d128f4190",
     "0107-android-find-all.patch": "a2c841d25a954f60b44a6ebfb037baa87ffb8d53e3b65f3f4234dddd060771eb",
-    "0108-android-editor-input-batch.patch": "e0f502df4950a673f61015e72bf7a7d58649b799823da2b863b5a1dd355c7fd5"
+    "0108-android-editor-input-batch.patch": "d7d5799cc7becc3bb0b6c6414b61f32e645e3f32dcb7cc80e2968165480fd9ee"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",
