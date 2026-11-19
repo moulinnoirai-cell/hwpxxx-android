@@ -27,7 +27,7 @@ repo = here.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--studio-root', required=True)
 parser.add_argument('--font', default='/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf')
-parser.add_argument('--reference-family', default='Liberation Serif', help='system family with the same outlines as --font')
+parser.add_argument('--reference-family', default='Liberation Serif', help='unused since v0.9.1 (print is portable-only; the reference is the screen render of the host-font document)')
 parser.add_argument('--fixture', default=str(here / 'fixtures/문서.hwp'))
 args = parser.parse_args()
 studio = pathlib.Path(args.studio_root).resolve()
@@ -165,11 +165,18 @@ async ({face, probe, referenceFamily}) => {
   const withFontInk = ink(withFontImg);
   check('page has visible text ink', withFontInk.dark > 800, withFontInk);
 
-  // Same document, genuine system reference family (same outlines) must look like the host-font print.
-  buildDocument(referenceFamily);
-  const reference = await (await print.prepareAndroidPrintJob(bridge, jobOptions())).renderPage(0);
-  const referenceImg = await decode(reference.png);
-  check('host-font print matches the same outlines rendered by a system font (<= 3% differing ink pixels)', diffRatio(withFontImg, referenceImg) <= 0.03, {ratio: diffRatio(withFontImg, referenceImg)});
+  // Reference: the SAME document drawn by the screen profile (same Canvas2D renderer and host font session, "WYSIWYG"). rhwp v0.9.1 prints with
+  // PORTABLE metrics/outlines only, so a print of a *system* family (the old reference) always shows the engine's portable fallback glyphs and
+  // can no longer be compared with an imported font (evidence: system-family print == fallback print, ink/box identical). The screen render
+  // of the host-font document is the right oracle: same outlines, so ink must match; sizes may differ by the canvas rounding (+-3 px).
+  const referenceCanvas = document.createElement('canvas');
+  bridge.renderPageToCanvasFiltered(0, referenceCanvas, expectedScale, 'all', 'screen');
+  const referenceImg = await decode(await new Promise(r => referenceCanvas.toBlob(async blob => r(new Uint8Array(await blob.arrayBuffer())), 'image/png')));
+  const referenceInk = ink(referenceImg);
+  const boxClose = withFontInk.box.every((v, i) => Math.abs(v - referenceInk.box[i]) <= 3);
+  check('host-font print has the same ink and extent as the screen render of the same document (<= 3% ink, <= 3 px box)',
+    Math.abs(withFontInk.dark - referenceInk.dark) <= 0.03 * referenceInk.dark && boxClose,
+    {print: withFontInk, screen: referenceInk, printSize: [withFontImg.width, withFontImg.height], screenSize: [referenceImg.width, referenceImg.height]});
 
   // Without the provider the unique family can only fall back to the default sans: the output must differ clearly.
   buildDocument(probe);
@@ -177,6 +184,7 @@ async ({face, probe, referenceFamily}) => {
   const fallback = await (await print.prepareAndroidPrintJob(bridge, jobOptions())).renderPage(0);
   const fallbackImg = await decode(fallback.png);
   const fallbackRatio = diffRatio(withFontImg, fallbackImg);
+  const fallbackInk = ink(fallbackImg);
   // A/B diagnostic: if the fallback print still equals the host-font print, redraw once with the font-resolution memos switched off (hwpxxx/signature-memo,
   // __hwpxxxNoFontMemo). If that fixes it, the memo is the cause and the check fails; if not, the engine keeps the removed face (reported, not hidden).
   let memoOffRatio = null;
@@ -190,7 +198,7 @@ async ({face, probe, referenceFamily}) => {
   const memoIsCause = fallbackRatio < 0.2 && memoOffRatio !== null && memoOffRatio >= 0.2;
   check('without the imported font the unique family falls back (print would be wrong): >= 20% differing ink',
     fallbackRatio >= 0.2 || (!memoIsCause && memoOffRatio !== null),
-    {ratio: fallbackRatio, ratioWithMemoOff: memoOffRatio, note: fallbackRatio >= 0.2 ? 'ok' : (memoIsCause ? 'THE MEMO KEEPS THE REMOVED FACE' : 'not the memo: the engine/v0.9.0 session keeps the removed face (known, reported)')});
+    {ratio: fallbackRatio, hostInk: withFontInk, fallbackInk, ratioWithMemoOff: memoOffRatio, note: fallbackRatio >= 0.2 ? 'ok' : (memoIsCause ? 'THE MEMO KEEPS THE REMOVED FACE' : 'not the memo: the engine/v0.9.0 session keeps the removed face (known, reported)')});
   const reinstalled = await installAndroidFonts({fonts: {setProvider: local.setHostFontProvider, getState: local.getHostFontState}}, request);
 
   // ---- 2. view aids and view state ----
