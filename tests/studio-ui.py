@@ -997,7 +997,7 @@ def export_html_pdf_and_print(h):
         s.sleep(0.3)
     printed = ctl('/__log')['printed']
     assert printed and printed[0]['pages'] and all(p['bytes'] > 100 for p in printed[0]['pages']), printed
-    assert any(o['op'] == 'beginPrintPdf' for o in native_log())
+    assert any(o['op'] == 'startPrint' for o in native_log())
 
 
 @scenario

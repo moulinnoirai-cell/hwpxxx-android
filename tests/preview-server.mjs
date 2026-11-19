@@ -33,7 +33,7 @@ fs.mkdirSync(path.dirname(termuxFile), { recursive: true });
 fs.copyFileSync(new URL('문서.hwpx', fixtures), termuxFile);
 let docs = new Map(), blobs = new Map();
 let newDocuments = new Map();
-let upload = null, pdf = null, draftUpload = null;
+let upload = null, pdf = null, draftUpload = null, printJob = null;
 const printed = [];
 const delays = {};
 // Studio-contract test controls (all default OFF so the legacy suites keep their original behaviour):
@@ -87,9 +87,9 @@ function name(n) { if (!n || !n.trim()) throw new Error('이름을 입력해 주
 // finishSave, fonts, private history/recents, permission, clipboard. This is a protocol mock: it proves nothing about native code/crypto.
 const sessions = new Map();
 const TAG = /^[A-Za-z0-9-]{1,64}$/;
-const blankSession = () => ({ docs: new Map(), blobs: new Map(), newDocuments: new Map(), upload: null, pdf: null, draftUpload: null, stateUpload: null, pickQueue: [], openQueue: [], selected: new Map(), drafts: new Map() });
-const capture = () => ({ docs, blobs, newDocuments, upload, pdf, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts });
-function restore(v) { ({ docs, blobs, newDocuments, upload, pdf, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts } = v); }
+const blankSession = () => ({ docs: new Map(), blobs: new Map(), newDocuments: new Map(), upload: null, pdf: null, printJob: null, draftUpload: null, stateUpload: null, pickQueue: [], openQueue: [], selected: new Map(), drafts: new Map() });
+const capture = () => ({ docs, blobs, newDocuments, upload, pdf, printJob, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts });
+function restore(v) { ({ docs, blobs, newDocuments, upload, pdf, printJob, draftUpload, stateUpload, pickQueue, openQueue, selected, drafts } = v); }
 function inSession(tag, fn) {
   if (!tag) return fn();
   if (!sessions.has(tag)) sessions.set(tag, blankSession());
@@ -149,7 +149,7 @@ function workspaceOperation(op, a, origin) {
 
 function operation(op, a, events) {
   // Same ungated set as MainActivity.UNGATED; read/scan re-check the permission for shared-storage documents below.
-  if (!['status', 'release', 'scan', 'read', 'disconnectFolder', 'abortSave', 'abortPdf', 'listDrafts', 'beginDraft', 'finishDraft', 'abortDraft', 'readDraft', 'discardDraft', 'saveChunk', 'fontList', 'newDocument', 'pickFile', 'fontImport', 'fontImportFolder', 'fontRead', 'fontDelete', 'clipboardRead', 'clipboardWrite', 'beginPrintPdf', 'beginPdfPage', 'finishPdfPage', 'finishPdf', 'permission', 'exit', 'beginClipboardImage', 'finishClipboardImage', 'takeOpenRequests', 'historyList', 'beginHistory', 'finishHistory', 'readHistory', 'deleteHistory', 'clearHistory', 'recentList', 'recentAdd', 'recentOpen', 'recentRemove', 'recentClear'].includes(op) && !permission) throw new Error('문서에 접근하려면 파일 접근을 허용해 주세요.');
+  if (!['status', 'release', 'scan', 'read', 'disconnectFolder', 'abortSave', 'abortPdf', 'listDrafts', 'beginDraft', 'finishDraft', 'abortDraft', 'readDraft', 'discardDraft', 'saveChunk', 'fontList', 'newDocument', 'pickFile', 'fontImport', 'fontImportFolder', 'fontRead', 'fontDelete', 'clipboardRead', 'clipboardWrite', 'startPrint', 'printPageBegin', 'printPageChunk', 'printPageEnd', 'printPageFail', 'beginPdfPage', 'finishPdfPage', 'finishPdf', 'permission', 'exit', 'beginClipboardImage', 'finishClipboardImage', 'takeOpenRequests', 'historyList', 'beginHistory', 'finishHistory', 'readHistory', 'deleteHistory', 'clearHistory', 'recentList', 'recentAdd', 'recentOpen', 'recentRemove', 'recentClear'].includes(op) && !permission) throw new Error('문서에 접근하려면 파일 접근을 허용해 주세요.');
   switch (op) {
     case 'status': return { permission, connectedFolders: termux ? [{ id: 'termux-mock', name: 'Termux · hwpxxx-project', active: true }] : [], volumes: [{ path: volume, name: '내장 저장공간' }], version: '0.2.0', engine: 'rhwp 0.8.7' };
     case 'scan': {
@@ -330,15 +330,49 @@ function operation(op, a, events) {
       }
       fs.writeFileSync(u.target, bytes); newDocuments.delete(u.source); return { meta: record(u.target), sha: sha(bytes), backup };
     }
-    case 'beginPdf': { if (pdf) throw new Error('다른 PDF를 만들고 있어요.'); const t = inside(a.target); if (!t.endsWith('.pdf') || fs.existsSync(t)) throw new Error('같은 이름의 파일이 있거나 PDF 이름이 올바르지 않아요.'); if (!(a.count >= 1 && a.count <= 100)) throw new Error('PDF 저장은 100페이지까지 지원해요.'); pdf = { target: t, count: a.count, pages: [] }; return true; }
-    case 'beginPrintPdf': { if (pdf) throw new Error('다른 PDF를 만들고 있어요.'); if (!(a.count >= 1 && a.count <= 100)) throw new Error('인쇄는 100페이지까지 지원해요.'); pdf = { target: null, name: a.name, count: a.count, pages: [] }; return true; }
+    case 'beginPdf': { if (pdf) throw new Error('다른 PDF를 만들고 있어요.'); const t = inside(a.target); if (!t.endsWith('.pdf') || fs.existsSync(t)) throw new Error('같은 이름의 파일이 있거나 PDF 이름이 올바르지 않아요.'); if (!Number.isInteger(a.count) || a.count < 1) throw new Error('PDF로 저장할 쪽이 없어요.'); pdf = { target: t, count: a.count, pages: [] }; return true; }
+    case 'startPrint': {
+      if (printJob) throw new Error('열려 있는 인쇄 작업을 마쳐 주세요.');
+      const indices = a.count > 2 ? [0, a.count - 1] : Array.from({length: a.count}, (_, i) => i);
+      printJob = {job: a.job, name: a.name, indices, pages: [], token: crypto.randomUUID(), upload: null};
+      events.push(['printPage', {job: a.job, token: printJob.token, index: indices[0], widthPt: 595, heightPt: 842, dpi: 300}]);
+      return true;
+    }
+    case 'printPageBegin': {
+      if (printJob?.token !== a.token || printJob.upload) throw new Error('인쇄 쪽 요청이 끝났어요.');
+      printJob.upload = {width: a.width, height: a.height, length: a.length, bytes: 0, seq: 0};
+      return true;
+    }
+    case 'printPageChunk': {
+      if (printJob?.token !== a.token || !printJob.upload || printJob.upload.seq++ !== a.seq) throw new Error('인쇄 조각의 순서가 올바르지 않아요.');
+      printJob.upload.bytes += Buffer.from(a.base64, 'base64').length;
+      return true;
+    }
+    case 'printPageEnd': {
+      const u = printJob?.upload;
+      if (printJob?.token !== a.token || !u || u.bytes !== u.length) throw new Error('인쇄 쪽 데이터가 일치하지 않아요.');
+      printJob.pages.push({index: printJob.indices.shift(), width: u.width, height: u.height, bytes: u.bytes});
+      if (printJob.indices.length) {
+        printJob.token = crypto.randomUUID(); printJob.upload = null;
+        events.push(['printPage', {job: printJob.job, token: printJob.token, index: printJob.indices[0], widthPt: 595, heightPt: 842, dpi: 300}]);
+      } else {
+        printed.push({name: printJob.name, pages: printJob.pages});
+        events.push(['printEnd', {job: printJob.job}]);
+        printJob = null;
+      }
+      return true;
+    }
+    case 'printPageFail': {
+      if (printJob?.token === a.token) { events.push(['printEnd', {job: printJob.job}]); printJob = null; }
+      return true;
+    }
     case 'beginPdfPage': {
       if (!pdf || upload || a.index !== pdf.pages.length) throw new Error('PDF 페이지 순서가 올바르지 않아요.');
       if (!(a.length >= 8 && a.length <= 8 * 1024 * 1024) || !(a.width >= 36 && a.width <= 2000 && a.height >= 36 && a.height <= 2000)) throw new Error('PDF 페이지의 크기가 너무 커요.');
       upload = { token: crypto.randomUUID(), kind: 'pdf', parts: [], seq: 0, length: a.length, width: a.width, height: a.height }; return upload.token;
     }
     case 'finishPdfPage': { const u = upload; upload = null; if (!pdf || !u || u.token !== a.token || u.kind !== 'pdf') throw new Error('PDF 페이지 데이터가 일치하지 않아요.'); const png = Buffer.concat(u.parts); if (png.length !== u.length || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('PDF 이미지를 읽지 못했어요.'); pdf.pages.push({ png, width: u.width, height: u.height }); return true; }
-    case 'finishPdf': { if (!pdf || pdf.pages.length !== pdf.count) throw new Error('PDF 페이지가 모두 준비되지 않았어요.'); if (!pdf.target) { printed.push({ name: pdf.name, pages: pdf.pages.map(p => ({ width: p.width, height: p.height, bytes: p.png.length })) }); pdf = null; return { printing: true }; } fs.writeFileSync(pdf.target, Buffer.from('%PDF-1.4 preview stub, ' + pdf.pages.length + ' PNG pages\n')); const t = pdf.target; pdf = null; return { path: t }; }
+    case 'finishPdf': { if (!pdf || pdf.pages.length !== pdf.count) throw new Error('PDF 페이지가 모두 준비되지 않았어요.'); fs.writeFileSync(pdf.target, Buffer.from('%PDF-1.4 preview stub, ' + pdf.pages.length + ' PNG pages\n')); const t = pdf.target; pdf = null; return { path: t }; }
     case 'abortPdf': pdf = null; upload = null; return true;
     case 'permission': return true;
     case 'exit': return true;
@@ -402,7 +436,7 @@ http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => { fontQueue.push({ bytes: Buffer.concat(chunks), family: url.searchParams.get('family') || 'QA Font', style: url.searchParams.get('style') || 'Regular', weight: Number(url.searchParams.get('weight') || 400) }); res.end('ok'); }); return;
   }
   // Native process restart: transient in-memory state (upload/draft/pdf slots, blobs, issued new-document ids, picks) is lost; drafts, fonts and files persist.
-  if (url.pathname === '/__restart') { for (const [tag, v] of sessions) sessions.set(tag, { ...blankSession(), drafts: v.drafts }); closeTokens.clear(); upload = pdf = draftUpload = stateUpload = null; blobs.clear(); newDocuments.clear(); selected.clear(); docs.clear(); held.splice(0); holds.clear(); pickQueue.length = 0; openQueue.length = 0; return res.end('ok'); }
+  if (url.pathname === '/__restart') { for (const [tag, v] of sessions) sessions.set(tag, { ...blankSession(), drafts: v.drafts }); closeTokens.clear(); upload = pdf = printJob = draftUpload = stateUpload = null; blobs.clear(); newDocuments.clear(); selected.clear(); docs.clear(); held.splice(0); holds.clear(); pickQueue.length = 0; openQueue.length = 0; return res.end('ok'); }
   if (url.pathname === '/__state') {  // /__state?unreadableHistory=N  /__state?persistable=0|1  /__state?revoke=1 (revoke every kept document grant)
     const q = url.searchParams;
     if (q.has('unreadableHistory')) historyUnreadable = Number(q.get('unreadableHistory'));
@@ -415,7 +449,7 @@ http.createServer((req, res) => {
   }
   if (url.pathname === '/__log') { res.setHeader('content-type', 'application/json'); const only = url.searchParams.get('view'); return res.end(JSON.stringify({ ops: only == null ? opLog : opLog.filter(o => (o.view || '') === only), printed, clipboard: { text: clipboard.text, html: clipboard.html, imageBytes: clipboard.image ? clipboard.image.length : 0 }, historyIds: [...history.keys()], recentCount: recents.size, pendingHeld: held.length, ...(sessions.size ? { sessions: Object.fromEntries([...sessions].map(([t, v]) => [t, { drafts: [...v.drafts.values()].map(({ bytes, ...d }) => d), blobs: v.blobs.size, uploadOpen: !!v.upload, draftUploadOpen: !!v.draftUpload }])) } : {}) })); }
   if (url.pathname === '/__logclear') { opLog = []; printed.length = 0; return res.end('ok'); }
-  if (url.pathname === '/__reset') { sessions.clear(); workspace = null; initialActions.clear(); openCreated.clear(); closeTokens.clear(); rejected = []; opLog = []; printed.length = 0; failures.clear(); holds.clear(); held.splice(0); pickQueue.length = 0; fontQueue.length = 0; selected.clear(); fonts.clear(); blobs.clear(); newDocuments.clear(); drafts.clear(); upload = pdf = draftUpload = null; clipboard = { text: '', html: '', image: null }; openQueue.length = 0; history.clear(); recents.clear(); stateUpload = null; historyUnreadable = 0; recentPersistable = true; revokedGrants.clear(); cfg.strict = false; return res.end('ok'); }
+  if (url.pathname === '/__reset') { sessions.clear(); workspace = null; initialActions.clear(); openCreated.clear(); closeTokens.clear(); rejected = []; opLog = []; printed.length = 0; failures.clear(); holds.clear(); held.splice(0); pickQueue.length = 0; fontQueue.length = 0; selected.clear(); fonts.clear(); blobs.clear(); newDocuments.clear(); drafts.clear(); upload = pdf = printJob = draftUpload = null; clipboard = { text: '', html: '', image: null }; openQueue.length = 0; history.clear(); recents.clear(); stateUpload = null; historyUnreadable = 0; recentPersistable = true; revokedGrants.clear(); cfg.strict = false; return res.end('ok'); }
   if (url.pathname === '/__termux') { termux = url.search === '?1'; return res.end('ok'); }
   if (url.pathname === '/__grant') { permission = url.search === '?1'; return res.end('ok'); }
   if (url.pathname === '/__mock.js') { res.setHeader('content-type', 'text/javascript'); res.setHeader('cache-control', 'no-store'); return res.end(view ? taggedShim(view, !!workspace) : shim); }

@@ -75,12 +75,13 @@
     if (name === 'openRequest') void drainOpenRequests();
     if (name === 'hostError') void showError(new Error(String(data)));
   };
-  async function upload(token, bytes) {
+  async function upload(token, bytes, op = 'saveChunk', signal) {
     for (let offset = 0, seq = 0; offset < bytes.length; offset += 196608, seq++) {
+      if (signal?.aborted) throw abort();
       const part = bytes.subarray(offset, offset + 196608);
       let binary = '';
       for (let index = 0; index < part.length; index += 8192) binary += String.fromCharCode(...part.subarray(index, index + 8192));
-      await request('saveChunk', {token, seq, base64: btoa(binary)});
+      await request(op, {token, seq, base64: btoa(binary)});
     }
   }
   async function readRecord(meta) {
@@ -604,47 +605,119 @@
     try { token = await request('beginExport', {target: picked.target, length: bytes.length}); await upload(token, bytes); await request('finishExport', {token}); token = null; announce('저장했어요: ' + picked.name); }
     finally { if (token) await request('abortSave', {token}).catch(() => {}); }
   }
-  // PDF 한 건의 쪽 이미지 합계 상한. 네이티브는 마지막에 PDF 크기를 다시 확인하지만, 쪽을 다 만든 뒤에야 실패하지 않도록 먼저 멈춘다.
-  const MAX_PRINT_PAGES = 100;
-  async function rasterizeSvgPage(page, width, height) {
-    // 호환 경로(Studio 는 쓰지 않는다): SVG 에는 가져온 글꼴이 들어 있지 않아 글꼴 보존을 주장하지 않는다.
+  const MAX_PAGE_PNG_BYTES = 8 * 1024 * 1024;
+  const PDF_DPI = 300;
+  let printJob = null, printRenderQueue = Promise.resolve();
+
+  async function rasterizeSvgPage(page, width, height, target) {
+    // 호환용 SVG는 페이지 관련 글꼴을 내장하지 않는다.
     const url = URL.createObjectURL(new Blob([page.svg], {type: 'image/svg+xml'}));
+    const canvas = document.createElement('canvas');
     try {
       const image = new Image(); image.src = url; await image.decode();
-      const scale = Math.min(2.25, 1800 / width, 2600 / height), canvas = document.createElement('canvas');
+      const fit = target.widthPt ? Math.min(target.widthPt / width, target.heightPt / height) : .75;
+      const scale = Math.min(fit * target.dpi / 72, 4000 / Math.max(width, height), Math.sqrt(4800000 / (width * height)));
       canvas.width = Math.ceil(width * scale); canvas.height = Math.ceil(height * scale);
       const context = canvas.getContext('2d'); context.fillStyle = 'white'; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-      canvas.width = canvas.height = 1;
       if (!png) throw new Error('인쇄 페이지를 만들지 못했어요.');
       return new Uint8Array(await png.arrayBuffer());
-    } finally { URL.revokeObjectURL(url); }
+    } finally { canvas.width = canvas.height = 0; URL.revokeObjectURL(url); }
   }
-  // 쪽을 하나씩 받아 네이티브로 올린다: pages 배열(호환) 또는 pageCount + renderPage(index). 한 번에 한 쪽만 메모리에 둔다.
+
+  async function getPrintPage(source, index, target) {
+    if (target.signal?.aborted) throw abort();
+    const page = await source(index, target);
+    if (target.signal?.aborted) throw abort();
+    const width = Number(page?.width), height = Number(page?.height);
+    if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new Error('페이지 크기를 확인하지 못했어요.');
+    const bytes = page.png instanceof Uint8Array ? page.png
+      : page.png ? new Uint8Array(page.png) : await rasterizeSvgPage(page, width, height, target);
+    if (target.signal?.aborted) throw abort();
+    if (bytes.length > MAX_PAGE_PNG_BYTES) throw new Error('인쇄 페이지 이미지가 너무 커요.');
+    return {width, height, bytes};
+  }
+
+  function failPrintPage(token, error) {
+    return request('printPageFail', {token, message: String(error?.message || error).slice(0, 160)}).catch(() => {});
+  }
+
+  subscribe('printPage', ({job, token, index, widthPt, heightPt, dpi}) => {
+    const current = printJob;
+    if (current?.id !== job || !Number.isInteger(index) || index < 0 || index >= current.count) {
+      void failPrintPage(token, '인쇄할 문서를 확인하지 못했어요. 다시 시도해 주세요.');
+      return;
+    }
+    current.page?.controller.abort();
+    const controller = new AbortController();
+    current.page = {token, controller};
+    printRenderQueue = printRenderQueue.then(async () => {
+      try {
+        const {width, height, bytes} = await getPrintPage(current.source, index, {widthPt, heightPt, dpi, signal: controller.signal});
+        await request('printPageBegin', {token, width, height, length: bytes.length});
+        await upload(token, bytes, 'printPageChunk', controller.signal);
+        if (!controller.signal.aborted) await request('printPageEnd', {token});
+      } catch (error) {
+        if (!controller.signal.aborted) await failPrintPage(token, error);
+      } finally {
+        if (current.page?.token === token) current.page = null;
+      }
+    });
+  });
+  subscribe('printPageCancelled', ({job, token}) => {
+    if (printJob?.id === job && printJob.page?.token === token) printJob.page.controller.abort();
+  });
+  subscribe('printEnd', ({job}) => {
+    if (printJob?.id === job) printJob.finish();
+  });
+
   async function printPages({fileName, pages, pageCount, renderPage, intent, signal}) {
-    const streaming = !Array.isArray(pages), count = streaming ? pageCount : pages.length;
+    const count = Array.isArray(pages) ? pages.length : pageCount;
+    const source = Array.isArray(pages) ? index => pages[index] : renderPage;
     if (intent !== 'print' && intent !== 'pdf') throw new Error('인쇄 방식을 확인하지 못했어요.');
-    if (!Number.isInteger(count) || count < 1 || count > MAX_PRINT_PAGES) throw new Error('PDF와 인쇄는 한 번에 100페이지까지 지원해요.');
-    if (streaming && typeof renderPage !== 'function') throw new TypeError('인쇄할 쪽을 가져올 수 없어요.');
-    const checkStop = () => { if (signal?.aborted) throw abort(); };
-    let started = false, total = 0;
+    if (!Number.isSafeInteger(count) || count < 1 || count > 2147483647) throw new Error('인쇄할 쪽 수를 확인하지 못했어요.');
+    if (typeof source !== 'function') throw new TypeError('인쇄할 쪽을 가져올 수 없어요.');
+    if (signal?.aborted) throw abort();
+    if (intent === 'print') {
+      if (printJob) throw new Error('열려 있는 인쇄 작업을 마쳐 주세요.');
+      let finish;
+      const done = new Promise(resolve => { finish = resolve; });
+      const job = {id: ++sequence, count, source, finish, page: null};
+      const stop = () => {
+        if (job.page) {
+          job.page.controller.abort();
+          void failPrintPage(job.page.token, abort());
+        }
+        finish();
+      };
+      printJob = job;
+      signal?.addEventListener('abort', stop, {once: true});
+      try {
+        await request('startPrint', {job: job.id, count, name: fileName});
+        await done;
+        if (signal?.aborted) throw abort();
+      } finally {
+        job.page?.controller.abort();
+        signal?.removeEventListener('abort', stop);
+        printJob = null;
+      }
+      return;
+    }
+
+    let started = false;
     try {
-      checkStop();
-      if (intent === 'print') await request('beginPrintPdf', {count, name: fileName});
-      else { const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf'], sourceFolder()); await request('beginPdf', {target: picked.target, count}); }
+      const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf'], sourceFolder());
+      if (signal?.aborted) throw abort();
+      await request('beginPdf', {target: picked.target, count});
       started = true;
       for (let index = 0; index < count; index++) {
-        checkStop();
-        const page = streaming ? await renderPage(index) : pages[index];
-        checkStop();
-        const width = Number(page?.width), height = Number(page?.height);
-        if (!(width > 0 && height > 0)) throw new Error('페이지 크기를 확인하지 못했어요.');
-        const bytes = page.png ? new Uint8Array(page.png) : await rasterizeSvgPage(page, width, height);
-        if ((total += bytes.length) > MAX_BYTES) throw new Error('인쇄 결과가 32MB를 넘어요. 그림이 많은 쪽을 줄여 주세요.');
+        const {width, height, bytes} = await getPrintPage(source, index, {dpi: PDF_DPI, signal});
         const token = await request('beginPdfPage', {index, length: bytes.length, width: Math.round(width * .75), height: Math.round(height * .75)});
-        await upload(token, bytes); await request('finishPdfPage', {token});
+        await upload(token, bytes, 'saveChunk', signal);
+        if (signal?.aborted) throw abort();
+        await request('finishPdfPage', {token});
       }
-      checkStop();
+      if (signal?.aborted) throw abort();
       await request('finishPdf'); started = false;
     } finally { if (started) await request('abortPdf').catch(() => {}); }
   }

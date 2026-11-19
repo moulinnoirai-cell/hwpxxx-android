@@ -511,13 +511,24 @@ test('exportFile: new-file-only native export with bytes verified; collisions, w
   assert.equal(await exportAs('qa-ok.png', png, 'image/png'), 'ok'); assert.deepEqual(fs.readFileSync(doc('Documents/qa-ok.png')), png);
 });
 
-test('print: renderer PNG pages go to the private native print path with point-converted sizes; no shared-storage prompt', async () => {
+test('print: native selects pages from a 120-page document and passes print settings to the PNG renderer', async () => {
   const png = await pngBytes();
-  await page.evaluate(async png => AndroidStudioHost.printPages({fileName: '보고서.hwp', intent: 'print', pages: [{png: new Uint8Array(png), width: 794, height: 1123}, {png: new Uint8Array(png), width: 1123, height: 794}]}), png);
-  const log = await control('/__log'), ops = log.ops.map(o => o.op);
-  assert.deepEqual(ops.filter(o => !['saveChunk', 'status'].includes(o)), ['beginPrintPdf', 'beginPdfPage', 'finishPdfPage', 'beginPdfPage', 'finishPdfPage', 'finishPdf']);
+  await control('/__grant?0');
+  const rendered = await page.evaluate(async png => {
+    const calls = [];
+    await AndroidStudioHost.printPages({fileName: '보고서.hwp', intent: 'print', pageCount: 120,
+      async renderPage(index, {widthPt, heightPt, dpi}) {
+        calls.push([index, widthPt, heightPt, dpi]);
+        return {png: new Uint8Array(png), width: 794, height: 1123};
+      }});
+    return calls;
+  }, png);
+  const log = await control('/__log');
+  assert.deepEqual(log.ops.map(o => o.op).filter(o => o !== 'printPageChunk'),
+    ['startPrint', 'printPageBegin', 'printPageEnd', 'printPageBegin', 'printPageEnd']);
+  assert.deepEqual(rendered, [[0, 595, 842, 300], [119, 595, 842, 300]]);
   assert.equal(await dialog().count(), 0);
-  assert.deepEqual(log.printed, [{name: '보고서.hwp', pages: [{width: 596, height: 842, bytes: png.length}, {width: 842, height: 596, bytes: png.length}]}]);
+  assert.deepEqual(log.printed, [{name: '보고서.hwp', pages: [0, 119].map(index => ({index, width: 794, height: 1123, bytes: png.length}))}]);
 });
 
 test('PDF: destination chosen in the host dialog; real PDF target; SVG fallback rasterises; limits and failures release the native session', async () => {
@@ -527,14 +538,17 @@ test('PDF: destination chosen in the host dialog; real PDF target; SVG fallback 
   assert.ok(fs.readFileSync(doc('Documents/qa-계약.pdf'), 'latin1').startsWith('%PDF'));
   assert.equal((await nativeLog()).find(o => o.op === 'beginPdf').args.count, 2);
   const pages = (await nativeLog()).filter(o => o.op === 'beginPdfPage'); assert.deepEqual(pages.map(p => [p.args.index, p.args.width, p.args.height]), [[0, 300, 375], [1, 150, 225]]);
-  // limits are enforced before any native call
   await control('/__logclear');
-  const limit = await page.evaluate(async png => { const out = []; for (const pages of [[], Array.from({length: 101}, () => ({png: new Uint8Array(png), width: 10, height: 10}))]) { try { await AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pages}); out.push('ok'); } catch (e) { out.push(e.message); } } return out; }, png);
-  assert.ok(limit.every(m => /100페이지/.test(m)), String(limit)); assert.deepEqual(await nativeLog(), []);
-  // a failure on page two aborts the PDF (native has one PDF slot) and a following print still works
+  const empty = await page.evaluate(() => AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'pdf', pages: []}).catch(e => e.message));
+  assert.match(empty, /쪽 수/); assert.deepEqual(await nativeLog(), []);
+  // A direct PDF failure releases the native PDF slot.
   await control('/__fail?op=finishPdfPage&message=' + encodeURIComponent('페이지 실패') + '&times=1');
-  const failed = await page.evaluate(async png => { try { await AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pages: [{png: new Uint8Array(png), width: 100, height: 100}, {png: new Uint8Array(png), width: 100, height: 100}]}); return 'ok'; } catch (e) { return e.message; } }, png);
-  assert.equal(failed, '페이지 실패'); assert.ok((await nativeLog()).some(o => o.op === 'abortPdf'));
+  const failed = page.evaluate(async png => AndroidStudioHost.printPages({fileName: 'qa-failed.hwp', intent: 'pdf',
+    pages: [{png: new Uint8Array(png), width: 100, height: 100}]}).catch(e => e.message), png);
+  await chooseDestination({name: 'qa-failed.pdf', folders: ['Documents']});
+  assert.equal(await failed, '페이지 실패');
+  assert.ok((await nativeLog()).some(o => o.op === 'abortPdf'));
+  assert.ok(!fs.existsSync(doc('Documents/qa-failed.pdf')));
   await page.evaluate(async png => AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pages: [{png: new Uint8Array(png), width: 100, height: 100}]}), png);
   assert.equal((await control('/__log')).printed.length, 1);
 });
