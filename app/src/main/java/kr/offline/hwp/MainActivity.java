@@ -459,6 +459,7 @@ public class MainActivity extends Activity {
     private long fontFolderRequest=-1;
     private long filePickerRequest=-1;
     private String filePickerKind="document";
+    private JSONArray filePickerFormats;
     private FontStore fonts;
     private volatile List<File> roots;
     private boolean started=false;
@@ -563,7 +564,15 @@ public class MainActivity extends Activity {
                 });return;}
                 if(op.equals("pickFile")){runOnUiThread(()->{
                     if(filePickerRequest!=-1){reply(id,null,"파일 선택을 마쳐 주세요.");return;}
-                    try{filePickerKind=args.optString("kind","document");if(!filePickerKind.equals("image"))filePickerKind="document";Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType(filePickerKind.equals("image")?"image/*":"*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|(filePickerKind.equals("image")?0:Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION));filePickerRequest=id;launchPicker(EditorSession.this,intent,303);}catch(Exception e){filePickerRequest=-1;reply(id,null,"파일 선택 화면을 열지 못했어요.");}
+                    try{
+                        boolean image=args.optString("kind").equals("image");
+                        filePickerKind=image?"image":"document";
+                        filePickerFormats=image?null:args.optJSONArray("formats");
+                        // Providers can supply generic or incorrect MIME types. Apply the document filter after reading the signature.
+                        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType(image?"image/*":"*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|(image?0:Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION));
+                        filePickerRequest=id;launchPicker(EditorSession.this,intent,303);
+                    }catch(Exception e){filePickerRequest=-1;filePickerFormats=null;reply(id,null,"파일 선택 화면을 열지 못했어요.");}
                 });return;}
                 if(op.equals("permission")){runOnUiThread(()->{try{Intent intent=new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,Uri.parse("package:"+getPackageName()));startActivity(intent);reply(id,true,null);}catch(Exception e){reply(id,null,"설정에서 hwpxxx의 모든 파일 접근을 허용해 주세요.");}});return;}
                 io.execute(()->{try {if(destroyed)return;if(!UNGATED.contains(op)&&!Environment.isExternalStorageManager())throw new IOException("문서에 접근하려면 파일 접근을 허용해 주세요.");reply(id,operation(op,args),null);}catch(OutOfMemoryError e){sessions.clear(EditorSession.this::releaseNewSource);if(op.equals("beginSave"))releaseNewId(args.optString("id",null));reply(id,null,"메모리가 부족해 작업을 마치지 못했어요. 원본은 변경하지 않았어요.");}catch(Throwable e){if(op.equals("beginSave"))releaseNewId(args.optString("id",null));reply(id,null,e.getMessage()==null?"작업을 완료하지 못했어요.":e.getMessage());}});
@@ -653,7 +662,11 @@ public class MainActivity extends Activity {
                 SelectedFile selected=selectedFiles.get(id);
                 if(selected!=null){data=readProviderBytes(selected.uri,FileStore.MAX_BYTES);meta=selectedRecord(id,selected);format=selected.format;}
                 else if(linked!=null){data=termux.read(linked);meta=termux.record(linked);format=linked.format;}else{File f=document(id);data=store.read(f.getPath());meta=record(f);format=documentFormat(f);}
-                if(format.equals("image"))validateImage(data);else validateDocument(data,format);
+                if(format.equals("image"))validateImage(data);
+                else {
+                    ExportStore.validateDocumentForRead(data,format);
+                    if(format.equals("pdf")||(format.equals("hwp")&&FileStore.hasHwp3Header(data)))meta.put("readOnly",true);
+                }
                 purgeBlobs();if(blobs.size()>=2)throw new IOException("다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.");String token=UUID.randomUUID().toString();putBlob(token,data);return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",meta);
             }
             case "release":{String token=a.getString("token");blobs.remove(token);blobTimes.remove(token);return true;}
@@ -804,7 +817,7 @@ public class MainActivity extends Activity {
         // Grant and catalog changes are one transaction across all sessions and Activity instances.
         synchronized(state()){
         String fileName=clip(a.optString("fileName"),240),format=a.optString("sourceFormat","hwp"),sourceId=a.optString("sourceId","");
-        if(fileName.isEmpty()||!format.matches("hwp|hwpx|hml"))throw new IOException("최근 문서 정보가 올바르지 않아요.");FileStore.name(fileName);
+        if(fileName.isEmpty()||!format.matches("hwp|hwpx|hml|pdf"))throw new IOException("최근 문서 정보가 올바르지 않아요.");FileStore.name(fileName);
         JSONObject meta=obj("fileName",fileName,"sourceFormat",format,"openedAt",System.currentTimeMillis(),"reopenable",false);String key="name:"+format+":"+fileName;
         File file=documents.get(sourceId);SelectedFile selected=selectedFiles.get(sourceId);
         if(file!=null){meta.put("kind","path");meta.put("path",file.getPath());meta.put("reopenable",true);key="path:"+file.getPath();}
@@ -843,7 +856,7 @@ public class MainActivity extends Activity {
             Uri uri=Uri.parse(meta.getString("uri"));boolean granted=false;
             for(UriPermission permission:getContentResolver().getPersistedUriPermissions())if(permission.getUri().equals(uri)&&permission.isReadPermission())granted=true;
             if(!granted)throw new IOException(HostState.coded("NotAllowed","이 파일의 접근 권한이 없어졌어요. 다시 선택해 주세요."));
-            try{return registerSelection(uri,"document");}
+            try{return registerSelection(uri,"document",null);}
             catch(FileNotFoundException gone){throw new IOException(HostState.coded("NotFound","문서를 찾을 수 없어요."));}
             catch(SecurityException denied){throw new IOException(HostState.coded("NotAllowed","이 파일의 접근 권한이 없어졌어요. 다시 선택해 주세요."));}
         }
@@ -890,7 +903,7 @@ public class MainActivity extends Activity {
             File[] files=d.listFiles();if(files==null){skipped++;continue;}
             for(File f:files) {
                 if(stop.get())break;if(f.getName().startsWith("."))continue;
-                boolean dir=f.isDirectory();if(!dir&&!documentFormat(f).matches("hwp|hwpx|hml"))continue;
+                boolean dir=f.isDirectory();if(!dir&&documentFormat(f).isEmpty())continue;
                 try{f=store.resolve(f.getPath());}catch(IOException e){continue;}
                 if(f.isDirectory()){int baseDepth=roots.get(0).toPath().getNameCount();if(f.toPath().getNameCount()-baseDepth<64)dirs.addLast(f);}
                 else if(!dir){
@@ -908,21 +921,32 @@ public class MainActivity extends Activity {
     private byte[] readProviderBytes(Uri uri,int maximum)throws Exception {
         return ProviderRead.read(resources->{InputStream input=resources.own(getContentResolver().openInputStream(uri));if(input==null)throw new IOException("파일을 읽지 못했어요.");return FileStore.bounded(input,maximum);});
     }
-    /** A user-chosen or Intent-delivered content URI becomes an opaque read-only handle, only after the bounded read succeeds. */
-    private JSONObject registerSelection(Uri uri,String kind)throws Exception {
+    /** Validate the provider's bytes before publishing a source handle or matching it to a shared-storage file. */
+    private JSONObject registerSelection(Uri uri,String kind,JSONArray formats)throws Exception {
         SelectedFile file=ProviderRead.read(resources->{
             SelectedFile result=new SelectedFile();result.uri=uri;result.name="";result.mime=getContentResolver().getType(uri);
             CancellationSignal cancellation=new CancellationSignal();resources.own(()->cancellation.cancel());
             android.database.Cursor cursor=resources.own(getContentResolver().query(uri,new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE},null,null,null,cancellation));
-            if(cursor!=null&&cursor.moveToFirst()){result.name=cursor.getString(0);result.size=cursor.isNull(1)?0:cursor.getLong(1);}
+            if(cursor!=null&&cursor.moveToFirst()){
+                int displayName=cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if(displayName>=0)result.name=cursor.getString(displayName);
+            }
             InputStream input=resources.own(getContentResolver().openInputStream(uri));if(input==null)throw new IOException("파일을 읽지 못했어요.");byte[] bytes=FileStore.bounded(input,FileStore.MAX_BYTES);
             if(kind.equals("image"))result.format="image";
             else{
-                result.format=HostIntents.documentFormat(result.name,result.mime,Arrays.copyOf(bytes,Math.min(bytes.length,64)));
-                if(result.format==null)throw new IOException("HWP·HWPX·HML 문서를 선택해 주세요.");
+                result.format=HostIntents.documentFormat(result.name,result.mime,bytes);
+                if(result.format==null)throw new IOException("HWP·HWPX·HML·PDF 문서를 선택해 주세요.");
+                if(formats!=null){
+                    boolean accepted=false;
+                    for(int i=0;i<formats.length();i++)if(result.format.equals(formats.optString(i))){accepted=true;break;}
+                    if(!accepted)throw new IOException("이 열기 화면에서 지원하는 문서 형식을 선택해 주세요.");
+                }
                 result.name=HostIntents.nameWithExtension(result.name,result.format);
+                if(result.format.equals("pdf"))result.mime="application/pdf";
             }
-            FileStore.name(result.name);if(kind.equals("image"))validateImage(bytes);else validateDocument(bytes,result.format);result.size=bytes.length;
+            FileStore.name(result.name);
+            if(kind.equals("image"))validateImage(bytes);else ExportStore.validateDocumentForRead(bytes,result.format);
+            result.size=bytes.length;
             if(!kind.equals("image")){
                 // Where this document may live in shared storage. Guesses only; storageOriginal() below decides.
                 result.sha=FileStore.sha(bytes);String documentId=null,data=null;
@@ -1005,16 +1029,16 @@ public class MainActivity extends Activity {
         if(!HostIntents.acceptableIncomingScheme(document.getScheme())){event("hostError",JSONObject.quote("이 방식으로 전달된 파일은 열 수 없어요. 파일 앱의 공유 또는 '연결 프로그램'을 사용해 주세요."));return;}
         try{io.execute(()->{try{
             if(destroyed)return;
-            JSONObject meta=registerSelection(document,"document");
+            JSONObject meta=registerSelection(document,"document",null);
             synchronized(pendingOpens){pendingOpens.add(meta);while(pendingOpens.size()>4)pendingOpens.remove(0);}
             event("openRequest",Boolean.TRUE);
         }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);event("hostError",JSONObject.quote("메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요."));}catch(Exception error){event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 파일을 열지 못했어요.":error.getMessage()));}});}catch(RejectedExecutionException closing){}
     }
     private void pickerResult(int request,int result,Intent data){
         if(!isLive(this))return;
-        if(request==303){final long id=filePickerRequest;final String kind=filePickerKind;filePickerRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri uri=data.getData();try{io.execute(()->{try{
+        if(request==303){final long id=filePickerRequest;final String kind=filePickerKind;final JSONArray formats=filePickerFormats;filePickerRequest=-1;filePickerFormats=null;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri uri=data.getData();try{io.execute(()->{try{
             if(destroyed)return;
-            reply(id,registerSelection(uri,kind),null);
+            reply(id,registerSelection(uri,kind,formats),null);
         }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);reply(id,null,"메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요.");}catch(Exception error){reply(id,null,error.getMessage()==null?"선택한 파일을 읽지 못했어요.":error.getMessage());}});}catch(RejectedExecutionException closing){reply(id,null,"앱을 닫는 중이에요.");}return;}
         if(request==304){final long id=fontFolderRequest;fontFolderRequest=-1;if(id<0)return;if(result!=RESULT_OK||data==null||data.getData()==null){reply(id,null,null);return;}final Uri tree=data.getData();try{io.execute(()->{try{
             if(destroyed)return;

@@ -36,6 +36,9 @@ public class TermuxWalkerTest {
     }
     static List<String> walk(TermuxWalker w,Fake f)throws Exception{List<String> found=new ArrayList<>();w.walk("root","Termux · home",f,(e,folder,format)->found.add(folder+"/"+e.name));return found;}
     public static void main(String[] args)throws Exception {
+        Fake imports=new Fake();
+        imports.tree.put("root",Arrays.asList(file("root/pdf","보고서.PDF"),file("root/other","그림.png")));
+        yes(walk(new TermuxWalker(10,new AtomicBoolean()),imports).equals(Collections.singletonList("Termux · home/보고서.PDF")),"PDF from a linked folder");
         // Nested folders, mixed case extensions, non-documents, .git excluded.
         Fake f=new Fake();
         f.tree.put("root",Arrays.asList(file("r1","루트.hwp"),file("r2","readme.md"),dir("d1","프로젝트"),dir("g",".git"),dir("d2","빈 폴더")));

@@ -14,6 +14,9 @@ import org.xml.sax.helpers.DefaultHandler;
 public final class FileStore {
     public static final int MAX_BYTES = 32 * 1024 * 1024;
     public static final long MAX_EXPANDED = 128L * 1024 * 1024;
+    private static final byte[] HWP3_HEADER = "HWP Document File V3.00".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] HWP5_HEADER = {(byte)0xd0,(byte)0xcf,0x11,(byte)0xe0,(byte)0xa1,(byte)0xb1,0x1a,(byte)0xe1};
+    private static final byte[] PDF_HEADER = "%PDF-".getBytes(StandardCharsets.US_ASCII);
     private volatile List<File> roots;
     public FileStore(List<File> roots) throws IOException {
         refreshRoots(roots);
@@ -64,15 +67,26 @@ public final class FileStore {
         try { byte[] h=MessageDigest.getInstance("SHA-256").digest(b); StringBuilder s=new StringBuilder(); for(byte v:h)s.append(String.format("%02x",v&255));return s.toString(); }
         catch (NoSuchAlgorithmException e) { throw new IOException(e); }
     }
-    public static void validate(byte[] bytes, String format) throws IOException {
+    private static boolean startsWith(byte[] bytes,byte[] header){
+        if(bytes.length<header.length)return false;
+        for(int i=0;i<header.length;i++)if(bytes[i]!=header[i])return false;
+        return true;
+    }
+    static boolean hasHwp3Header(byte[] bytes){return startsWith(bytes,HWP3_HEADER);}
+    static boolean hasHwp5Header(byte[] bytes){return startsWith(bytes,HWP5_HEADER);}
+    static boolean hasPdfHeader(byte[] bytes){return startsWith(bytes,PDF_HEADER);}
+
+    static void validateForRead(byte[] bytes,String format)throws IOException {validate(bytes,format,true);}
+    public static void validate(byte[] bytes,String format)throws IOException {validate(bytes,format,false);}
+    private static void validate(byte[] bytes,String format,boolean reading)throws IOException {
         if (bytes.length < 8 || bytes.length > MAX_BYTES) throw new IOException("문서의 크기 또는 형식이 올바르지 않아요.");
         if (format.equals("pdf")) {
-            if (!new String(bytes,0,5,StandardCharsets.US_ASCII).equals("%PDF-")) throw new IOException("PDF 생성 결과를 확인하지 못했어요.");
+            if (!hasPdfHeader(bytes)) throw new IOException(reading?"PDF 파일의 헤더를 확인하지 못했어요.":"PDF 생성 결과를 확인하지 못했어요.");
             return;
         }
         if (format.equals("hwp")) {
-            byte[] magic={(byte)0xd0,(byte)0xcf,0x11,(byte)0xe0,(byte)0xa1,(byte)0xb1,0x1a,(byte)0xe1};
-            for(int i=0;i<8;i++)if(bytes[i]!=magic[i])throw new IOException("HWP 5 형식이 아니거나 암호화된 문서예요.");
+            if(reading&&hasHwp3Header(bytes))return;
+            if(!hasHwp5Header(bytes))throw new IOException(reading?"HWP 3.0 또는 HWP 5 형식을 확인하지 못했어요.":"HWP 5 형식이 아니거나 암호화된 문서예요.");
             if(bytes.length<512)throw new IOException("잘린 HWP 파일이에요.");
             return;
         }
@@ -196,7 +210,10 @@ public final class FileStore {
             byte[] check;try(InputStream in=new FileInputStream(temp)){check=bounded(in,MAX_BYTES);}
             if(!sha(bytes).equals(sha(check)))throw new IOException("저장 결과가 일치하지 않아요.");
             if(replace) {
-                if(!dest.isFile()||expectedSha==null||!sha(read(dest.getPath())).equals(expectedSha))throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");
+                if(!dest.isFile()||expectedSha==null)throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");
+                byte[] original=read(dest.getPath());
+                if(!sha(original).equals(expectedSha))throw new IOException("다른 앱에서 문서가 바뀌었어요. 다른 이름으로 저장해 주세요.");
+                if(hasHwp3Header(original)||hasPdfHeader(original))throw new IOException("읽기 전용 원본이에요. 다른 이름으로 저장해 주세요.");
                 // No delete-before-write and no unsafe fallback when atomic replacement is unavailable.
                 try { Files.move(temp.toPath(),dest.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING); }
                 catch(AtomicMoveNotSupportedException e){throw new IOException("이 저장공간은 안전한 덮어쓰기를 지원하지 않아요. 다른 이름으로 저장해 주세요.",e);}

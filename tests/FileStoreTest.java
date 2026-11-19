@@ -15,6 +15,20 @@ public class FileStoreTest {
         Path root=Files.createTempDirectory("hwp-file-tests-");FileStore store=new FileStore(Arrays.asList(root.toFile()));byte[] hwp=Files.readAllBytes(Paths.get(args[0])),hwpx=Files.readAllBytes(Paths.get(args[1]));
         try{
             FileStore.validate(hwp,"hwp");FileStore.validate(hwpx,"hwpx");checks+=2;
+            FileStore.validateForRead(hwp,"hwp");FileStore.validateForRead(hwpx,"hwpx");checks+=2;
+            byte[] hwp3="HWP Document File V3.00".getBytes(StandardCharsets.US_ASCII);
+            byte[] pdf="%PDF-1.7\n".getBytes(StandardCharsets.US_ASCII);
+            FileStore.validateForRead(hwp3,"hwp");FileStore.validateForRead(pdf,"pdf");checks+=2;
+            rejected(()->FileStore.validateForRead(Arrays.copyOf(hwp3,hwp3.length-1),"hwp"));
+            rejected(()->FileStore.validateForRead("text %PDF-1.7".getBytes(StandardCharsets.US_ASCII),"pdf"));
+            rejected(()->FileStore.validate(hwp3,"hwp"));
+            Path hwp3Source=Files.write(root.resolve("구형.hwp"),hwp3);
+            Path pdfSource=Files.write(root.resolve("가져오기.pdf"),pdf);
+            rejected(()->store.write(hwp3Source.toString(),hwp,FileStore.sha(hwp3),true));
+            rejected(()->store.write(pdfSource.toString(),pdf,FileStore.sha(pdf),true));
+            yes(Arrays.equals(hwp3,Files.readAllBytes(hwp3Source))&&Arrays.equals(pdf,Files.readAllBytes(pdfSource)));
+            yes(store.write(root.resolve("구형 (2).hwp").toString(),hwp,null,false).isFile());
+            yes(store.write(root.resolve("가져오기.hwpx").toString(),hwpx,null,false).isFile());
             FileStore.validate(xmlZip("\ufeff<?xml version=\"1.0\" encoding=\"UTF-8\"?><r>한글</r>"),"hwpx");checks++;
             rejected(()->FileStore.bounded(new ByteArrayInputStream(new byte[20]),16));
             rejected(()->FileStore.validate(xmlZip("<!DOCTYPE r [<!ENTITY ext SYSTEM 'file:///etc/passwd'>]><r>&ext;</r>"),"hwpx"));

@@ -21,6 +21,10 @@ final class ExportStore {
         if(!format.equals("hml")){FileStore.validate(bytes,format);return;}
         xml(bytes,"HWPML");
     }
+    static void validateDocumentForRead(byte[] bytes,String format)throws IOException {
+        if(format.equals("hml"))validateDocument(bytes,format);
+        else FileStore.validateForRead(bytes,format);
+    }
     static void validateExport(byte[] bytes,String name)throws IOException {
         bounded(bytes);String format=extension(name);
         switch(format){

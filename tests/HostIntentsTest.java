@@ -9,10 +9,17 @@ public class HostIntentsTest {
         for(String scheme:new String[]{"file","http","https","intent","javascript",null,""})yes(!HostIntents.acceptableIncomingScheme(scheme),"scheme refused "+scheme);
         yes(HostIntents.acceptableIncomingAction("android.intent.action.VIEW")&&HostIntents.acceptableIncomingAction("android.intent.action.EDIT")&&HostIntents.acceptableIncomingAction("android.intent.action.SEND"),"actions");
         for(String action:new String[]{"android.intent.action.MAIN","android.intent.action.SEND_MULTIPLE","android.intent.action.DELETE",null})yes(!HostIntents.acceptableIncomingAction(action),"action refused "+action);
-        // format recognition: extension first, then MIME, then magic bytes
+        // Recognized extensions take priority. PDF/HWP3 signatures identify files with missing or inaccurate metadata.
         yes("hwp".equals(HostIntents.documentFormat("보고서.HWP",null,null)),"ext hwp");
         yes("hwpx".equals(HostIntents.documentFormat("a.hwpx","application/octet-stream",null)),"ext hwpx");
         yes("hml".equals(HostIntents.documentFormat("a.hml",null,null)),"ext hml");
+        yes("pdf".equals(HostIntents.documentFormat("a.PDF",null,null)),"ext pdf");
+        yes("pdf".equals(HostIntents.documentFormat(null,"application/pdf",null)),"mime pdf");
+        byte[] pdf="%PDF-1.7".getBytes("US-ASCII"),hwp3="HWP Document File V3.00".getBytes("US-ASCII");
+        yes("pdf".equals(HostIntents.documentFormat(null,"application/octet-stream",pdf)),"nameless pdf magic");
+        yes("hwp".equals(HostIntents.documentFormat(null,null,hwp3)),"nameless hwp3 magic");
+        yes("hwp".equals(HostIntents.documentFormat("download","text/html",hwp3)),"hwp3 magic with generic provider name");
+        yes("문서.pdf".equals(HostIntents.nameWithExtension(null,"pdf")),"nameless pdf gets a PDF extension");
         yes("hwpx".equals(HostIntents.documentFormat("download","application/vnd.hancom.hwpx",null)),"mime hwpx");
         yes("hwp".equals(HostIntents.documentFormat("1234","application/x-hwp",null)),"mime hwp");
         yes("hwp".equals(HostIntents.documentFormat("1234","application/haansofthwp",null)),"mime haansoft");
