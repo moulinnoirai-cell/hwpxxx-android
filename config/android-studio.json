@@ -32,7 +32,8 @@
     "0107-android-find-all.patch": "a2c841d25a954f60b44a6ebfb037baa87ffb8d53e3b65f3f4234dddd060771eb",
     "0108-android-editor-input-batch.patch": "c3a2d75024f9145fcd12cdf531245e2d8aae6fc63191439730bcad26cbae8d3a",
     "0109-android-touch-editing.patch": "ded044861fa2c45705a7991ff1d2daf54bfe180b38c1138ea217e8efe21759a1",
-    "0110-android-external-pdf-open.patch": "e52b44d3588f37285c8649d08405cf44d893d2aa6a4e72b0abe1566da06000b1"
+    "0110-android-external-pdf-open.patch": "e52b44d3588f37285c8649d08405cf44d893d2aa6a4e72b0abe1566da06000b1",
+    "0111-android-print-host-font.patch": "a71f2d86699afba4981fbb4bdb8bb8978de9d700d98d53f58028623600ee53f4"
   },
   "base": "/studio/",
   "output": "app/src/main/assets/studio",

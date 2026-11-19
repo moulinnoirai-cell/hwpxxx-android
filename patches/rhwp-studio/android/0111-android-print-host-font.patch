@@ -1,0 +1,17 @@
+diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
+index a51b529..c82c9bf 100644
+--- a/rhwp-studio/src/core/wasm-bridge.ts
++++ b/rhwp-studio/src/core/wasm-bridge.ts
+@@ -1387,7 +1387,11 @@ export class WasmBridge {
+     };
+     if (typeof d.renderPageToCanvasFilteredWithProfile === 'function') {
+       if (profile === 'print') {
+-        this.withPortableMetrics(() => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
++        // [hwpxxx-android] 인쇄 쪽도 화면과 같은 호스트(가져온) 글꼴 윤곽을 써야 한다. v0.9.1 부터 윤곽은 쪽을 그리는 동안만
++        // `withPageOutlines` 로 빌려 오므로, 포터블 지표로 그리더라도 이 범위 안에서 그려야 글꼴이 대체되지 않는다.
++        const paint = () => this.withPortableMetrics(() => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
++        if (!hostFontLayoutEnabled() || !getHostFontState().count) paint();
++        else this.hostCanvasFonts.withPageOutlines(collectHostFontRequests(this.getPageLayerTreeObject(pageNum)), this.doc, paint);
+         return;
+       }
+       this.withHostPageFonts(pageNum, () => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
