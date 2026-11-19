@@ -344,7 +344,8 @@ public class WorkspaceIsolationTest {
         String removeConfirmed=method(t,"private void removeConfirmed(");
         yes(removeConfirmed.contains("finishCloseLayout()")&&method(t,"private void finishCloseLayout()").contains("if(workspace.isEmpty()){persistWorkspace();finish();return;}"),"Activity finishes only when the MODEL is empty (lazy tabs keep it alive)");
         // Every finish() call site is one of the audited ones.
-        for(int at=t.indexOf("finish()");at>=0;at=t.indexOf("finish()",at+1)){String ctx=t.substring(Math.max(0,at-110),at);
+        for(int at=t.indexOf("finish()");at>=0;at=t.indexOf("finish()",at+1)){if(at>0&&t.charAt(at-1)=='.')continue; // obj.finish() (e.g. PdfDocument.Page) is not Activity.finish()
+            String ctx=t.substring(Math.max(0,at-110),at);
             yes(ctx.contains("setPositiveButton(\"닫기\"")||ctx.contains("legacyTests")||ctx.contains("workspace.isEmpty()")||ctx.contains("migrationPending"),"unaudited finish() at offset "+at);}
         int exitAt=t.indexOf("if(op.equals(\"exit\"))");String exit=t.substring(exitAt,t.indexOf("\n",exitAt));
         yes(exit.contains("requestClose(tabId,EditorSession.this)")&&!exit.contains("removeConfirmed(")&&!exit.contains("dispose("),"exit only asks for a guarded close of its originating session; never removes directly");
