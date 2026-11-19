@@ -12,17 +12,22 @@ final class HostIntents {
 
     /**
      * Which document format an incoming file is. Names without a usable extension (some providers send "download" or an id) are
-     * recognised from the MIME type, then from the first bytes; the bytes are validated again by the normal document validator.
+     * recognised by distinctive PDF/HWP3 headers, then by MIME type or other signatures. The document validator checks the bytes.
      */
     static String documentFormat(String displayName,String mime,byte[] head){
         String ext=extension(displayName);
-        if(ext.equals("hwp")||ext.equals("hwpx")||ext.equals("hml"))return ext;
+        if(ext.equals("hwp")||ext.equals("hwpx")||ext.equals("hml")||ext.equals("pdf"))return ext;
+        if(head!=null){
+            if(FileStore.hasPdfHeader(head))return "pdf";
+            if(FileStore.hasHwp3Header(head))return "hwp";
+        }
         String type=mime==null?"":mime.toLowerCase(Locale.ROOT);
+        if(type.equals("application/pdf"))return "pdf";
         if(type.contains("hwpx"))return "hwpx";
         if(type.contains("hml"))return "hml";
         if(type.contains("hwp")||type.contains("haansoft"))return "hwp";
         if(head!=null){
-            if(head.length>=8&&(head[0]&0xff)==0xd0&&(head[1]&0xff)==0xcf&&(head[2]&0xff)==0x11&&(head[3]&0xff)==0xe0&&(head[4]&0xff)==0xa1&&(head[5]&0xff)==0xb1&&(head[6]&0xff)==0x1a&&(head[7]&0xff)==0xe1)return "hwp";
+            if(FileStore.hasHwp5Header(head))return "hwp";
             if(head.length>=4&&head[0]=='P'&&head[1]=='K'&&head[2]==3&&head[3]==4)return "hwpx";
             String start=new String(head,0,Math.min(head.length,64),StandardCharsets.UTF_8).replace("\uFEFF","").trim();
             if(start.startsWith("<"))return "hml";

@@ -75,12 +75,13 @@
     if (name === 'openRequest') void drainOpenRequests();
     if (name === 'hostError') void showError(new Error(String(data)));
   };
-  async function upload(token, bytes) {
+  async function upload(token, bytes, op = 'saveChunk', signal) {
     for (let offset = 0, seq = 0; offset < bytes.length; offset += 196608, seq++) {
+      if (signal?.aborted) throw abort();
       const part = bytes.subarray(offset, offset + 196608);
       let binary = '';
       for (let index = 0; index < part.length; index += 8192) binary += String.fromCharCode(...part.subarray(index, index + 8192));
-      await request('saveChunk', {token, seq, base64: btoa(binary)});
+      await request(op, {token, seq, base64: btoa(binary)});
     }
   }
   async function readRecord(meta) {
@@ -141,7 +142,19 @@
   const OPEN_PAGE = 200;
   const sizeText = bytes => bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + 'MB' : bytes >= 1024 ? Math.round(bytes / 1024) + 'KB' : bytes > 0 ? bytes + 'B' : '';
   const dateText = time => { try { return time > 0 ? new Date(time).toLocaleDateString('ko-KR', {year: 'numeric', month: '2-digit', day: '2-digit'}) : ''; } catch { return ''; } };
-  async function pickOpen() {
+  const OPEN_MIME_FORMATS = {
+    'application/x-hwp': 'hwp', 'application/haansofthwp': 'hwp', 'application/vnd.hancom.hwp': 'hwp', 'application/hwp': 'hwp',
+    'application/vnd.hancom.hwpx': 'hwpx', 'application/x-hwpx': 'hwpx', 'application/hwp+zip': 'hwpx',
+    'application/vnd.hancom.hml': 'hml', 'application/x-hml': 'hml', 'application/xml': 'hml', 'text/xml': 'hml',
+    'application/pdf': 'pdf',
+  };
+  function openFormats(accept) {
+    const specifiers = accept.map(value => value.trim().toLowerCase()).filter(Boolean);
+    if (!specifiers.length) return null;
+    const formats = specifiers.map(value => value.startsWith('.') ? value.slice(1) : OPEN_MIME_FORMATS[value]);
+    return [...new Set(formats.filter(format => ['hwp', 'hwpx', 'hml', 'pdf'].includes(format)))];
+  }
+  async function pickOpen(formats) {
     const ui = openDialog('문서 열기'), search = element('input', null, {type: 'search', placeholder: '문서 이름 검색'});
     search.setAttribute('aria-label', '문서 이름 검색');
     const tools = element('div', null, {className: 'android-host-tools'}), status = element('p', '문서를 찾고 있어요…');
@@ -164,7 +177,10 @@
       else if (!found.length && !scanning) list.append(element('p', search.value.trim() ? '이름에 검색어가 들어간 문서가 없어요.' : permission ? '문서를 찾지 못했어요. ‘파일 선택’으로 직접 고를 수 있어요.' : '아직 보여 줄 문서가 없어요.'));
     }
     const schedule = () => { if (!timer) timer = setTimeout(render, 60); };
-    const offBatch = subscribe('scanBatch', items => { for (const item of items) docs.set(item.id, item); schedule(); });
+    const offBatch = subscribe('scanBatch', items => {
+      for (const item of items) if (!formats || formats.includes(item.format || extension(item.name))) docs.set(item.id, item);
+      schedule();
+    });
     const offProgress = subscribe('scanProgress', progress => { if (scanning && progress) status.textContent = `문서를 찾고 있어요… 폴더 ${progress.folders}개 확인 · 문서 ${docs.size}개`; });
     const allow = button('파일 접근 허용', () => request('permission')), refresh = button('새로고침', () => scan()), stop = button('검색 중지', () => request('cancelScan'));
     function controls() { allow.hidden = permission; notice.hidden = permission; refresh.disabled = scanning; stop.hidden = !scanning; }
@@ -182,7 +198,7 @@
       } catch (error) { status.textContent = '문서를 끝까지 찾지 못했어요. ‘새로고침’으로 다시 시도해 주세요.'; throw error; }
       finally { scanning = false; controls(); render(); }
     }
-    tools.append(button('파일 선택', async () => { const picked = await request('pickFile', {kind: 'document'}); if (picked) ui.finish(makeHandle({meta: picked})); }), button('폴더 연결', async () => { if (await request('connectFolder')) await scan(); }), allow, refresh, stop);
+    tools.append(button('파일 선택', async () => { const picked = await request('pickFile', {kind: 'document', formats}); if (picked) ui.finish(makeHandle({meta: picked})); }), button('폴더 연결', async () => { if (await request('connectFolder')) await scan(); }), allow, refresh, stop);
     ui.body.append(search, tools, notice, status, list);
     search.addEventListener('input', () => { shown = OPEN_PAGE; render(); });
     // A keyboard user (DeX) types a name and presses Enter to open the first match.
@@ -311,20 +327,25 @@
     const state = readyStudio?.android?.getState();
     return state?.fileHandle ? handles.get(state.fileHandle) : null;
   }
+  const isImportSource = meta => meta?.format === 'pdf' || meta?.readOnly === true;
   function makeHandle(info) {
     const record = {meta: info.meta || null, target: info.target || info.meta?.path || null, name: String(info.name || info.meta?.name || '문서.hwp'), sha: info.sha || null, source: info.source || null, overwrite: info.overwrite === true};
     // "Replacing" the very document that is open is an ordinary save of it (its own baseline hash), not an overwrite of another file.
     const own = record.source?.meta;
-    if (record.overwrite && own && !own.external && !own.draft && own.path === record.target) { record.meta = own; record.sha = record.source.sha || null; record.overwrite = false; }
+    if (record.overwrite && own && !own.external && !own.draft && !isImportSource(own) && own.path === record.target) { record.meta = own; record.sha = record.source.sha || null; record.overwrite = false; }
     let writing = false;
     const handle = {
       kind: 'file', get name() { return record.name; },
       async getFile() {
         if (!record.meta) throw denied('아직 저장하지 않은 문서예요.');
         const result = await readRecord(record.meta); record.meta = result.meta; record.sha = result.sha;
-        return new File([result.bytes], record.name, {lastModified: result.meta.modified || Date.now()});
+        return new File([result.bytes], record.name, {
+          type: result.meta.format === 'pdf' ? 'application/pdf' : '',
+          lastModified: result.meta.modified || Date.now(),
+        });
       },
       async createWritable() {
+        if (record.meta?.format === 'pdf') throw denied('PDF 원본은 읽기 전용이에요. HWP 또는 HWPX로 저장해 주세요.');
         if (writing) throw denied('이 문서를 저장하고 있어요.');
         writing = true;
         let chunks = [], size = 0, closed = false;
@@ -340,9 +361,10 @@
             if (closed) throw denied('저장 세션이 끝났어요.');
             closed = true; let token;
             try {
-              // SAF/Termux/recovery handles are read-only. Their first Save creates a copy.
-              if (!record.target || record.meta?.external || record.meta?.draft) {
-                const picked = await pickDestination(record.name, ['.' + extension(record.name)], sourceFolder(record.source || record), {allowOverwrite: true});
+              // SAF/Termux/recovery handles and HWP 3.0 originals create a copy on the first Save.
+              const copy = isImportSource(record.meta);
+              if (!record.target || record.meta?.external || record.meta?.draft || copy) {
+                const picked = await pickDestination(record.name, ['.' + extension(record.name)], sourceFolder(record.source || record), {allowOverwrite: !copy});
                 record.target = picked.target; record.name = picked.name; record.overwrite = picked.overwrite === true;
               }
               const bytes = new Uint8Array(size); let offset = 0;
@@ -355,7 +377,7 @@
               const source = record.source || record;
               let id = source.meta?.id;
               if (!id) id = (await request('newDocument', {format: extension(record.name)})).id;
-              const replace = !!(record.meta && !record.meta.external && !record.meta.draft && record.target === record.meta.path);
+              const replace = !!(record.meta && !record.meta.external && !record.meta.draft && !copy && record.target === record.meta.path);
               if (replace && !record.sha) throw new Error('원본 확인 정보가 없어요. 문서를 다시 열어 주세요.');
               token = await request('beginSave', {id, target: record.target, replace, overwrite: !replace && record.overwrite, sha: replace ? record.sha : '', backup: replace, length: bytes.length, format: extension(record.name), studio: true});
               await upload(token, bytes);
@@ -384,17 +406,20 @@
   // The document picker's outcome is observable by the workspace so a new "open" tab whose picker was cancelled can say so natively.
   const pickerWatchers = new Set();
   const pickerOutcome = outcome => { for (const watcher of [...pickerWatchers]) { pickerWatchers.delete(watcher); try { watcher(outcome); } catch { /* observer failure must not affect opening */ } } };
-  installWindowApi('showOpenFilePicker', async () => {
-    try { const handle = await pickOpen(); pickerOutcome('picked'); return [handle]; }
-    catch (error) { pickerOutcome(error?.name === 'AbortError' ? 'cancelled' : 'failed'); throw error; }
+  installWindowApi('showOpenFilePicker', async (options = {}) => {
+    try {
+      const accept = (options.types || []).flatMap(type => Object.entries(type.accept || {}).flatMap(([mime, extensions]) => [mime, ...extensions]));
+      const handle = await pickOpen(openFormats(accept)); pickerOutcome('picked'); return [handle];
+    } catch (error) { pickerOutcome(error?.name === 'AbortError' ? 'cancelled' : 'failed'); throw error; }
   });
   installWindowApi('showSaveFilePicker', async (options = {}) => {
     const types = (options.types || []).flatMap(type => Object.values(type.accept || {}).flat());
     // Documents (HWP/HWPX/HML) may replace an existing file after confirmation; the editor passes the formats it can convert to.
     const documentSave = types.length > 0 && types.every(type => ['.hwp', '.hwpx', '.hml'].includes(type));
-    const picked = await pickDestination(options.suggestedName, types.length ? types : null, sourceFolder(),
-      {allowOverwrite: documentSave, formats: documentSave ? options.hwpxxxFormats : null});
-    return makeHandle({...picked, source: activeSource()});
+    const source = activeSource();
+    const picked = await pickDestination(options.suggestedName, types.length ? types : null, sourceFolder(source),
+      {allowOverwrite: documentSave && !isImportSource(source?.meta), formats: documentSave ? options.hwpxxxFormats : null});
+    return makeHandle({...picked, source});
   });
   // Menu clipboard actions use Android's foreground clipboard. Keyboard paste/copy
   // events continue through WebView and Studio's own rich/internal clipboard code.
@@ -447,10 +472,14 @@
   HTMLInputElement.prototype.click = function() {
     if (this.type !== 'file') return inputClick.call(this);
     const input = this;
-    request('pickFile', {kind: /image\//i.test(input.accept) ? 'image' : 'document'}).then(async meta => {
+    const args = /image\//i.test(input.accept) ? {kind: 'image'} : {kind: 'document', formats: openFormats(input.accept.split(','))};
+    request('pickFile', args).then(async meta => {
       if (!meta) { input.dispatchEvent(new Event('cancel')); return; }
       const result = await readRecord(meta), transfer = new DataTransfer();
-      transfer.items.add(new File([result.bytes], meta.name, {type: meta.mime || '', lastModified: meta.modified || Date.now()}));
+      transfer.items.add(new File([result.bytes], result.meta.name, {
+        type: result.meta.format === 'pdf' ? 'application/pdf' : result.meta.mime || '',
+        lastModified: result.meta.modified || Date.now(),
+      }));
       input.files = transfer.files; input.dispatchEvent(new Event('change', {bubbles: true}));
     }).catch(showError);
   };
@@ -576,47 +605,119 @@
     try { token = await request('beginExport', {target: picked.target, length: bytes.length}); await upload(token, bytes); await request('finishExport', {token}); token = null; announce('저장했어요: ' + picked.name); }
     finally { if (token) await request('abortSave', {token}).catch(() => {}); }
   }
-  // PDF 한 건의 쪽 이미지 합계 상한. 네이티브는 마지막에 PDF 크기를 다시 확인하지만, 쪽을 다 만든 뒤에야 실패하지 않도록 먼저 멈춘다.
-  const MAX_PRINT_PAGES = 100;
-  async function rasterizeSvgPage(page, width, height) {
-    // 호환 경로(Studio 는 쓰지 않는다): SVG 에는 가져온 글꼴이 들어 있지 않아 글꼴 보존을 주장하지 않는다.
+  const MAX_PAGE_PNG_BYTES = 8 * 1024 * 1024;
+  const PDF_DPI = 300;
+  let printJob = null, printRenderQueue = Promise.resolve();
+
+  async function rasterizeSvgPage(page, width, height, target) {
+    // 호환용 SVG는 페이지 관련 글꼴을 내장하지 않는다.
     const url = URL.createObjectURL(new Blob([page.svg], {type: 'image/svg+xml'}));
+    const canvas = document.createElement('canvas');
     try {
       const image = new Image(); image.src = url; await image.decode();
-      const scale = Math.min(2.25, 1800 / width, 2600 / height), canvas = document.createElement('canvas');
+      const fit = target.widthPt ? Math.min(target.widthPt / width, target.heightPt / height) : .75;
+      const scale = Math.min(fit * target.dpi / 72, 4000 / Math.max(width, height), Math.sqrt(4800000 / (width * height)));
       canvas.width = Math.ceil(width * scale); canvas.height = Math.ceil(height * scale);
       const context = canvas.getContext('2d'); context.fillStyle = 'white'; context.fillRect(0, 0, canvas.width, canvas.height); context.drawImage(image, 0, 0, canvas.width, canvas.height);
       const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-      canvas.width = canvas.height = 1;
       if (!png) throw new Error('인쇄 페이지를 만들지 못했어요.');
       return new Uint8Array(await png.arrayBuffer());
-    } finally { URL.revokeObjectURL(url); }
+    } finally { canvas.width = canvas.height = 0; URL.revokeObjectURL(url); }
   }
-  // 쪽을 하나씩 받아 네이티브로 올린다: pages 배열(호환) 또는 pageCount + renderPage(index). 한 번에 한 쪽만 메모리에 둔다.
+
+  async function getPrintPage(source, index, target) {
+    if (target.signal?.aborted) throw abort();
+    const page = await source(index, target);
+    if (target.signal?.aborted) throw abort();
+    const width = Number(page?.width), height = Number(page?.height);
+    if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new Error('페이지 크기를 확인하지 못했어요.');
+    const bytes = page.png instanceof Uint8Array ? page.png
+      : page.png ? new Uint8Array(page.png) : await rasterizeSvgPage(page, width, height, target);
+    if (target.signal?.aborted) throw abort();
+    if (bytes.length > MAX_PAGE_PNG_BYTES) throw new Error('인쇄 페이지 이미지가 너무 커요.');
+    return {width, height, bytes};
+  }
+
+  function failPrintPage(token, error) {
+    return request('printPageFail', {token, message: String(error?.message || error).slice(0, 160)}).catch(() => {});
+  }
+
+  subscribe('printPage', ({job, token, index, widthPt, heightPt, dpi}) => {
+    const current = printJob;
+    if (current?.id !== job || !Number.isInteger(index) || index < 0 || index >= current.count) {
+      void failPrintPage(token, '인쇄할 문서를 확인하지 못했어요. 다시 시도해 주세요.');
+      return;
+    }
+    current.page?.controller.abort();
+    const controller = new AbortController();
+    current.page = {token, controller};
+    printRenderQueue = printRenderQueue.then(async () => {
+      try {
+        const {width, height, bytes} = await getPrintPage(current.source, index, {widthPt, heightPt, dpi, signal: controller.signal});
+        await request('printPageBegin', {token, width, height, length: bytes.length});
+        await upload(token, bytes, 'printPageChunk', controller.signal);
+        if (!controller.signal.aborted) await request('printPageEnd', {token});
+      } catch (error) {
+        if (!controller.signal.aborted) await failPrintPage(token, error);
+      } finally {
+        if (current.page?.token === token) current.page = null;
+      }
+    });
+  });
+  subscribe('printPageCancelled', ({job, token}) => {
+    if (printJob?.id === job && printJob.page?.token === token) printJob.page.controller.abort();
+  });
+  subscribe('printEnd', ({job}) => {
+    if (printJob?.id === job) printJob.finish();
+  });
+
   async function printPages({fileName, pages, pageCount, renderPage, intent, signal}) {
-    const streaming = !Array.isArray(pages), count = streaming ? pageCount : pages.length;
+    const count = Array.isArray(pages) ? pages.length : pageCount;
+    const source = Array.isArray(pages) ? index => pages[index] : renderPage;
     if (intent !== 'print' && intent !== 'pdf') throw new Error('인쇄 방식을 확인하지 못했어요.');
-    if (!Number.isInteger(count) || count < 1 || count > MAX_PRINT_PAGES) throw new Error('PDF와 인쇄는 한 번에 100페이지까지 지원해요.');
-    if (streaming && typeof renderPage !== 'function') throw new TypeError('인쇄할 쪽을 가져올 수 없어요.');
-    const checkStop = () => { if (signal?.aborted) throw abort(); };
-    let started = false, total = 0;
+    if (!Number.isSafeInteger(count) || count < 1 || count > 2147483647) throw new Error('인쇄할 쪽 수를 확인하지 못했어요.');
+    if (typeof source !== 'function') throw new TypeError('인쇄할 쪽을 가져올 수 없어요.');
+    if (signal?.aborted) throw abort();
+    if (intent === 'print') {
+      if (printJob) throw new Error('열려 있는 인쇄 작업을 마쳐 주세요.');
+      let finish;
+      const done = new Promise(resolve => { finish = resolve; });
+      const job = {id: ++sequence, count, source, finish, page: null};
+      const stop = () => {
+        if (job.page) {
+          job.page.controller.abort();
+          void failPrintPage(job.page.token, abort());
+        }
+        finish();
+      };
+      printJob = job;
+      signal?.addEventListener('abort', stop, {once: true});
+      try {
+        await request('startPrint', {job: job.id, count, name: fileName});
+        await done;
+        if (signal?.aborted) throw abort();
+      } finally {
+        job.page?.controller.abort();
+        signal?.removeEventListener('abort', stop);
+        printJob = null;
+      }
+      return;
+    }
+
+    let started = false;
     try {
-      checkStop();
-      if (intent === 'print') await request('beginPrintPdf', {count, name: fileName});
-      else { const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf'], sourceFolder()); await request('beginPdf', {target: picked.target, count}); }
+      const picked = await pickDestination(String(fileName || '문서').replace(/\.[^.]+$/, '') + '.pdf', ['.pdf'], sourceFolder());
+      if (signal?.aborted) throw abort();
+      await request('beginPdf', {target: picked.target, count});
       started = true;
       for (let index = 0; index < count; index++) {
-        checkStop();
-        const page = streaming ? await renderPage(index) : pages[index];
-        checkStop();
-        const width = Number(page?.width), height = Number(page?.height);
-        if (!(width > 0 && height > 0)) throw new Error('페이지 크기를 확인하지 못했어요.');
-        const bytes = page.png ? new Uint8Array(page.png) : await rasterizeSvgPage(page, width, height);
-        if ((total += bytes.length) > MAX_BYTES) throw new Error('인쇄 결과가 32MB를 넘어요. 그림이 많은 쪽을 줄여 주세요.');
+        const {width, height, bytes} = await getPrintPage(source, index, {dpi: PDF_DPI, signal});
         const token = await request('beginPdfPage', {index, length: bytes.length, width: Math.round(width * .75), height: Math.round(height * .75)});
-        await upload(token, bytes); await request('finishPdfPage', {token});
+        await upload(token, bytes, 'saveChunk', signal);
+        if (signal?.aborted) throw abort();
+        await request('finishPdfPage', {token});
       }
-      checkStop();
+      if (signal?.aborted) throw abort();
       await request('finishPdf'); started = false;
     } finally { if (started) await request('abortPdf').catch(() => {}); }
   }

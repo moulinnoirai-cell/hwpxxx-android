@@ -162,7 +162,7 @@ final class TermuxWalker {
                     pending.addLast(new Dir(e.id,dir.path+"/"+e.name,dir.depth+1,dir));continue;
                 }
                 String format=FileStore.ext(new File(e.name));
-                if((!format.equals("hwp")&&!format.equals("hwpx"))||!seenDocuments.add(e.id))continue;
+                if(format.isEmpty()||!seenDocuments.add(e.id))continue;
                 if(treeCount>=limit){limited=true;pending.clear();break;}
                 count++;treeCount++;visitor.document(e,dir.path,format);
             }

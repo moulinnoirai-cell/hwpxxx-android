@@ -1,6 +1,6 @@
 # 문서 엔진(rHWP)
 
-이 앱의 엔진은 **본가 rHWP v0.9.0을 수정 없이** 다시 빌드한 것입니다(메모 읽기·편집 API는 v0.9.0에 포함되어 있습니다).
+이 앱의 엔진은 **본가 rHWP v0.9.1을 수정 없이** 다시 빌드한 것입니다(메모 읽기·편집 API는 v0.9.0부터 포함되어 있습니다).
 이전에 있던 v0.8.7용 메모 이식 패치(`0001-rhwp-pr8269-memo-api-backport-to-v0.8.7.patch`)는 폐기했습니다.
 
 - 고정 값: `config/android-engine.json` (본가 커밋, Rust nightly, wasm-bindgen, `-Ctarget-cpu=mvp`, `-Zbuild-std`)

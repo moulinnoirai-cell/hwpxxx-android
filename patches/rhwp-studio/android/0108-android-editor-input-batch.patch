@@ -1432,10 +1432,10 @@ index 0000000..b45f6ba
 +  return () => container.removeEventListener('click', onClick);
 +}
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index 017562f..80be60a 100644
+index 4893fb8..bf1fc51 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
-@@ -35,6 +35,7 @@ import type { StudioPlugin } from '@/plugin/types';
+@@ -36,6 +36,7 @@ import type { StudioPlugin } from '@/plugin/types';
  import { CommandDispatcher } from '@/command/dispatcher';
  import { installMemoMarks } from '@/hwpxxx/memo-marks';
  import { installDocScrollbar } from '@/hwpxxx/doc-scrollbar';
@@ -1443,7 +1443,7 @@ index 017562f..80be60a 100644
  import '@/styles/hwpxxx-scrollbar.css';
  import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
  import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
-@@ -778,6 +779,7 @@ async function initialize(): Promise<void> {
+@@ -791,6 +792,7 @@ async function initialize(): Promise<void> {
        canvasView.getViewportManager(),
      );
      installInputPerfProbes(inputHandler as unknown as Record<string, any>); // [hwpxxx] 입력 경로 시간 계측(숫자만, 기록·전송 없음)

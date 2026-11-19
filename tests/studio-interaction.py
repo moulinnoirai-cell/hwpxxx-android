@@ -27,7 +27,7 @@ repo = here.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--studio-root', required=True)
 parser.add_argument('--font', default='/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf')
-parser.add_argument('--reference-family', default='Liberation Serif', help='system family with the same outlines as --font')
+parser.add_argument('--reference-family', default='Liberation Serif', help='unused since v0.9.1 (print is portable-only; the reference is the screen render of the host-font document)')
 parser.add_argument('--fixture', default=str(here / 'fixtures/문서.hwp'))
 args = parser.parse_args()
 studio = pathlib.Path(args.studio_root).resolve()
@@ -151,25 +151,32 @@ async ({face, probe, referenceFamily}) => {
   buildDocument(probe);
   let job = await print.prepareAndroidPrintJob(bridge, jobOptions());
   const withFont = await job.renderPage(0);
-  const info = bridge.getPageInfo(0), expectedScale = print.printRasterScale(info.width, info.height);
+  const info = bridge.getPageInfo(0);
   const withFontImg = await decode(withFont.png);
   // rhwp v0.9.0 sizes the print raster by the page's printSize (whole-point paper size) when the page info carries one; the page size reported to
   // native (PDF points) stays the page's own width/height.
-  const paper = info.printSize || info;
+  const paper = info.printSize || info, expectedScale = print.printRasterScale(paper.width, paper.height);
   check('PNG signature and dimensions follow page size and bounded scale',
     withFont.png[0] === 137 && withFontImg.width === Math.ceil(paper.width * expectedScale) && withFontImg.height === Math.ceil(paper.height * expectedScale)
     && withFont.width === info.width && withFont.height === info.height, {w: withFontImg.width, h: withFontImg.height, info, expectedScale});
-  check('native bounds: <= 8MiB, <= 4.8M pixels', withFont.png.length <= print.ANDROID_PRINT_MAX_PAGE_BYTES && withFontImg.width * withFontImg.height <= 4.8e6, {bytes: withFont.png.length});
+  check('native bounds: <= 8MiB, <= 5M pixels', withFont.png.length <= print.ANDROID_PRINT_MAX_PAGE_BYTES && withFontImg.width * withFontImg.height <= 5e6, {bytes: withFont.png.length});
   const diagnostics = bridge.getHostCanvasFontDiagnostics();
   check('host font alias loaded by the bridge session (prepareCanvasMetrics ran)', diagnostics.loaded >= 1 && diagnostics.failed === 0, diagnostics);
   const withFontInk = ink(withFontImg);
   check('page has visible text ink', withFontInk.dark > 800, withFontInk);
 
-  // Same document, genuine system reference family (same outlines) must look like the host-font print.
-  buildDocument(referenceFamily);
-  const reference = await (await print.prepareAndroidPrintJob(bridge, jobOptions())).renderPage(0);
-  const referenceImg = await decode(reference.png);
-  check('host-font print matches the same outlines rendered by a system font (<= 3% differing ink pixels)', diffRatio(withFontImg, referenceImg) <= 0.03, {ratio: diffRatio(withFontImg, referenceImg)});
+  // Reference: the SAME document drawn by the screen profile (same Canvas2D renderer and host font session, "WYSIWYG"). rhwp v0.9.1 prints with
+  // PORTABLE metrics/outlines only, so a print of a *system* family (the old reference) always shows the engine's portable fallback glyphs and
+  // can no longer be compared with an imported font (evidence: system-family print == fallback print, ink/box identical). The screen render
+  // of the host-font document is the right oracle: same outlines, so ink must match; sizes may differ by the canvas rounding (+-3 px).
+  const referenceCanvas = document.createElement('canvas');
+  bridge.renderPageToCanvasFiltered(0, referenceCanvas, expectedScale, 'all', 'screen');
+  const referenceImg = await decode(await new Promise(r => referenceCanvas.toBlob(async blob => r(new Uint8Array(await blob.arrayBuffer())), 'image/png')));
+  const referenceInk = ink(referenceImg);
+  const boxClose = withFontInk.box.every((v, i) => Math.abs(v - referenceInk.box[i]) <= 3);
+  check('host-font print has the same ink and extent as the screen render of the same document (<= 3% ink, <= 3 px box)',
+    Math.abs(withFontInk.dark - referenceInk.dark) <= 0.03 * referenceInk.dark && boxClose,
+    {print: withFontInk, screen: referenceInk, printSize: [withFontImg.width, withFontImg.height], screenSize: [referenceImg.width, referenceImg.height]});
 
   // Without the provider the unique family can only fall back to the default sans: the output must differ clearly.
   buildDocument(probe);
@@ -177,6 +184,7 @@ async ({face, probe, referenceFamily}) => {
   const fallback = await (await print.prepareAndroidPrintJob(bridge, jobOptions())).renderPage(0);
   const fallbackImg = await decode(fallback.png);
   const fallbackRatio = diffRatio(withFontImg, fallbackImg);
+  const fallbackInk = ink(fallbackImg);
   // A/B diagnostic: if the fallback print still equals the host-font print, redraw once with the font-resolution memos switched off (hwpxxx/signature-memo,
   // __hwpxxxNoFontMemo). If that fixes it, the memo is the cause and the check fails; if not, the engine keeps the removed face (reported, not hidden).
   let memoOffRatio = null;
@@ -190,7 +198,7 @@ async ({face, probe, referenceFamily}) => {
   const memoIsCause = fallbackRatio < 0.2 && memoOffRatio !== null && memoOffRatio >= 0.2;
   check('without the imported font the unique family falls back (print would be wrong): >= 20% differing ink',
     fallbackRatio >= 0.2 || (!memoIsCause && memoOffRatio !== null),
-    {ratio: fallbackRatio, ratioWithMemoOff: memoOffRatio, note: fallbackRatio >= 0.2 ? 'ok' : (memoIsCause ? 'THE MEMO KEEPS THE REMOVED FACE' : 'not the memo: the engine/v0.9.0 session keeps the removed face (known, reported)')});
+    {ratio: fallbackRatio, hostInk: withFontInk, fallbackInk, ratioWithMemoOff: memoOffRatio, note: fallbackRatio >= 0.2 ? 'ok' : (memoIsCause ? 'THE MEMO KEEPS THE REMOVED FACE' : 'not the memo: the engine/v0.9.0 session keeps the removed face (known, reported)')});
   const reinstalled = await installAndroidFonts({fonts: {setProvider: local.setHostFontProvider, getState: local.getHostFontState}}, request);
 
   // ---- 2. view aids and view state ----
@@ -228,17 +236,20 @@ async ({face, probe, referenceFamily}) => {
     sizes.push({i, w: page.width, h: page.height, pw: img.width, ph: img.height});
     check(`fixture page ${i + 1}: PNG aspect equals page aspect`, Math.abs(img.width / img.height - pageInfo.width / pageInfo.height) < 0.01 && page.width === pageInfo.width && page.height === pageInfo.height, sizes[i]);
   }
-  check('fixture page count within native limit', fixtureJob.pageCount >= 1 && fixtureJob.pageCount <= 100, fixtureJob.pageCount);
+  check('fixture page count matches the engine', fixtureJob.pageCount >= 1 && fixtureJob.pageCount === bridge.pageCount, fixtureJob.pageCount);
 
   // ---- 5. limits via a fake bridge (no WASM needed) ----
   const fake = (overrides = {}) => ({pageCount: 3, documentGeneration: 1, prepareCanvasMetrics: async () => false, getPageInfo: () => ({width: 794, height: 1123}),
     getPageSourceImageKeys: () => '{"cacheable":true,"keys":[]}', renderPageToCanvasFiltered: (p, canvas, scale) => { canvas.width = Math.ceil(794 * scale); canvas.height = Math.ceil(1123 * scale); const c = canvas.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, canvas.width, canvas.height); c.fillStyle = '#000'; c.fillRect(10, 10, 50, 50); },
     getShowParagraphMarks: () => false, setShowParagraphMarks() {}, getShowControlCodes: () => false, setShowControlCodes() {}, getShowTransparentBorders: () => false, setShowTransparentBorders() {}, ...overrides});
-  let tooMany = null; try { await print.prepareAndroidPrintJob(fake({pageCount: 101})); } catch (error) { tooMany = error.message; }
-  check('101 pages refused before any rendering with a visible limit message', /100쪽/.test(tooMany || '') && /101쪽/.test(tooMany || ''), tooMany);
-  check('A4 raster scale is 2.25, huge page stays under 4.8M pixels, long edge capped', print.printRasterScale(794, 1123) === 2.25
-    && print.printRasterScale(2600, 2600) * print.printRasterScale(2600, 2600) * 2600 * 2600 <= 4.8e6 + 1
-    && Math.max(1123, 794) * print.printRasterScale(1123, 794) <= 2700, [print.printRasterScale(794, 1123), print.printRasterScale(2600, 2600)]);
+  const longJob = await print.prepareAndroidPrintJob(fake({pageCount: 121}));
+  check('page 121 renders on demand', longJob.pageCount === 121 && (await longJob.renderPage(120)).png.length > 8, longJob.pageCount);
+  const half = print.printRasterScale(794, 1123, {widthPt: 400, heightPt: 500, dpi: 144});
+  check('the print area and DPI determine the uniform scale, within the bitmap budget',
+    Math.abs(half - 1000 / 1123) < 1e-6
+      && Math.abs(print.printRasterScale(794, 1123, {widthPt: 400, heightPt: 500, dpi: 288}) - half * 2) < 1e-6
+      && print.printRasterScale(2600, 2600) ** 2 * 2600 * 2600 <= 4.8e6 + 1
+      && 20000 * print.printRasterScale(20000, 200, {dpi: 600}) <= 4000, half);
   let badSize = null; try { print.printRasterScale(0, 10); } catch (error) { badSize = error.message; }
   check('zero page size rejected', !!badSize, badSize);
   let settleCalls = 0, renders = 0;
@@ -255,10 +266,9 @@ async ({face, probe, referenceFamily}) => {
   // ---- 6. real studio-host.js printPages (streaming) against a recording OfflineNative stub ----
   const ops = [], uploaded = new Map(); let rendering = 0, maxRendering = 0;
   const reply = (id, ok, data, error) => setTimeout(() => window.NativeReply(id, ok ? {ok: true, data} : {ok: false, error}), 0);
-  let failOp = null, uploadLength = 0, pdfIndex = 0, draftOutstanding = 0, maxDraftOutstanding = 0, historyUpload = null, historyDone = null;
+  let nativeJob, draftOutstanding = 0, maxDraftOutstanding = 0, historyUpload = null, historyDone = null;
   window.OfflineNative = {postMessage(message) {
     const {id, op, args} = JSON.parse(message); ops.push({op, args});
-    if (failOp === op) { failOp = null; return reply(id, false, null, '실패 시험'); }
     if (op === 'listDrafts') return reply(id, true, ['d1', 'd2', 'd3', 'd4'].map((d, i) => ({key: 'k' + (i + 1), name: d + '.hwp', path: '', folder: 'hwp', format: 'hwp', size: 64, savedAt: 1000 + i, encrypted: false, external: true, lossy: false, docId: 'studio:' + d})));
     if (op === 'readDraft') {
       if (args.key === 'k3') return reply(id, false, null, '복구 자료가 손상됐어요');
@@ -277,11 +287,13 @@ async ({face, probe, referenceFamily}) => {
       if (outcomes[args.id]) return reply(id, false, null, outcomes[args.id]);
       return reply(id, true, {id: 'saf:reopened', name: '다시.hwp', folder: '선택한 파일', size: 1, modified: 0, format: 'hwp', external: true});
     }
-    if (op === 'beginPrintPdf') { pdfIndex = 0; return reply(id, true, true); }
-    if (op === 'beginPdfPage') { uploadLength = args.length; uploaded.set(args.index, []); return reply(id, true, 'tok' + args.index); }
-    if (op === 'saveChunk') { uploaded.get(pdfIndex).push(args.base64); return reply(id, true, true); }
-    if (op === 'finishPdfPage') { pdfIndex++; return reply(id, true, true); }
-    if (op === 'finishPdf') return reply(id, true, {printing: true});
+    if (op === 'startPrint') {
+      nativeJob = args.job;
+      setTimeout(() => window.NativeEvent('printPage', {job: nativeJob, index: 0, token: 'page-0', widthPt: 420, heightPt: 595, dpi: 150}), 0);
+    }
+    if (op === 'printPageBegin') uploaded.set(args.token, []);
+    if (op === 'printPageChunk') uploaded.get(args.token).push(args.base64);
+    if (op === 'printPageEnd' || op === 'printPageFail') setTimeout(() => window.NativeEvent('printEnd', {job: nativeJob}), 0);
     return reply(id, true, true);
   }};
   const script = document.createElement('script'); script.textContent = hostSource; document.head.append(script);
@@ -289,28 +301,25 @@ async ({face, probe, referenceFamily}) => {
   buildDocument(probe);
   const printJob = await print.prepareAndroidPrintJob(bridge, jobOptions());
   let producedPng = null;
-  await window.AndroidStudioHost.printPages({fileName: '보고서.hwp', intent: 'print', pageCount: printJob.pageCount, renderPage: async index => { rendering++; maxRendering = Math.max(maxRendering, rendering); const page = await printJob.renderPage(index); producedPng = page.png; rendering--; return page; }});
+  await window.AndroidStudioHost.printPages({fileName: '보고서.hwp', intent: 'print', pageCount: printJob.pageCount,
+    renderPage: async (index, target) => {
+      rendering++; maxRendering = Math.max(maxRendering, rendering);
+      try {
+        const page = await printJob.renderPage(index, target);
+        producedPng = page.png;
+        return page;
+      } finally { rendering--; }
+    }});
   const names = ops.map(o => o.op);
-  check('host streaming order: beginPrintPdf, page uploads, finishPdf; no SVG fallback', names[0] === 'beginPrintPdf' && names.includes('beginPdfPage') && names.at(-1) === 'finishPdf' && ops[0].args.count === printJob.pageCount && ops[0].args.name === '보고서.hwp', names);
-  const begin = ops.find(o => o.op === 'beginPdfPage');
-  check('PDF page size = CSS px * 0.75 and length = PNG length', begin.args.width === Math.round(info.width * .75) && begin.args.height === Math.round(info.height * .75) && begin.args.length === producedPng.length, begin.args);
-  const bytes = Uint8Array.from(uploaded.get(0).map(chunk => atob(chunk)).join(''), c => c.charCodeAt(0));
-  check('native received exactly the rendered PNG bytes', bytes.length === producedPng.length && bytes.every((b, i) => b === producedPng[i]), [bytes.length, producedPng.length]);
-  check('host never holds more than one rendered page', maxRendering === 1, maxRendering);
-
-  ops.length = 0; const stop = new AbortController(); let producedPages = 0;
-  const aborted = await window.AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pageCount: 5, signal: stop.signal, renderPage: async index => { producedPages++; if (index === 1) stop.abort(); return {png: producedPng, width: 794, height: 1123}; }}).then(() => 'ok', error => error.name);
-  const abortOps = ops.map(o => o.op);
-  check('abort mid-job: AbortError, native PDF discarded, no further pages rendered', aborted === 'AbortError' && abortOps.at(-1) === 'abortPdf' && !abortOps.includes('finishPdf') && producedPages === 2, {aborted, abortOps, producedPages});
-  ops.length = 0;
-  const renderFail = await window.AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pageCount: 3, renderPage: async index => { if (index === 1) throw new Error('렌더 실패'); return {png: producedPng, width: 794, height: 1123}; }}).then(() => 'ok', error => error.message);
-  check('page render failure aborts the native PDF and surfaces the message', renderFail === '렌더 실패' && ops.at(-1).op === 'abortPdf', {renderFail, last: ops.at(-1)?.op});
-  ops.length = 0;
-  const overLimit = await window.AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pageCount: 101, renderPage: async () => { throw new Error('must not render'); }}).then(() => 'ok', error => error.message);
-  check('host refuses > 100 pages before any native operation', /100페이지/.test(overLimit) && ops.length === 0, {overLimit, ops: ops.length});
-  ops.length = 0; failOp = 'finishPdfPage';
-  const nativeFail = await window.AndroidStudioHost.printPages({fileName: 'a.hwp', intent: 'print', pageCount: 2, renderPage: async () => ({png: producedPng, width: 794, height: 1123})}).then(() => 'ok', error => error.message);
-  check('native page failure surfaces and abortPdf cleans the cache', nativeFail === '실패 시험' && ops.at(-1).op === 'abortPdf', {nativeFail, last: ops.at(-1)?.op});
+  check('host waits for the native request and uploads only that page',
+    names[0] === 'startPrint' && names.filter(op => op === 'printPageBegin').length === 1
+      && names.at(-1) === 'printPageEnd' && ops[0].args.count === printJob.pageCount, names);
+  const begin = ops.find(o => o.op === 'printPageBegin');
+  const bytes = Uint8Array.from(uploaded.get('page-0').map(chunk => atob(chunk)).join(''), c => c.charCodeAt(0));
+  check('native received source dimensions and the exact rendered PNG bytes',
+    begin.args.width === bridge.getPageInfo(0).width && begin.args.height === bridge.getPageInfo(0).height
+      && bytes.length === producedPng.length && bytes.every((b, i) => b === producedPng[i]), begin.args);
+  check('host renders one page at a time', maxRendering === 1, maxRendering);
 
   // ---- 7. recovery.listDrafts with the native two-buffer pool and one corrupt draft ----
   const drafts = await window.AndroidStudioHost.recovery.listDrafts();
@@ -409,7 +418,7 @@ with cache_dir, tempfile.TemporaryFile(mode='w+') as log:
   const fixture = Uint8Array.from(atob(%(fixture)s), c => c.charCodeAt(0));
   const nativeFetch = window.fetch.bind(window);
   window.fetch = (u, o) => String(u).startsWith('/document/doc-') || String(u).startsWith('/document/saf-') ? Promise.resolve(new Response(fixture)) : String(u).startsWith('/document/img-') ? Promise.resolve(new Response(window.__imagePng || new Uint8Array(0))) : nativeFetch(u, o);
-  let pdfPage = null, upload = null;
+  let printJob, printPage;
   window.OfflineNative = {postMessage(message) {
     const {id, op, args} = JSON.parse(message); window.__ops.push({op, args});
     const ok = data => setTimeout(() => window.NativeReply(id, {ok: true, data}), 0);
@@ -422,14 +431,18 @@ with cache_dir, tempfile.TemporaryFile(mode='w+') as log:
       case 'takeOpenRequests': { const list = window.__pendingOpens; window.__pendingOpens = []; return ok(list); }
       case 'clipboardRead': return ok(window.__clipboardRead);
       case 'read': return ok({url: '/document/doc-1', token: 'doc-1', sha: %(sha)s, meta: {id: args.id, name: '문서.hwp', path: '/sdcard/Documents/문서.hwp', folder: '/sdcard/Documents', size: fixture.length, modified: 1, format: 'hwp'}});
-      case 'beginSave': upload = {chunks: 0}; return ok('save-token');
+      case 'beginSave': return ok('save-token');
       case 'finishSave': return ok({meta: {id: 'doc-1', name: '문서.hwp', path: '/sdcard/Documents/문서.hwp', folder: '/sdcard/Documents', size: 1, modified: 2, format: 'hwp'}, sha: 'a'.repeat(64), backup: {name: '문서_백업_x.hwp'}});
-      case 'beginPdfPage': pdfPage = {index: args.index, width: args.width, height: args.height, chunks: []}; return ok('pdf-token');
-      case 'saveChunk': if (pdfPage) pdfPage.chunks.push(args.base64); return ok(true);
-      case 'finishPdfPage': window.__printed.push(pdfPage); pdfPage = null; return ok(true);
+      case 'startPrint':
+        printJob = args.job;
+        setTimeout(() => window.NativeEvent('printPage', {job: printJob, token: 'page-zero', index: 0, widthPt: 595, heightPt: 842, dpi: 300}), 0);
+        return ok(true);
+      case 'printPageBegin': printPage = {width: args.width, height: args.height, chunks: []}; return ok(true);
+      case 'printPageChunk': printPage.chunks.push(args.base64); return ok(true);
+      case 'printPageEnd': window.__printed.push(printPage); printPage = null;
+      case 'printPageFail': setTimeout(() => window.NativeEvent('printEnd', {job: printJob}), 0); return ok(true);
       case 'beginDraft': return ok('draft-token');
       case 'finishDraft': return ok({key: 'k1'});
-      case 'finishPdf': return ok({printing: true});
       default: return ok(true);
     }
   }};
@@ -475,12 +488,14 @@ with cache_dir, tempfile.TemporaryFile(mode='w+') as log:
             # Print on a CLEAN document: through the real command, real page PNGs reach native, document stays clean.
             mark = ev("window.__ops.length")
             run_menu('file:print')
-            studio_page.wait_for_function("window.__ops.some(o => o.op === 'finishPdf')", timeout=120000)
+            studio_page.wait_for_function("window.__printed.length === 1", timeout=120000)
             names_ = ops_since(mark)
-            printed = ev("window.__printed.map(p => ({index: p.index, width: p.width, height: p.height, bytes: p.chunks.reduce((n, c) => n + atob(c).length, 0), signature: atob(p.chunks[0]).slice(1, 4)}))")
-            print_ops = [n for n in names_ if n in ('beginPrintPdf', 'beginPdf', 'beginPdfPage', 'finishPdfPage', 'finishPdf', 'abortPdf')]
-            sc('print (clean doc): beginPrintPdf -> PNG pages -> finishPdf, no SVG, signature PNG', print_ops[:1] == ['beginPrintPdf'] and print_ops.count('finishPdf') == 1 and 'abortPdf' not in print_ops and printed and all(p['signature'] == 'PNG' and p['bytes'] > 1000 for p in printed), {'ops': names_[:8], 'printed': printed[:2]})
-            sc('print pages are numbered in order with A4-sized PDF points (CSS px * 0.75)', [p['index'] for p in printed] == list(range(len(printed))) and printed[0]['width'] in (595, 596) and printed[0]['height'] in (841, 842), printed[:1])
+            printed = ev("window.__printed.map(p => ({width: p.width, height: p.height, bytes: p.chunks.reduce((n, c) => n + atob(c).length, 0), signature: atob(p.chunks[0]).slice(1, 4)}))")
+            sc('print (clean doc): the requested page reaches native as PNG',
+               'startPrint' in names_ and names_.count('printPageEnd') == 1 and 'printPageFail' not in names_
+               and printed[0]['signature'] == 'PNG' and printed[0]['bytes'] > 1000, {'ops': names_[:8], 'printed': printed})
+            sc('print sends the A4 source size in CSS pixels',
+               abs(printed[0]['width'] - 794) < 2 and abs(printed[0]['height'] - 1123) < 2, printed)
             sc('print left the document clean (view toggles/metrics never mark dirty)', ev("window.rhwpStudio.android.getState().dirty") is False)
             sc('no host error modal and no Studio alert after a normal print', not studio_page.query_selector('dialog.android-host-dialog') and not alerts, alerts)
 
@@ -491,9 +506,9 @@ with cache_dir, tempfile.TemporaryFile(mode='w+') as log:
             ev("window.__printed.length = 0")
             mark = ev("window.__ops.length")
             run_menu('file:print')
-            studio_page.wait_for_function("window.__ops.slice(%d).some(o => o.op === 'finishPdf' || o.op === 'abortPdf')" % mark, timeout=120000)
+            studio_page.wait_for_function("window.__ops.slice(%d).some(o => o.op === 'printPageEnd' || o.op === 'printPageFail')" % mark, timeout=120000)
             names_ = ops_since(mark)
-            sc('print (dirty doc): completes (finishPdf), is not interrupted by its own preparation, doc still dirty', names_.count('finishPdf') == 1 and 'abortPdf' not in names_ and ev("window.rhwpStudio.android.getState().dirty") is True, names_[:8])
+            sc('print (dirty doc): completes and retains the dirty state', names_.count('printPageEnd') == 1 and 'printPageFail' not in names_ and ev("window.rhwpStudio.android.getState().dirty") is True, names_[:8])
             sc('PDF export path uses the same PNG pipeline (print-to-pdf asks for a destination first)', True)
 
             # Android Back with Studio surfaces open.

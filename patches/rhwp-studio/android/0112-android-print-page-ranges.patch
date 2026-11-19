@@ -1,0 +1,191 @@
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index 0fc0ccb..30ba0a1 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -799,9 +799,9 @@ async function runAndroidPrint(services: CommandServices, intent: 'print' | 'pdf
+       signal: controller.signal,
+       isCurrent: () => services.documentState.getRevision() === revision,
+     });
+-    await androidPrintDocument(wasm.fileName, job.pageCount, async (index) => {
++    await androidPrintDocument(wasm.fileName, job.pageCount, async (index, target) => {
+       if (statusEl) statusEl.textContent = printProgressText(intent, index + 1, job.pageCount);
+-      return job.renderPage(index);
++      return job.renderPage(index, target);
+     }, intent, controller.signal);
+     if (statusEl) statusEl.textContent = originalStatus;
+   } catch (err) {
+diff --git a/rhwp-studio/src/hwpxxx/android-host.ts b/rhwp-studio/src/hwpxxx/android-host.ts
+index 06ee707..a0abd0b 100644
+--- a/rhwp-studio/src/hwpxxx/android-host.ts
++++ b/rhwp-studio/src/hwpxxx/android-host.ts
+@@ -52,6 +52,14 @@ export interface AndroidPrintPage {
+   height: number;
+ }
+ 
++/** 인쇄 가능 영역(PDF 포인트), 목표 해상도, 현재 쪽의 취소 신호. */
++export interface AndroidPrintRasterTarget {
++  widthPt?: number;
++  heightPt?: number;
++  dpi: number;
++  signal?: AbortSignal;
++}
++
+ /**
+  * 쪽을 하나씩 받아 가는 인쇄 요청. 셸이 대상(시스템 인쇄/저장 위치)을 정한 뒤 쪽마다 `renderPage` 를 부르므로
+  * 쪽 PNG 를 한꺼번에 메모리에 모으지 않는다. `signal` 이 중단되면 셸은 만든 PDF 를 버린다.
+@@ -61,7 +69,7 @@ export interface AndroidPrintRequest {
+   intent: 'print' | 'pdf';
+   pages?: AndroidPrintPage[];
+   pageCount?: number;
+-  renderPage?: (index: number) => Promise<AndroidPrintPage>;
++  renderPage?: (index: number, target?: AndroidPrintRasterTarget) => Promise<AndroidPrintPage>;
+   signal?: AbortSignal;
+ }
+ 
+@@ -206,7 +214,7 @@ export async function androidPrintPages(
+ export async function androidPrintDocument(
+   fileName: string,
+   pageCount: number,
+-  renderPage: (index: number) => Promise<AndroidPrintPage>,
++  renderPage: (index: number, target?: AndroidPrintRasterTarget) => Promise<AndroidPrintPage>,
+   intent: 'print' | 'pdf',
+   signal?: AbortSignal,
+ ): Promise<void> {
+diff --git a/rhwp-studio/src/hwpxxx/android-print.ts b/rhwp-studio/src/hwpxxx/android-print.ts
+index 8ee91d6..9526052 100644
+--- a/rhwp-studio/src/hwpxxx/android-print.ts
++++ b/rhwp-studio/src/hwpxxx/android-print.ts
+@@ -3,18 +3,17 @@
+ // 왜 SVG 가 아닌가: 가져온(비공개) 글꼴은 WasmBridge 의 HostCanvasFontSession 이 FontFace 별칭으로만 등록한다.
+ // SVG 를 Image 로 그리면 그 별칭이 없어 글꼴이 바뀐다. 그래서 `renderPageToCanvasFiltered(..., 'print')` 로 직접 그린다.
+ //
+-// 한 번에 한 쪽만 메모리에 둔다(쪽 PNG 를 100장 모아 두지 않는다). 편집기 캐럿·선택·여백 안내선은 DOM/오버레이라 이 경로에
++// 한 번에 한 쪽만 메모리에 둔다(쪽 PNG 를 모아 두지 않는다). 편집기 캐럿·선택·여백 안내선은 DOM/오버레이라 이 경로에
+ // 들어오지 않고, 문단부호·조판부호·투명선은 보기 옵션이라 그리는 동안만 끄고 즉시 되돌린다(동기 구간, await 없음).
+ 
+ import type { LayerRenderProfile, PageInfo } from '@/core/types';
++import type { AndroidPrintRasterTarget } from './android-host';
+ 
+-/** 네이티브 한도와 같다: 인쇄/PDF 한 번에 100쪽, 쪽 PNG ≤ 8MiB, 디코딩 픽셀 ≤ 5,000,000. */
+-export const ANDROID_PRINT_MAX_PAGES = 100;
++/** 네이티브 쪽 한도(8MiB, 500만 픽셀, 긴 변 4096px)에서 올림 여유를 둔다. */
+ export const ANDROID_PRINT_MAX_PAGE_BYTES = 8 * 1024 * 1024 - 1024;
+ export const ANDROID_PRINT_MAX_PIXELS = 4_800_000;
+-export const ANDROID_PRINT_MAX_SCALE = 2.25;
+-export const ANDROID_PRINT_MIN_SCALE = 1;
+-const MAX_LONG_EDGE_PX = 2700;
++const DEFAULT_PRINT_DPI = 300;
++const MAX_LONG_EDGE_PX = 4000;
+ 
+ export class AndroidPrintInterrupted extends Error {
+   constructor(message: string) {
+@@ -35,7 +34,7 @@ export interface AndroidPrintBridge {
+   readonly pageCount: number;
+   readonly documentGeneration: number;
+   prepareCanvasMetrics(backend: string, isCurrent?: () => boolean): Promise<boolean>;
+-  getPageInfo(pageNum: number): Pick<PageInfo, 'width' | 'height'>;
++  getPageInfo(pageNum: number): Pick<PageInfo, 'width' | 'height' | 'printSize'>;
+   getPageSourceImageKeys(pageNum: number): string | null;
+   renderPageToCanvasFiltered(
+     pageNum: number,
+@@ -63,23 +62,24 @@ export interface AndroidPrintJobOptions {
+ 
+ export interface AndroidPrintJob {
+   pageCount: number;
+-  renderPage(index: number): Promise<AndroidPrintPageImage>;
++  renderPage(index: number, target?: AndroidPrintRasterTarget): Promise<AndroidPrintPageImage>;
+ }
+ 
+ function abortError(): DOMException {
+   return new DOMException('취소했습니다.', 'AbortError');
+ }
+ 
+-/**
+- * 래스터 배율: 화면 CSS px → 캔버스 px. 긴 변 2700px, 총 480만 픽셀(네이티브 한도 500만) 이하이고 A4 는 2.25배.
+- * 한도 때문에 1배 아래가 되는 아주 큰 용지도 그대로 그린다(호스트가 포인트 한도로 따로 거절한다).
+- */
+-export function printRasterScale(widthPx: number, heightPx: number): number {
++/** 인쇄 가능 영역에 맞춘 물리 크기와 DPI를 기준으로 균일한 래스터 배율을 구한다. */
++export function printRasterScale(widthPx: number, heightPx: number, target?: AndroidPrintRasterTarget): number {
+   if (!(widthPx > 0 && heightPx > 0) || !Number.isFinite(widthPx) || !Number.isFinite(heightPx)) {
+     throw new Error('페이지 크기를 확인하지 못했어요.');
+   }
++  const dpi = target?.dpi ?? DEFAULT_PRINT_DPI;
++  const fit = target?.widthPt && target?.heightPt
++    ? Math.min(target.widthPt / widthPx, target.heightPt / heightPx)
++    : 0.75; // PDF 파일로 직접 저장할 때 원본 용지 크기 유지
+   return Math.min(
+-    ANDROID_PRINT_MAX_SCALE,
++    fit * dpi / 72,
+     MAX_LONG_EDGE_PX / Math.max(widthPx, heightPx),
+     Math.sqrt(ANDROID_PRINT_MAX_PIXELS / (widthPx * heightPx)),
+   );
+@@ -132,12 +132,8 @@ function isPng(bytes: Uint8Array): boolean {
+     && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10;
+ }
+ 
+-const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+-const defaultSettle = async () => {
+-  await nextFrame();
+-  await new Promise<void>((resolve) => setTimeout(resolve, 80));
+-  await nextFrame();
+-};
++// 시스템 인쇄 창이 WebView를 가리면 requestAnimationFrame이 실행되지 않을 수 있다.
++const defaultSettle = () => new Promise<void>((resolve) => setTimeout(resolve, 100));
+ 
+ /**
+  * 인쇄 작업을 준비한다: 호스트 글꼴·캔버스 지표를 먼저 맞추고(`prepareCanvasMetrics('canvas2d')`),
+@@ -150,8 +146,8 @@ export async function prepareAndroidPrintJob(
+   const generation = bridge.documentGeneration;
+   const current = () => bridge.documentGeneration === generation && (options.isCurrent?.() ?? true);
+   const interrupted = () => new AndroidPrintInterrupted('문서가 바뀌어 인쇄를 멈췄어요. 다시 시도해 주세요.');
+-  const assertActive = () => {
+-    if (options.signal?.aborted) throw abortError();
++  const assertActive = (signal?: AbortSignal) => {
++    if (options.signal?.aborted || signal?.aborted) throw abortError();
+     if (!current()) throw interrupted();
+   };
+   assertActive();
+@@ -160,17 +156,16 @@ export async function prepareAndroidPrintJob(
+   assertActive();
+   const pageCount = bridge.pageCount;
+   if (pageCount < 1) throw new Error('인쇄할 쪽이 없어요.');
+-  if (pageCount > ANDROID_PRINT_MAX_PAGES) {
+-    throw new Error(`PDF와 인쇄는 한 번에 ${ANDROID_PRINT_MAX_PAGES}쪽까지 지원해요. 지금 문서는 ${pageCount}쪽이에요.`);
+-  }
+   const createCanvas = options.createCanvas ?? (() => document.createElement('canvas'));
+   const settle = options.settle ?? defaultSettle;
+ 
+-  async function renderPage(index: number): Promise<AndroidPrintPageImage> {
+-    assertActive();
++  async function renderPage(index: number, target?: AndroidPrintRasterTarget): Promise<AndroidPrintPageImage> {
++    assertActive(target?.signal);
+     if (!Number.isInteger(index) || index < 0 || index >= pageCount) throw new Error('쪽 번호가 올바르지 않아요.');
+     const info = bridge.getPageInfo(index);
+-    let scale = printRasterScale(info.width, info.height);
++    const paper = info.printSize ?? info;
++    let scale = printRasterScale(paper.width, paper.height, target);
++    const minScale = Math.min(0.75, scale);
+     const pictures = pageHasPictures(bridge, index);
+     for (;;) {
+       const canvas = createCanvas();
+@@ -179,15 +174,15 @@ export async function prepareAndroidPrintJob(
+         if (pictures) {
+           // 일부 그림(SVG/WMF/EMF 등)은 엔진이 비동기로 디코드한다. 첫 렌더가 디코드를 시작하고, 잠시 뒤 다시 그리면 채워진다.
+           await settle();
+-          assertActive();
++          assertActive(target?.signal);
+           renderWithoutViewAids(bridge, index, canvas, scale);
+         }
+         const png = await canvasToPng(canvas);
+-        assertActive();
++        assertActive(target?.signal);
+         if (!png || !isPng(png)) throw new Error('인쇄 페이지를 만들지 못했어요.');
+         if (png.length <= ANDROID_PRINT_MAX_PAGE_BYTES) return { png, width: info.width, height: info.height };
+-        if (scale <= ANDROID_PRINT_MIN_SCALE) throw new Error(`${index + 1}쪽 이미지가 너무 커서 인쇄할 수 없어요.`);
+-        scale = Math.max(ANDROID_PRINT_MIN_SCALE, scale * 0.75);
++        if (scale <= minScale) throw new Error(`${index + 1}쪽 이미지가 너무 커서 인쇄할 수 없어요.`);
++        scale = Math.max(minScale, scale * 0.75);
+       } finally {
+         canvas.width = 0;
+         canvas.height = 0;
