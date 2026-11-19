@@ -18,6 +18,10 @@ public class ExportStoreTest {
         Path source=root.resolve("문서.hml");
         try {
             ExportStore.validateDocument(original,"hml");checks++;
+            byte[] hwp3=bytes("HWP Document File V3.00");
+            ExportStore.validateDocumentForRead(hwp3,"hwp");
+            ExportStore.validateDocumentForRead(bytes("%PDF-1.7"),"pdf");checks+=2;
+            reject(()->ExportStore.validateDocument(hwp3,"hwp"));
             reject(()->ExportStore.validateDocument(bytes("<!DOCTYPE HWPML [<!ENTITY read SYSTEM 'file:///etc/passwd'>]><HWPML>&read;</HWPML>"),"hml"));
             reject(()->ExportStore.validateDocument(bytes("<html>wrong root</html>"),"hml"));
             reject(()->ExportStore.validateDocument(bytes("<HWPML><a>"),"hml"));

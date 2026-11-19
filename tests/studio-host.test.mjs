@@ -550,7 +550,7 @@ test('file inputs: Studio\'s programmatic input.click() is routed to the SAF pic
   assert.equal((await nativeLog()).find(o => o.op === 'pickFile').args.kind, 'image');
   await control('/__pick?cancel=1');
   assert.equal(await page.evaluate(() => new Promise(resolve => { const input = document.createElement('input'); input.type = 'file'; input.accept = '.hwp'; input.oncancel = () => resolve('cancel'); input.click(); })), 'cancel');
-  assert.equal((await nativeLog()).filter(o => o.op === 'pickFile')[1].args.kind, 'document');
+  assert.deepEqual((await nativeLog()).filter(o => o.op === 'pickFile')[1].args, {kind: 'document', formats: ['hwp']});
 });
 
 test('launch(): a native document reaches the Studio launchQueue consumer as a readable handle; before the consumer exists it fails visibly', async () => {
