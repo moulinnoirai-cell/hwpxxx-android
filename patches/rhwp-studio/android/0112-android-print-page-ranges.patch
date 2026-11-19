@@ -1,6 +1,24 @@
+diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
+index 0fc0ccb..30ba0a1 100644
+--- a/rhwp-studio/src/command/commands/file.ts
++++ b/rhwp-studio/src/command/commands/file.ts
+@@ -799,9 +799,9 @@ async function runAndroidPrint(services: CommandServices, intent: 'print' | 'pdf
+       signal: controller.signal,
+       isCurrent: () => services.documentState.getRevision() === revision,
+     });
+-    await androidPrintDocument(wasm.fileName, job.pageCount, async (index) => {
++    await androidPrintDocument(wasm.fileName, job.pageCount, async (index, target) => {
+       if (statusEl) statusEl.textContent = printProgressText(intent, index + 1, job.pageCount);
+-      return job.renderPage(index);
++      return job.renderPage(index, target);
+     }, intent, controller.signal);
+     if (statusEl) statusEl.textContent = originalStatus;
+   } catch (err) {
+diff --git a/rhwp-studio/src/hwpxxx/android-host.ts b/rhwp-studio/src/hwpxxx/android-host.ts
+index 06ee707..a0abd0b 100644
 --- a/rhwp-studio/src/hwpxxx/android-host.ts
 +++ b/rhwp-studio/src/hwpxxx/android-host.ts
-@@ -52,6 +52,14 @@
+@@ -52,6 +52,14 @@ export interface AndroidPrintPage {
    height: number;
  }
  
@@ -15,7 +33,7 @@
  /**
   * 쪽을 하나씩 받아 가는 인쇄 요청. 셸이 대상(시스템 인쇄/저장 위치)을 정한 뒤 쪽마다 `renderPage` 를 부르므로
   * 쪽 PNG 를 한꺼번에 메모리에 모으지 않는다. `signal` 이 중단되면 셸은 만든 PDF 를 버린다.
-@@ -61,7 +69,7 @@
+@@ -61,7 +69,7 @@ export interface AndroidPrintRequest {
    intent: 'print' | 'pdf';
    pages?: AndroidPrintPage[];
    pageCount?: number;
@@ -24,7 +42,7 @@
    signal?: AbortSignal;
  }
  
-@@ -206,7 +214,7 @@
+@@ -206,7 +214,7 @@ export async function androidPrintPages(
  export async function androidPrintDocument(
    fileName: string,
    pageCount: number,
@@ -33,6 +51,8 @@
    intent: 'print' | 'pdf',
    signal?: AbortSignal,
  ): Promise<void> {
+diff --git a/rhwp-studio/src/hwpxxx/android-print.ts b/rhwp-studio/src/hwpxxx/android-print.ts
+index 8ee91d6..9526052 100644
 --- a/rhwp-studio/src/hwpxxx/android-print.ts
 +++ b/rhwp-studio/src/hwpxxx/android-print.ts
 @@ -3,18 +3,17 @@
@@ -59,7 +79,7 @@
  
  export class AndroidPrintInterrupted extends Error {
    constructor(message: string) {
-@@ -35,7 +34,7 @@
+@@ -35,7 +34,7 @@ export interface AndroidPrintBridge {
    readonly pageCount: number;
    readonly documentGeneration: number;
    prepareCanvasMetrics(backend: string, isCurrent?: () => boolean): Promise<boolean>;
@@ -68,7 +88,7 @@
    getPageSourceImageKeys(pageNum: number): string | null;
    renderPageToCanvasFiltered(
      pageNum: number,
-@@ -63,23 +62,24 @@
+@@ -63,23 +62,24 @@ export interface AndroidPrintJobOptions {
  
  export interface AndroidPrintJob {
    pageCount: number;
@@ -100,7 +120,7 @@
      MAX_LONG_EDGE_PX / Math.max(widthPx, heightPx),
      Math.sqrt(ANDROID_PRINT_MAX_PIXELS / (widthPx * heightPx)),
    );
-@@ -132,12 +132,8 @@
+@@ -132,12 +132,8 @@ function isPng(bytes: Uint8Array): boolean {
      && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10;
  }
  
@@ -115,7 +135,7 @@
  
  /**
   * 인쇄 작업을 준비한다: 호스트 글꼴·캔버스 지표를 먼저 맞추고(`prepareCanvasMetrics('canvas2d')`),
-@@ -150,8 +146,8 @@
+@@ -150,8 +146,8 @@ export async function prepareAndroidPrintJob(
    const generation = bridge.documentGeneration;
    const current = () => bridge.documentGeneration === generation && (options.isCurrent?.() ?? true);
    const interrupted = () => new AndroidPrintInterrupted('문서가 바뀌어 인쇄를 멈췄어요. 다시 시도해 주세요.');
@@ -126,7 +146,7 @@
      if (!current()) throw interrupted();
    };
    assertActive();
-@@ -160,17 +156,16 @@
+@@ -160,17 +156,16 @@ export async function prepareAndroidPrintJob(
    assertActive();
    const pageCount = bridge.pageCount;
    if (pageCount < 1) throw new Error('인쇄할 쪽이 없어요.');
@@ -149,7 +169,7 @@
      const pictures = pageHasPictures(bridge, index);
      for (;;) {
        const canvas = createCanvas();
-@@ -179,15 +174,15 @@
+@@ -179,15 +174,15 @@ export async function prepareAndroidPrintJob(
          if (pictures) {
            // 일부 그림(SVG/WMF/EMF 등)은 엔진이 비동기로 디코드한다. 첫 렌더가 디코드를 시작하고, 잠시 뒤 다시 그리면 채워진다.
            await settle();
@@ -169,17 +189,3 @@
        } finally {
          canvas.width = 0;
          canvas.height = 0;
---- a/rhwp-studio/src/command/commands/file.ts
-+++ b/rhwp-studio/src/command/commands/file.ts
-@@ -799,9 +799,9 @@
-       signal: controller.signal,
-       isCurrent: () => services.documentState.getRevision() === revision,
-     });
--    await androidPrintDocument(wasm.fileName, job.pageCount, async (index) => {
-+    await androidPrintDocument(wasm.fileName, job.pageCount, async (index, target) => {
-       if (statusEl) statusEl.textContent = printProgressText(intent, index + 1, job.pageCount);
--      return job.renderPage(index);
-+      return job.renderPage(index, target);
-     }, intent, controller.signal);
-     if (statusEl) statusEl.textContent = originalStatus;
-   } catch (err) {
