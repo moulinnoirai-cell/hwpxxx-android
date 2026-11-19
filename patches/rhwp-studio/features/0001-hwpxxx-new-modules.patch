@@ -1,6 +1,6 @@
 diff --git a/rhwp-studio/src/command/chord-map.ts b/rhwp-studio/src/command/chord-map.ts
 new file mode 100644
-index 000000000..85fb85400
+index 0000000..85fb854
 --- /dev/null
 +++ b/rhwp-studio/src/command/chord-map.ts
 @@ -0,0 +1,57 @@
@@ -63,7 +63,7 @@ index 000000000..85fb85400
 +];
 diff --git a/rhwp-studio/src/command/commands/memo.ts b/rhwp-studio/src/command/commands/memo.ts
 new file mode 100644
-index 000000000..aaf6e4b33
+index 0000000..aaf6e4b
 --- /dev/null
 +++ b/rhwp-studio/src/command/commands/memo.ts
 @@ -0,0 +1,53 @@
@@ -122,7 +122,7 @@ index 000000000..aaf6e4b33
 +};
 diff --git a/rhwp-studio/src/core/lineseg-autoreflow.ts b/rhwp-studio/src/core/lineseg-autoreflow.ts
 new file mode 100644
-index 000000000..c59ca85f9
+index 0000000..c59ca85
 --- /dev/null
 +++ b/rhwp-studio/src/core/lineseg-autoreflow.ts
 @@ -0,0 +1,16 @@
@@ -144,7 +144,7 @@ index 000000000..c59ca85f9
 +}
 diff --git a/rhwp-studio/src/hwpxxx/composition-font.ts b/rhwp-studio/src/hwpxxx/composition-font.ts
 new file mode 100644
-index 000000000..bef76a678
+index 0000000..bef76a6
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/composition-font.ts
 @@ -0,0 +1,50 @@
@@ -200,7 +200,7 @@ index 000000000..bef76a678
 +}
 diff --git a/rhwp-studio/src/hwpxxx/content-loss.ts b/rhwp-studio/src/hwpxxx/content-loss.ts
 new file mode 100644
-index 000000000..b9420e991
+index 0000000..b9420e9
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/content-loss.ts
 @@ -0,0 +1,26 @@
@@ -232,7 +232,7 @@ index 000000000..b9420e991
 +}
 diff --git a/rhwp-studio/src/hwpxxx/memo-context.ts b/rhwp-studio/src/hwpxxx/memo-context.ts
 new file mode 100644
-index 000000000..cd6016acf
+index 0000000..cd6016a
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-context.ts
 @@ -0,0 +1,74 @@
@@ -312,7 +312,7 @@ index 000000000..cd6016acf
 +}
 diff --git a/rhwp-studio/src/hwpxxx/memo-marks.ts b/rhwp-studio/src/hwpxxx/memo-marks.ts
 new file mode 100644
-index 000000000..04a5aaaa2
+index 0000000..04a5aaa
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-marks.ts
 @@ -0,0 +1,240 @@
@@ -558,7 +558,7 @@ index 000000000..04a5aaaa2
 +export const installMemoMarks = (services: CommandServices): MemoMarks => memoMarks(services);
 diff --git a/rhwp-studio/src/hwpxxx/memo-panel.ts b/rhwp-studio/src/hwpxxx/memo-panel.ts
 new file mode 100644
-index 000000000..64c42143c
+index 0000000..64c4214
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/memo-panel.ts
 @@ -0,0 +1,286 @@
@@ -850,7 +850,7 @@ index 000000000..64c42143c
 +export const memoPanel = (services: CommandServices): MemoPanel => (panel ??= new MemoPanel(services));
 diff --git a/rhwp-studio/src/hwpxxx/perf-probe.ts b/rhwp-studio/src/hwpxxx/perf-probe.ts
 new file mode 100644
-index 000000000..238c57e4e
+index 0000000..238c57e
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/perf-probe.ts
 @@ -0,0 +1,127 @@
@@ -983,7 +983,7 @@ index 000000000..238c57e4e
 +}
 diff --git a/rhwp-studio/src/hwpxxx/signature-memo.ts b/rhwp-studio/src/hwpxxx/signature-memo.ts
 new file mode 100644
-index 000000000..bd5e21a3d
+index 0000000..bd5e21a
 --- /dev/null
 +++ b/rhwp-studio/src/hwpxxx/signature-memo.ts
 @@ -0,0 +1,30 @@
@@ -1019,7 +1019,7 @@ index 000000000..bd5e21a3d
 +}
 diff --git a/rhwp-studio/src/styles/hwpxxx-memo.css b/rhwp-studio/src/styles/hwpxxx-memo.css
 new file mode 100644
-index 000000000..879fb1d37
+index 0000000..879fb1d
 --- /dev/null
 +++ b/rhwp-studio/src/styles/hwpxxx-memo.css
 @@ -0,0 +1,57 @@
@@ -1082,7 +1082,7 @@ index 000000000..879fb1d37
 +@media print { .hwpxxx-memo-marks { display: none; } }
 diff --git a/rhwp-studio/src/ui/command-tooltip.ts b/rhwp-studio/src/ui/command-tooltip.ts
 new file mode 100644
-index 000000000..61577047d
+index 0000000..6157704
 --- /dev/null
 +++ b/rhwp-studio/src/ui/command-tooltip.ts
 @@ -0,0 +1,185 @@
@@ -1273,7 +1273,7 @@ index 000000000..61577047d
 +}
 diff --git a/rhwp-studio/src/ui/format-copy-dialog.ts b/rhwp-studio/src/ui/format-copy-dialog.ts
 new file mode 100644
-index 000000000..7a8949980
+index 0000000..7a89499
 --- /dev/null
 +++ b/rhwp-studio/src/ui/format-copy-dialog.ts
 @@ -0,0 +1,174 @@
@@ -1453,7 +1453,7 @@ index 000000000..7a8949980
 +}
 diff --git a/rhwp-studio/tests/hwpxxx-composition-font.test.ts b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
 new file mode 100644
-index 000000000..a0cce36a4
+index 0000000..a0cce36
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-composition-font.test.ts
 @@ -0,0 +1,43 @@
@@ -1502,7 +1502,7 @@ index 000000000..a0cce36a4
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-content-loss.test.ts b/rhwp-studio/tests/hwpxxx-content-loss.test.ts
 new file mode 100644
-index 000000000..ce35e9e1a
+index 0000000..ce35e9e
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-content-loss.test.ts
 @@ -0,0 +1,40 @@
@@ -1548,7 +1548,7 @@ index 000000000..ce35e9e1a
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
 new file mode 100644
-index 000000000..b8b9de153
+index 0000000..b8b9de1
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-desktop-shortcuts.test.ts
 @@ -0,0 +1,92 @@
@@ -1646,7 +1646,7 @@ index 000000000..b8b9de153
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-format-copy.test.ts b/rhwp-studio/tests/hwpxxx-format-copy.test.ts
 new file mode 100644
-index 000000000..da6e9bbc1
+index 0000000..da6e9bb
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-format-copy.test.ts
 @@ -0,0 +1,71 @@
@@ -1723,7 +1723,7 @@ index 000000000..da6e9bbc1
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
 new file mode 100644
-index 000000000..eb15f1a82
+index 0000000..eb15f1a
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-highlighter-split.test.ts
 @@ -0,0 +1,32 @@
@@ -1761,7 +1761,7 @@ index 000000000..eb15f1a82
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-input-latency.test.ts b/rhwp-studio/tests/hwpxxx-input-latency.test.ts
 new file mode 100644
-index 000000000..aa402fea8
+index 0000000..c864bf2
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-input-latency.test.ts
 @@ -0,0 +1,59 @@
@@ -1822,11 +1822,11 @@ index 000000000..aa402fea8
 +  const bumps = (local.match(/fontEnvironmentRevision\+\+/g) ?? []).length;
 +  assert.ok(bumps >= 3, `목록 변경 지점(스냅샷·호스트 구독·호스트 재구성)마다 리비전을 올린다: ${bumps}`);
 +  const requests = source('core/host-font-requests.ts');
-+  assert.match(requests, /seenFaces/);
++  assert.match(requests, /textFamilies\.has\(key\)/); // 본가 v0.9.1 이 같은 메모를 가져 hwpxxx 쪽 seenFaces 는 뺐다
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-line-page-break.test.ts b/rhwp-studio/tests/hwpxxx-line-page-break.test.ts
 new file mode 100644
-index 000000000..4aac2ef47
+index 0000000..4aac2ef
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-line-page-break.test.ts
 @@ -0,0 +1,59 @@
@@ -1891,7 +1891,7 @@ index 000000000..4aac2ef47
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
 new file mode 100644
-index 000000000..6c39eb5e2
+index 0000000..6c39eb5
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-lineseg-autoreflow.test.ts
 @@ -0,0 +1,14 @@
@@ -1911,10 +1911,10 @@ index 000000000..6c39eb5e2
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts b/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts
 new file mode 100644
-index 000000000..662415c09
+index 0000000..0300c24
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-load-refresh-race.test.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,35 @@
 +// [hwpxxx] 문서 로드 중 들어온 갱신(글꼴 로드 완료의 `document-view-changed`, 호스트 글꼴 목록 변경)이 렌더러 선택 세대를 올려
 +// 로드를 조용히 중단시키지 않는다 — 로드 뒤로 미룬다. (중단되면 문서가 빈 쪽 placeholder 로 남았다.)
 +import test from 'node:test';
@@ -1922,10 +1922,10 @@ index 000000000..662415c09
 +import { readFileSync } from 'node:fs';
 +
 +const view = readFileSync(new URL('../src/view/canvas-view.ts', import.meta.url), 'utf8');
-+const body = (name: string) => {
++const body = (name: string, length = 900) => {
 +  const start = view.indexOf(name);
 +  assert.ok(start > 0, name);
-+  return view.slice(start, start + 900);
++  return view.slice(start, start + length);
 +};
 +
 +test('loadDocument 는 진행 표시를 켜고, 끝날 때(예외 포함) 보류한 갱신을 한 번 수행한다', () => {
@@ -1945,12 +1945,14 @@ index 000000000..662415c09
 +});
 +
 +test('로드 본문은 그대로 loadDocumentNow 에 있다(렌더러 선택·쪽 배치)', () => {
++  // 본가 v0.9.1 은 로드 본문을 loadPreparedDocument 로 나눴다.
 +  const now = body('private async loadDocumentNow(): Promise<void> {');
-+  assert.match(now, /prepareRendererRevision\(epoch/);
++  assert.match(now, /loadPreparedDocument\(\)/);
++  assert.match(body('private async loadPreparedDocument(): Promise<void> {', 1600), /prepareRendererRevision\(epoch/);
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-pdf-capability-guard.test.ts b/rhwp-studio/tests/hwpxxx-pdf-capability-guard.test.ts
 new file mode 100644
-index 000000000..d8725d210
+index 0000000..d8725d2
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-pdf-capability-guard.test.ts
 @@ -0,0 +1,22 @@
@@ -1978,7 +1980,7 @@ index 000000000..d8725d210
 +});
 diff --git a/rhwp-studio/tests/hwpxxx-perf-probe.test.ts b/rhwp-studio/tests/hwpxxx-perf-probe.test.ts
 new file mode 100644
-index 000000000..3279c2151
+index 0000000..3279c21
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-perf-probe.test.ts
 @@ -0,0 +1,66 @@
@@ -2050,7 +2052,7 @@ index 000000000..3279c2151
 +});
 diff --git a/rhwp-studio/tests/support/studio-alias-hooks.mjs b/rhwp-studio/tests/support/studio-alias-hooks.mjs
 new file mode 100644
-index 000000000..cd705a31f
+index 0000000..cd705a3
 --- /dev/null
 +++ b/rhwp-studio/tests/support/studio-alias-hooks.mjs
 @@ -0,0 +1,36 @@

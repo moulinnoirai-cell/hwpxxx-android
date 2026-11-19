@@ -1,6 +1,6 @@
 # Studio 프런트엔드 패치 (Android 편집기)
 
-Android 앱의 문서 편집 화면은 본가 **rhwp-studio**(rHWP v0.9.0) 위에 hwpxxx 패치를 얹은 것입니다. 이 저장소가 패치 시리즈 전체를 가지고 있으며
+Android 앱의 문서 편집 화면은 본가 **rhwp-studio**(rHWP v0.9.1) 위에 hwpxxx 패치를 얹은 것입니다. 이 저장소가 패치 시리즈 전체를 가지고 있으며
 (PC판은 따라가지 않습니다) 빌드 결과는 넣지 않습니다. 결과물은 `app/src/main/assets/studio/`(`.gitignore`)에 생깁니다.
 원칙: 본가와 겹치는 동작은 본가를 따르고, hwpxxx 고유 기능만 얹습니다. 새 기능은 가능하면 새 파일(`src/hwpxxx/…`)에 두고 본가 파일에는 얇은 연결만 남깁니다.
 rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY_LICENSES-rhwp.md`, `licenses/*`(번들된 npm 패키지)를 함께 싣습니다.
@@ -24,7 +24,7 @@ rHWP는 MIT 라이선스이며 빌드 결과에 `LICENSE-rhwp.txt`, `THIRD_PARTY
 
 ## 고정 값 (`config/android-studio.json`)
 
-- 본가 rHWP v0.9.0 커밋 `c9095c5f67632e6721e800ccc7fb43ea49d26682` (엔진 락 `config/android-engine.json`과 같아야 함)
+- 본가 rHWP v0.9.1 커밋 `981ce66b4183b13c1a3b5907e04a8969c8c42034` (엔진 락 `config/android-engine.json`과 같아야 함)
 - `featurePatches` / `androidPatches`: 패치 파일 이름과 SHA-256 (목록과 파일이 어긋나면 빌드·게이트가 실패)
 - `sourcePaths`: 빌드에 쓰는 본가 경로(`rhwp-studio`, `rhwp-shared`, `vendor/npm/ajv`(`package.json` 의 `file:` 의존성), `src/renderer/square_gradient.sksl`, 글꼴·로고·라이선스)
 - `packageLockSha256`: `rhwp-studio/package-lock.json` 해시 (`npm ci`로만 설치)

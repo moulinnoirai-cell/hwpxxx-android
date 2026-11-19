@@ -1,7 +1,7 @@
 {
   "upstream": "https://github.com/edwardkim/rhwp",
-  "commit": "c9095c5f67632e6721e800ccc7fb43ea49d26682",
-  "version": "0.9.0",
+  "commit": "981ce66b4183b13c1a3b5907e04a8969c8c42034",
+  "version": "0.9.1",
   "rust": "nightly-2026-02-01",
   "wasmBindgen": "0.2.127",
   "rustFlags": "-Ctarget-cpu=mvp",

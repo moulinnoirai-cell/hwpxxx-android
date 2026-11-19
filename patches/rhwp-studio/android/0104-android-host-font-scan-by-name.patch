@@ -1,5 +1,5 @@
 diff --git a/rhwp-studio/src/core/host-font-requests.ts b/rhwp-studio/src/core/host-font-requests.ts
-index ed60a981b..5d4472d94 100644
+index fd3e061..efff959 100644
 --- a/rhwp-studio/src/core/host-font-requests.ts
 +++ b/rhwp-studio/src/core/host-font-requests.ts
 @@ -120,6 +120,33 @@ function hancomEquationFamilies(root: LayerEquationLayoutBox | undefined): Set<s
@@ -37,19 +37,19 @@ index ed60a981b..5d4472d94 100644
  export function collectHostFontRequests(tree: PageLayerTree): LocalFontRecord[] {
    const selected = new Map<string, LocalFontRecord>();
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index d09ac812d..43fc071b6 100644
+index f5e8bc9..a51b529 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
 @@ -8,7 +8,7 @@ import { NativePuaFontSession, type NativePuaFontDocument } from './native-pua-f
  import { CanvasFontResolutionScope } from './canvas-font-resolution-scope';
  import { MetafileFontSession, type MetafileFontDocument } from './metafile-font-session';
- import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, type LocalFontRecord } from './local-fonts';
+ import { releaseHostLayoutPrograms, hostFontLayoutEnabled, hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, resolveRendererLocalFontCandidates, type LocalFontRecord } from './local-fonts';
 -import { collectHostFontRequests } from './host-font-requests';
 +import { collectHostFontRequests, collectHostFontRequestsForFamilies } from './host-font-requests';
  import type { CanvasMetricDocument } from './canvas-metric-session';
  import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
  import type { CharShapeRun } from './types';
-@@ -363,6 +363,20 @@ interface DocumentFontEnvironmentApi {
+@@ -297,6 +297,20 @@ interface DocumentFontEnvironmentApi {
    setFontEnvironment(environment?: string): boolean;
  }
  
@@ -70,7 +70,7 @@ index d09ac812d..43fc071b6 100644
  export class WasmBridge {
    private doc: HwpDocument | null = null;
    private canvasMetrics = new CanvasMetricSession();
-@@ -390,6 +404,81 @@ export class WasmBridge {
+@@ -337,6 +351,81 @@ export class WasmBridge {
      this.canvasMetricDocument()?.selectCanvasMetrics(false);
    }
  
@@ -149,32 +149,33 @@ index d09ac812d..43fc071b6 100644
 +    later(1500);
 +  }
 +
-   async prepareCanvasMetrics(backend: string, isCurrent: () => boolean = () => true): Promise<boolean> {
-     const doc = this.doc;
-     const documentGeneration = this._documentGeneration;
-@@ -401,12 +490,17 @@ export class WasmBridge {
-       const generation = getHostFontState().generation;
+   async prepareCanvasMetrics(
+     backend: string, isCurrent: () => boolean = () => true, editedPage: number | null = null,
+   ): Promise<boolean> {
+@@ -356,10 +445,27 @@ export class WasmBridge {
        await prepareHostFontCatalog();
-       if (!current() || generation !== getHostFontState().generation) return false;
+       const catalog = getHostFontState();
+       if (!current() || generation !== catalog.generation) return false;
+-      const records = catalog.count === 0 ? [] : this.collectDocumentHostFontRequests(
+-        doc, generation, editedPage);
 +      const hostFontScan = this.hostFontScanFor(doc, documentGeneration, generation);
-       const records = this.withPortableMetrics(() => {
-         const selected = new Map<string, LocalFontRecord>();
--        for (let page = 0; page < this.pageCount; page++) {
--          for (const record of collectHostFontRequests(this.getPageLayerTreeObject(page))) {
++      const records = this.withPortableMetrics(() => {
++        const selected = new Map<string, LocalFontRecord>();
 +        // [hwpxxx-android] 예전에는 여기서 모든 쪽의 레이어 트리를 내보내 JSON 으로 읽었다(178쪽 문서에서 90MB, 첫 화면 전 시간의 대부분.
 +        // 편집할 때마다도 되풀이됐다). 호스트 글꼴이 없으면 고를 face 가 없고(`collectHostFontRequests` 는 hostReference 가 있는
 +        // 기록만 고른다), 있으면 문서가 선언한 글꼴 이름으로 바로 고른다. 이름 목록에 없던 face 는 뒤에서 한 번 확인해 채운다.
 +        if (getHostFontState().count > 0) {
 +          for (const record of collectHostFontRequestsForFamilies(this.documentFontFamilyNames())) {
-             selected.set(localFontFaceKey(record), record);
-           }
++            selected.set(localFontFaceKey(record), record);
++          }
 +          for (const record of hostFontScan.extras.values()) selected.set(localFontFaceKey(record), record);
-         }
-         for (const record of this.nativePuaFonts.records(doc as unknown as NativePuaFontDocument | null)) {
-           selected.set(localFontFaceKey(record), record);
-@@ -415,6 +509,8 @@ export class WasmBridge {
-       });
-       await this.hostCanvasFonts.prepare(records, doc, current);
++        }
++        for (const record of this.nativePuaFonts.records(doc as unknown as NativePuaFontDocument | null)) {
++          selected.set(localFontFaceKey(record), record);
++        }
++        return [...selected.values()];
++      });
+       await this.hostCanvasFonts.prepare(records, doc, current, hostFontLayoutEnabled());
        if (!current() || generation !== getHostFontState().generation) return false;
 +      for (const record of records) hostFontScan.known.add(localFontFaceKey(record));
 +      if (getHostFontState().count > 0) this.verifyHostFontScan(hostFontScan);
@@ -182,10 +183,10 @@ index d09ac812d..43fc071b6 100644
        if (!await this.nativePuaFonts.prepare(doc as unknown as NativePuaFontDocument | null,
          puaFontGeneration, record => this.hostCanvasFonts.isPrepared(record),
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index 95ea4ce4f..eae66ee25 100644
+index 536c58c..0ec5bb4 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
-@@ -1347,6 +1347,14 @@ function setupEventListeners(): void {
+@@ -1377,6 +1377,14 @@ function setupEventListeners(): void {
        console.warn('[HostFonts] View refresh failed:', error);
      });
    });
@@ -202,7 +203,7 @@ index 95ea4ce4f..eae66ee25 100644
      if ((payload as { source?: string } | undefined)?.source === 'options-dialog-clear') {
 diff --git a/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts b/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts
 new file mode 100644
-index 000000000..a89af8c58
+index 0000000..a89af8c
 --- /dev/null
 +++ b/rhwp-studio/tests/hwpxxx-android-host-font-scan.test.ts
 @@ -0,0 +1,82 @@

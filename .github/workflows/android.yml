@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: edwardkim/rhwp
-          ref: c9095c5f67632e6721e800ccc7fb43ea49d26682
+          ref: 981ce66b4183b13c1a3b5907e04a8969c8c42034
           path: .build/rhwp
           sparse-checkout: |
             rhwp-studio

@@ -176,10 +176,10 @@ index 0000000..908a47d
 +  };
 +}
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index eae66ee..017562f 100644
+index 0ec5bb4..4893fb8 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
-@@ -34,6 +34,8 @@ import { PluginHostRegistry } from '@/plugin/host';
+@@ -35,6 +35,8 @@ import { PluginHostRegistry } from '@/plugin/host';
  import type { StudioPlugin } from '@/plugin/types';
  import { CommandDispatcher } from '@/command/dispatcher';
  import { installMemoMarks } from '@/hwpxxx/memo-marks';
@@ -188,7 +188,7 @@ index eae66ee..017562f 100644
  import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
  import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
  import { handleDocumentSelectAllShortcut, isTextEditingTarget } from '@/command/document-shortcut-guard';
-@@ -1124,6 +1126,8 @@ function setupFileInput(): void {
+@@ -1137,6 +1139,8 @@ function setupFileInput(): void {
  
    // 드래그 앤 드롭 지원 (scroll-container 영역)
    const container = document.getElementById('scroll-container')!;

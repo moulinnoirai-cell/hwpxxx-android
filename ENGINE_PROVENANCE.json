@@ -1,7 +1,7 @@
 {
-  "version": "0.9.0",
-  "sourceCommit": "c9095c5f67632e6721e800ccc7fb43ea49d26682",
-  "note": "The engine is unmodified upstream rhwp v0.9.0 (memo API included), rebuilt by scripts/build-engine.sh with the Android WebView flags (-Ctarget-cpu=mvp, -Zbuild-std); there is no engine patch. The runtime tracked under app/src/main/assets/engine is the old 0.8.7 npm build and is only a placeholder: CI (and local builds) overwrite it with the rebuilt engine before packaging, and verifyMemoEngine rejects anything without the generated build-info.json. Generated hashes are stored in engine/build-info.json inside the APK build artifact.",
+  "version": "0.9.1",
+  "sourceCommit": "981ce66b4183b13c1a3b5907e04a8969c8c42034",
+  "note": "The engine is unmodified upstream rhwp v0.9.1 (memo API included), rebuilt by scripts/build-engine.sh with the Android WebView flags (-Ctarget-cpu=mvp, -Zbuild-std); there is no engine patch. The runtime tracked under app/src/main/assets/engine is the old 0.8.7 npm build and is only a placeholder: CI (and local builds) overwrite it with the rebuilt engine before packaging, and verifyMemoEngine rejects anything without the generated build-info.json. Generated hashes are stored in engine/build-info.json inside the APK build artifact.",
   "buildConfig": "config/android-engine.json",
   "upstreamBaseline": {
     "version": "0.8.7",

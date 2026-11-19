@@ -1,5 +1,5 @@
 diff --git a/rhwp-studio/src/command/commands/file.ts b/rhwp-studio/src/command/commands/file.ts
-index 367e3451f..3bc8eb720 100644
+index 367e345..3bc8eb7 100644
 --- a/rhwp-studio/src/command/commands/file.ts
 +++ b/rhwp-studio/src/command/commands/file.ts
 @@ -70,6 +70,9 @@ import { addRecentDoc, clearRecentDocs, listRecentDocs, removeRecentDoc } from '
@@ -459,7 +459,7 @@ index 367e3451f..3bc8eb720 100644
        await openRecentEntry(entry, {
          ensurePermission: ensureReadPermission,
 diff --git a/rhwp-studio/src/core/document-dirty-state.ts b/rhwp-studio/src/core/document-dirty-state.ts
-index c28ff9b9a..1c4fad6a7 100644
+index c28ff9b..1c4fad6 100644
 --- a/rhwp-studio/src/core/document-dirty-state.ts
 +++ b/rhwp-studio/src/core/document-dirty-state.ts
 @@ -13,6 +13,8 @@ export interface DirtyStateChange {
@@ -497,7 +497,7 @@ index c28ff9b9a..1c4fad6a7 100644
  
    installBeforeUnload(windowLike: Window): () => void {
 diff --git a/rhwp-studio/src/core/local-fonts.ts b/rhwp-studio/src/core/local-fonts.ts
-index a4d6fd2df..953fad4bc 100644
+index f70c42e..9d31e4e 100644
 --- a/rhwp-studio/src/core/local-fonts.ts
 +++ b/rhwp-studio/src/core/local-fonts.ts
 @@ -149,6 +149,9 @@ const automaticallyCheckedProgramNames = new Set<string>();
@@ -578,7 +578,7 @@ index a4d6fd2df..953fad4bc 100644
    hostLookupGeneration = -1;
    hostLookupReferences = [];
    hostRecords = [];
-@@ -1312,6 +1362,7 @@ function currentHostRecords(): LocalFontRecord[] {
+@@ -1314,6 +1364,7 @@ function currentHostRecords(): LocalFontRecord[] {
    // The catalog can finish loading without changing the invalidation generation.
    if (hostLookupGeneration !== hostFontSource.generation
      || references[0]?.face !== hostLookupReferences[0]?.face || references.length !== hostLookupReferences.length) {
@@ -587,15 +587,15 @@ index a4d6fd2df..953fad4bc 100644
      hostLookupReferences = references;
      hostRecords = references.map(reference => {
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index cebf9b402..d09ac812d 100644
+index 9c713c4..f5e8bc9 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
 @@ -7,13 +7,13 @@ import { ordinaryTextFontFaceData, type OrdinaryTextFontSource } from './ordinar
  import { NativePuaFontSession, type NativePuaFontDocument } from './native-pua-font-session';
  import { CanvasFontResolutionScope } from './canvas-font-resolution-scope';
  import { MetafileFontSession, type MetafileFontDocument } from './metafile-font-session';
--import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, localFontFaceKey, type LocalFontRecord } from './local-fonts';
-+import { hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, type LocalFontRecord } from './local-fonts';
+-import { releaseHostLayoutPrograms, hostFontLayoutEnabled, hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, localFontFaceKey, resolveRendererLocalFontCandidates, type LocalFontRecord } from './local-fonts';
++import { releaseHostLayoutPrograms, hostFontLayoutEnabled, hasHostFontProvider, prepareHostFontCatalog, getHostFontState, getLocalFontState, getLocalFontEnvironmentRevision, localFontFaceKey, resolveRendererLocalFontCandidates, type LocalFontRecord } from './local-fonts';
  import { collectHostFontRequests } from './host-font-requests';
  import type { CanvasMetricDocument } from './canvas-metric-session';
  import { requireCharShapeRunsDocument, parseCharShapeRuns, validateCharShapeRuns } from './char-shape-runs';
@@ -606,12 +606,12 @@ index cebf9b402..d09ac812d 100644
  import * as wasmExports from '@wasm/rhwp.js';
  import { inspectFontSymbols } from './wasm-font-symbol-coverage';
  import { hasPdfImportCapability } from './pdf-import-capability';
-@@ -231,9 +231,15 @@ import {
-   formatCssFontFamilyList,
-   parseCssFontFamilyList,
-   completeFontFamilyList,
-+  getDocumentFontSubstitutionRevision,
- } from './font-substitution';
+@@ -225,14 +225,25 @@ export interface DeferredPaginationResult {
+   pageCount: number;
+ }
+ 
+-import { substituteCssFontFamily } from './font-substitution';
++import { substituteCssFontFamily, getDocumentFontSubstitutionRevision } from './font-substitution';
  import { rememberRawCanvasFontDescriptor } from './canvas-font-raw';
  import type { FileSystemFileHandleLike } from '@/command/file-system-access';
 +import { isAndroidHost } from '@/hwpxxx/android-host';
@@ -619,10 +619,6 @@ index cebf9b402..d09ac812d 100644
 +import { hasBlockingContentLoss } from '@/hwpxxx/content-loss';
 +import { memoizeBySignature } from '@/hwpxxx/signature-memo';
 +import type { RecoveryBytes } from '@/recovery/autosave-store';
- 
- /**
-  * CSS font 문자열에서 font-family를 추출하여 폰트 치환을 적용한다.
-@@ -297,8 +303,14 @@ function substituteCssFontFamily(cssFont: string): string {
  
  let canvasFontSubstitutionInstalled = false;
  
@@ -638,7 +634,7 @@ index cebf9b402..d09ac812d 100644
  );
  
  function withCanvasFontResolution<T>(session: HostCanvasFontSession | null, operation: () => T): T {
-@@ -327,6 +339,21 @@ function installCanvasFontSubstitution(): void {
+@@ -261,6 +272,21 @@ function installCanvasFontSubstitution(): void {
    canvasFontSubstitutionInstalled = true;
  }
  
@@ -658,17 +654,9 @@ index cebf9b402..d09ac812d 100644
 +}
 +
  import { declaredOpenTypeProgram, prepareDeclaredFontPrograms, type DocumentFontSelectionPlan } from './declared-font-environment';
+ import { prepareDeclaredHostFontPrograms } from './declared-host-font-programs';
  import { documentFontPreferences, applyDocumentFontPreferences } from './document-font-preferences.ts';
- 
-@@ -343,7 +370,6 @@ export class WasmBridge {
-   private readonly nativePuaFonts = new NativePuaFontSession();
-   private readonly metafileFonts = new MetafileFontSession();
-   private canvasFontGeneration = 0;
--
-   private canvasMetricDocument(): CanvasMetricDocument | null {
-     const doc = this.doc as unknown as Partial<CanvasMetricDocument> | null;
-     return doc && ['collectCanvasMetricRequests', 'registerCanvasMetricReplies', 'selectCanvasMetrics', 'canvasMetricsActive', 'getCanvasPageLayerTree']
-@@ -494,7 +520,7 @@ export class WasmBridge {
+@@ -484,7 +510,7 @@ export class WasmBridge {
        if (!ctx) {
          ctx = document.createElement('canvas').getContext('2d');
        }
@@ -677,7 +665,7 @@ index cebf9b402..d09ac812d 100644
        if (resolved !== lastFont) {
          ctx!.font = resolved;
          lastFont = resolved;
-@@ -776,6 +802,47 @@ export class WasmBridge {
+@@ -766,6 +792,47 @@ export class WasmBridge {
      this.onRecoveryProtectionChanged?.();
    }
  
@@ -725,7 +713,7 @@ index cebf9b402..d09ac812d 100644
  
    get isNewDocument(): boolean {
      return this._fileName === '새 문서.hwp';
-@@ -3899,6 +3966,37 @@ export class WasmBridge {
+@@ -3918,6 +3985,37 @@ export class WasmBridge {
      return JSON.parse(this.doc.getMemoList());
    }
  
@@ -764,7 +752,7 @@ index cebf9b402..d09ac812d 100644
      if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
      return this.doc.insertHyperlinkEx(JSON.stringify({ target, start, end, uri }));
 diff --git a/rhwp-studio/src/history/idb-store.ts b/rhwp-studio/src/history/idb-store.ts
-index 9f2c81509..2a8340069 100644
+index 9f2c815..2a83400 100644
 --- a/rhwp-studio/src/history/idb-store.ts
 +++ b/rhwp-studio/src/history/idb-store.ts
 @@ -6,6 +6,15 @@
@@ -889,10 +877,10 @@ index 9f2c81509..2a8340069 100644
      async (db) =>
        new Promise<void>((resolve, reject) => {
 diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
-index 7049ad669..95ea4ce4f 100644
+index 50b4215..536c58c 100644
 --- a/rhwp-studio/src/main.ts
 +++ b/rhwp-studio/src/main.ts
-@@ -33,6 +33,7 @@ import type { ChromeVisibility } from '@/automation/types';
+@@ -34,6 +34,7 @@ import type { ChromeVisibility } from '@/automation/types';
  import { PluginHostRegistry } from '@/plugin/host';
  import type { StudioPlugin } from '@/plugin/types';
  import { CommandDispatcher } from '@/command/dispatcher';
@@ -900,7 +888,7 @@ index 7049ad669..95ea4ce4f 100644
  import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
  import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
  import { handleDocumentSelectAllShortcut, isTextEditingTarget } from '@/command/document-shortcut-guard';
-@@ -86,7 +87,8 @@ import { userSettings } from '@/core/user-settings';
+@@ -87,7 +88,8 @@ import { userSettings } from '@/core/user-settings';
  import { AutosaveManager, type AutosaveScheduleSettings, type AutosaveStatus } from '@/recovery/autosave-manager';
  import { clearAutosaveDrafts, deleteAutosaveDraft, getAutosaveDraft, listAutosaveDrafts, type AutosaveDraft } from '@/recovery/autosave-store';
  import { recoveryFileName } from '@/recovery/recovery-format';
@@ -910,7 +898,7 @@ index 7049ad669..95ea4ce4f 100644
  import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
  import { cellSelectionPhaseLabel, type CellSelectionPhase } from '@/engine/cell-selection-phase';
  import { TableObjectRenderer } from '@/engine/table-object-renderer';
-@@ -120,6 +122,15 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
+@@ -121,6 +123,15 @@ import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
  import { enrichFontDecisionTrace } from '@/core/font-decision-trace';
  import { DocumentAgentController } from '@/document-agent/controller';
  import { initI18n, t } from '@/i18n/index.ts';
@@ -926,7 +914,7 @@ index 7049ad669..95ea4ce4f 100644
  import { SidePanelController, createDomSidePanelView } from '@/view/side-panel-host';
  import { navigateToSearchHit } from '@/ui/find-dialog';
  
-@@ -140,10 +151,15 @@ Object.defineProperty(window, 'rhwpCommandErrors', { value: Object.freeze({
+@@ -141,10 +152,15 @@ Object.defineProperty(window, 'rhwpCommandErrors', { value: Object.freeze({
    getState: () => inputHandler?.getCommandErrorState() ?? null,
  }), configurable: true });
  documentState.installBeforeUnload(window);
@@ -945,7 +933,7 @@ index 7049ad669..95ea4ce4f 100644
    protectDraft: async draft => {
      if (!wasm.requiresPasswordForSave) return draft;
      const cipher = wasm.recoveryCipher;
-@@ -188,6 +204,21 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
+@@ -189,6 +205,21 @@ async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty
    forms: { setActionsEnabled: setFormActionsEnabled },
    fonts: { setProvider: setHostFontProvider, getState: getHostFontState },
  };
@@ -967,7 +955,7 @@ index 7049ad669..95ea4ce4f 100644
  
  // E2E 테스트용 전역 노출 (개발 모드 전용)
  if (import.meta.env.DEV) {
-@@ -315,6 +346,7 @@ const commandServices: CommandServices = {
+@@ -316,6 +347,7 @@ const commandServices: CommandServices = {
  };
  
  const dispatcher = new CommandDispatcher(registry, commandServices, eventBus);
@@ -975,7 +963,7 @@ index 7049ad669..95ea4ce4f 100644
  
  // 자동화 표면 — 외부 JavaScript 가 커맨드·메뉴를 다루는 자리. 실행은 메뉴·툴바·키보드와 같은
  // dispatcher 를 타므로 게이트가 갈리지 않는다. 메뉴 컨테이너는 이 시점에 아직 없을 수 있어
-@@ -419,6 +451,8 @@ registry.registerAll(insertCommands);
+@@ -420,6 +452,8 @@ registry.registerAll(insertCommands);
  registry.registerAll(tableCommands);
  registry.registerAll(pageCommands);
  registry.registerAll(toolCommands);
@@ -984,7 +972,7 @@ index 7049ad669..95ea4ce4f 100644
  
  /**
   * embed 프로파일의 메뉴·도구막대 정리 — index.html은 그대로 두고 부트 시 런타임에
-@@ -477,6 +511,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
+@@ -478,6 +512,7 @@ function autosaveScheduleFromUserSettings(): AutosaveScheduleSettings {
  }
  
  function handleAutosaveStatus(status: AutosaveStatus): void {
@@ -992,7 +980,7 @@ index 7049ad669..95ea4ce4f 100644
    const message = document.getElementById('sb-message');
    if (!message) return;
    if (autosaveStatusRestoreTimer) {
-@@ -500,9 +535,11 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
+@@ -501,9 +536,11 @@ function handleAutosaveStatus(status: AutosaveStatus): void {
      nextMessage = `${status.encrypted ? '암호화 복구본 자동 저장' : '복구용 자동 저장'} 완료 (${formatBytes(status.byteLength)})`;
    } else if (status.state === 'blocked') {
      // 실패가 아니라 의도된 차단이므로 구분해서 알린다 (#5992).
@@ -1006,7 +994,7 @@ index 7049ad669..95ea4ce4f 100644
    }
    message.textContent = nextMessage;
    if (restoreTarget !== null && restoreTarget !== nextMessage) {
-@@ -738,6 +775,7 @@ async function initialize(): Promise<void> {
+@@ -751,6 +788,7 @@ async function initialize(): Promise<void> {
        canvasView.getVirtualScroll(),
        canvasView.getViewportManager(),
      );
@@ -1014,7 +1002,7 @@ index 7049ad669..95ea4ce4f 100644
      inputHandler.configureCommandErrors({
        isDirty: () => documentState.isDirty(),
        render: () => canvasView!.refreshDocumentAgentMutation(),
-@@ -935,6 +973,8 @@ async function initialize(): Promise<void> {
+@@ -948,6 +986,8 @@ async function initialize(): Promise<void> {
          },
        });
      }
@@ -1023,7 +1011,7 @@ index 7049ad669..95ea4ce4f 100644
  
      // E2E 테스트용 전역 노출 (개발 모드 전용)
      if (import.meta.env.DEV) {
-@@ -1527,6 +1567,15 @@ async function initializeDocument(
+@@ -1563,7 +1603,17 @@ async function initializeDocument(
        }, extensionViewerSettings);
      }
      console.log('[initDoc] 2. 폰트 로딩 완료');
@@ -1036,10 +1024,12 @@ index 7049ad669..95ea4ce4f 100644
 +    } catch (e) {
 +      console.warn('[hwpxxx] 줄 정보 보정 실패 (치명적이지 않음):', e);
 +    }
-     await updateLoadProgress(75, '문서 상태 적용 중...');
+     await updateLoadProgress(75, '문서 상태 적용 중...', signal, msg);
++
      totalSections = docInfo.sectionCount ?? 1;
      sbSection().textContent = t('ui.sbSection.text', { p1: 1, p2: totalSections });
-@@ -1584,6 +1633,9 @@ async function initializeDocument(
+     applySavedTextMarkSettings();
+@@ -1625,6 +1675,9 @@ async function initializeDocument(
  }
  
  async function promptLocalFontsIfNeeded(displayName: string): Promise<void> {
@@ -1049,7 +1039,7 @@ index 7049ad669..95ea4ce4f 100644
    try {
      if (!getLocalFontState().loaded) await loadStoredLocalFonts();
      if (getLocalFontState().stored) return;
-@@ -1982,10 +2034,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
+@@ -2060,10 +2113,8 @@ async function restoreAutosaveDraft(draft: AutosaveDraft): Promise<void> {
    finally { if (draft.protection) data.fill(0); }
    await deleteAutosaveDraft(draft.id);
    documentState.markDirty('autosave-recovered');
@@ -1063,7 +1053,7 @@ index 7049ad669..95ea4ce4f 100644
  
  
 diff --git a/rhwp-studio/src/recent/recent-open.ts b/rhwp-studio/src/recent/recent-open.ts
-index db34b47cb..300a91e08 100644
+index db34b47..300a91e 100644
 --- a/rhwp-studio/src/recent/recent-open.ts
 +++ b/rhwp-studio/src/recent/recent-open.ts
 @@ -11,6 +11,7 @@
@@ -1139,7 +1129,7 @@ index db34b47cb..300a91e08 100644
    if (!entry.handle) {
      deps.toast(
 diff --git a/rhwp-studio/src/recent/recent-store.ts b/rhwp-studio/src/recent/recent-store.ts
-index d68402fc6..19f091ac7 100644
+index d68402f..19f091a 100644
 --- a/rhwp-studio/src/recent/recent-store.ts
 +++ b/rhwp-studio/src/recent/recent-store.ts
 @@ -16,6 +16,7 @@
@@ -1228,7 +1218,7 @@ index d68402fc6..19f091ac7 100644
      async (db) =>
        new Promise<void>((resolve, reject) => {
 diff --git a/rhwp-studio/src/recovery/autosave-manager.ts b/rhwp-studio/src/recovery/autosave-manager.ts
-index 238568332..74740753a 100644
+index 2385683..7474075 100644
 --- a/rhwp-studio/src/recovery/autosave-manager.ts
 +++ b/rhwp-studio/src/recovery/autosave-manager.ts
 @@ -1,4 +1,5 @@
@@ -1303,7 +1293,7 @@ index 238568332..74740753a 100644
          // 저장 진행 중 discard가 끼어듦 — 방금 저장으로 부활한 draft를 재삭제한다
          await this.deleteDraft(current.draftId, 'discarded-during-save');
 diff --git a/rhwp-studio/src/recovery/autosave-store.ts b/rhwp-studio/src/recovery/autosave-store.ts
-index 82f12912d..d785c2893 100644
+index 82f1291..d785c28 100644
 --- a/rhwp-studio/src/recovery/autosave-store.ts
 +++ b/rhwp-studio/src/recovery/autosave-store.ts
 @@ -5,6 +5,8 @@
@@ -1452,7 +1442,7 @@ index 82f12912d..d785c2893 100644
    await withDb(
      async (db) =>
 diff --git a/rhwp-studio/src/recovery/recovery-ui.ts b/rhwp-studio/src/recovery/recovery-ui.ts
-index 6cca89bf8..32c59abb7 100644
+index 6cca89b..32c59ab 100644
 --- a/rhwp-studio/src/recovery/recovery-ui.ts
 +++ b/rhwp-studio/src/recovery/recovery-ui.ts
 @@ -2,17 +2,57 @@ import { ModalDialog } from '@/ui/dialog';
@@ -1545,7 +1535,7 @@ index 6cca89bf8..32c59abb7 100644
      this.resolve({ action: 'restore', draftId: this.selectedDraftId });
      return true;
 diff --git a/rhwp-studio/src/ui/char-shape-dialog.ts b/rhwp-studio/src/ui/char-shape-dialog.ts
-index e07866a8c..f705c8eee 100644
+index 8581283..0b7a995 100644
 --- a/rhwp-studio/src/ui/char-shape-dialog.ts
 +++ b/rhwp-studio/src/ui/char-shape-dialog.ts
 @@ -30,7 +30,7 @@ import type { WasmBridge } from '@/core/wasm-bridge';
@@ -1567,7 +1557,7 @@ index e07866a8c..f705c8eee 100644
        const localGroup = document.createElement('optgroup');
        localGroup.label = '로컬 글꼴';
 diff --git a/rhwp-studio/src/ui/font-set-edit-dialog.ts b/rhwp-studio/src/ui/font-set-edit-dialog.ts
-index b938e6d35..5c4f9682d 100644
+index b938e6d..5c4f968 100644
 --- a/rhwp-studio/src/ui/font-set-edit-dialog.ts
 +++ b/rhwp-studio/src/ui/font-set-edit-dialog.ts
 @@ -8,7 +8,7 @@ import { ModalDialog } from './dialog';
@@ -1589,7 +1579,7 @@ index b938e6d35..5c4f9682d 100644
        'korean', 'english', 'chinese', 'japanese', 'other', 'symbol', 'user',
      ];
 diff --git a/rhwp-studio/src/ui/history-dialog.ts b/rhwp-studio/src/ui/history-dialog.ts
-index 8db9d4fa4..7515b6afb 100644
+index 8db9d4f..7515b6a 100644
 --- a/rhwp-studio/src/ui/history-dialog.ts
 +++ b/rhwp-studio/src/ui/history-dialog.ts
 @@ -30,6 +30,7 @@ import { buildSnapshotFromWasm, compareDocuments, compareSnapshots } from '@/com
@@ -1618,7 +1608,7 @@ index 8db9d4fa4..7515b6afb 100644
        const msg = err instanceof Error ? err.message : String(err);
        this.resultMetaEl.textContent = t('dialog.history.resultMetaEl.text.xa25915', { p1: msg });
 diff --git a/rhwp-studio/tests/toolbar-local-font-options.test.ts b/rhwp-studio/tests/toolbar-local-font-options.test.ts
-index 20e20fb6b..7f00dc1f4 100644
+index 20e20fb..7f00dc1 100644
 --- a/rhwp-studio/tests/toolbar-local-font-options.test.ts
 +++ b/rhwp-studio/tests/toolbar-local-font-options.test.ts
 @@ -17,9 +17,10 @@ test('글꼴 메뉴는 문서 글꼴을 기본으로 열고 시스템 글꼴은
@@ -1636,7 +1626,7 @@ index 20e20fb6b..7f00dc1f4 100644
  
  test('한컴형 글꼴 메뉴는 범주 목록과 기존 글꼴 적용 이벤트를 함께 사용한다', () => {
 diff --git a/rhwp-studio/vite.config.ts b/rhwp-studio/vite.config.ts
-index 58c83bddd..c3b65add9 100644
+index 58c83bd..c3b65ad 100644
 --- a/rhwp-studio/vite.config.ts
 +++ b/rhwp-studio/vite.config.ts
 @@ -20,6 +20,14 @@ const useSubsecondWasm = process.env.RHWP_SUBSECOND === '1';
