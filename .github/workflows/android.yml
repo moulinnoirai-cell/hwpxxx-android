@@ -103,6 +103,13 @@ jobs:
       - run: bash scripts/build-engine.sh .build/rhwp
         if: steps.memo-engine.outputs.cache-hit != 'true'
       - run: node scripts/install-engine.mjs .build/engine
+      # Diagnostic copy of the engine just built/restored (wasm-bindgen output + build-info.json) for local repro; later failing steps still upload it.
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('.build/engine/build-info.json') != ''
+        with:
+          name: rhwp-engine
+          path: .build/engine/*
+          retention-days: 7
       - uses: actions/cache/save@v4
         if: steps.memo-engine.outputs.cache-hit != 'true'
         with:
