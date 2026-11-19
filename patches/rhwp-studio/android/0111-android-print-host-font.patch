@@ -1,5 +1,5 @@
 diff --git a/rhwp-studio/src/core/wasm-bridge.ts b/rhwp-studio/src/core/wasm-bridge.ts
-index a51b529..c82c9bf 100644
+index a51b529..475b387 100644
 --- a/rhwp-studio/src/core/wasm-bridge.ts
 +++ b/rhwp-studio/src/core/wasm-bridge.ts
 @@ -1387,7 +1387,11 @@ export class WasmBridge {
@@ -7,11 +7,11 @@ index a51b529..c82c9bf 100644
      if (typeof d.renderPageToCanvasFilteredWithProfile === 'function') {
        if (profile === 'print') {
 -        this.withPortableMetrics(() => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
-+        // [hwpxxx-android] 인쇄 쪽도 화면과 같은 호스트(가져온) 글꼴 윤곽을 써야 한다. v0.9.1 부터 윤곽은 쪽을 그리는 동안만
-+        // `withPageOutlines` 로 빌려 오므로, 포터블 지표로 그리더라도 이 범위 안에서 그려야 글꼴이 대체되지 않는다.
-+        const paint = () => this.withPortableMetrics(() => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
-+        if (!hostFontLayoutEnabled() || !getHostFontState().count) paint();
-+        else this.hostCanvasFonts.withPageOutlines(collectHostFontRequests(this.getPageLayerTreeObject(pageNum)), this.doc, paint);
++        // [hwpxxx-android] 인쇄 쪽은 레이아웃 지표는 포터블로 두되, 화면과 같은 호스트(가져온) 글꼴 FontFace 별칭으로 글자를 그린다.
++        // v0.9.1 은 `this.withPortableMetrics` 가 글꼴 해소 세션까지 비워서 가져온 글꼴이 대체 글꼴로 그려졌다(v0.9.0 은 그렇지 않았다).
++        // 세션만 되돌리고 지표는 포터블 그대로 둔다. (`withHostPageFonts` 는 보충 지표가 켜져 print 에서 거절된다.)
++        withHostCanvasFonts(this.hostCanvasFonts, () => canvasFontResolution.run(() => withPortableMetrics(this.canvasMetricDocument(),
++          () => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile))));
          return;
        }
        this.withHostPageFonts(pageNum, () => d.renderPageToCanvasFilteredWithProfile!(pageNum, canvas, scale, layerKind, profile));
