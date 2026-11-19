@@ -1,0 +1,113 @@
+diff --git a/rhwp-studio/src/command/pwa-file-handling.ts b/rhwp-studio/src/command/pwa-file-handling.ts
+index 81ffda1..0cdb67c 100644
+--- a/rhwp-studio/src/command/pwa-file-handling.ts
++++ b/rhwp-studio/src/command/pwa-file-handling.ts
+@@ -27,6 +27,8 @@ export interface PwaFileHandlingCallbacks {
+   notifyUnsupportedFile(fileName: string): void;
+   notifyError(error: unknown): void;
+   notifyMultipleFiles?(count: number): void;
++  /** [hwpxxx-android] PDF 가져오기 가능 여부. 외부 공유(VIEW/SEND)로 전달된 PDF를 받아들일지 결정한다. */
++  pdfImportEnabled?: () => boolean;
+ }
+ 
+ async function readLaunchFileFromHandle(handle: FileSystemFileHandleLike): Promise<{
+@@ -49,14 +51,15 @@ export async function handlePwaLaunchFiles(
+   if (handles.length > 1) callbacks.notifyMultipleFiles?.(handles.length);
+ 
+   const handle = handles[0];
+-  if (!isSupportedDocumentFileName(handle.name)) {
++  const pdfImportEnabled = callbacks.pdfImportEnabled?.() === true;
++  if (!isSupportedDocumentFileName(handle.name, pdfImportEnabled)) {
+     callbacks.notifyUnsupportedFile(handle.name);
+     return;
+   }
+ 
+   try {
+     const { bytes, name } = await readLaunchFileFromHandle(handle);
+-    if (!isSupportedDocumentFileName(name)) {
++    if (!isSupportedDocumentFileName(name, pdfImportEnabled)) {
+       callbacks.notifyUnsupportedFile(name);
+       return;
+     }
+diff --git a/rhwp-studio/src/main.ts b/rhwp-studio/src/main.ts
+index bf1fc51..ce9d7ac 100644
+--- a/rhwp-studio/src/main.ts
++++ b/rhwp-studio/src/main.ts
+@@ -980,11 +980,12 @@ async function initialize(): Promise<void> {
+           eventBus.emit('open-document-bytes', payload);
+         },
+         notifyUnsupportedFile(fileName) {
+-          showLoadError(new Error(`지원하지 않는 파일 형식입니다: ${fileName}. HWP/HWPX/HML 파일만 지원합니다.`));
++          showLoadError(new Error(`지원하지 않는 파일 형식입니다: ${fileName}. ${unsupportedDocumentMessage(fileName, wasm.hasPdfImportCapability())}`));
+         },
+         notifyError(error) {
+           showLoadErrorUnlessCancelled(error);
+         },
++        pdfImportEnabled: () => wasm.hasPdfImportCapability(),
+         notifyMultipleFiles(count) {
+           console.warn(`[pwa-file-handling] 여러 파일(${count}개)이 전달되어 첫 번째 파일만 엽니다.`);
+         },
+diff --git a/rhwp-studio/tests/hwpxxx-external-pdf-open.test.ts b/rhwp-studio/tests/hwpxxx-external-pdf-open.test.ts
+new file mode 100644
+index 0000000..d84ad16
+--- /dev/null
++++ b/rhwp-studio/tests/hwpxxx-external-pdf-open.test.ts
+@@ -0,0 +1,58 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import {
++  handlePwaLaunchFiles,
++  type OpenDocumentBytesPayload,
++  type PwaFileHandlingCallbacks,
++} from '../src/command/pwa-file-handling.ts';
++
++function handle(name: string, content = 'x') {
++  return {
++    kind: 'file' as const,
++    name,
++    async getFile() { return new File([content], name); },
++    async createWritable() { throw new Error('unused'); },
++  };
++}
++
++function run(name: string, pdfImportEnabled?: () => boolean, content?: string) {
++  const opened: OpenDocumentBytesPayload[] = [];
++  const unsupported: string[] = [];
++  const callbacks: PwaFileHandlingCallbacks = {
++    openDocumentBytes: p => opened.push(p),
++    notifyUnsupportedFile: n => unsupported.push(n),
++    notifyError: e => { throw e; },
++    pdfImportEnabled,
++  };
++  return handlePwaLaunchFiles({ files: [handle(name, content)] }, callbacks).then(() => ({ opened, unsupported }));
++}
++
++test('외부 공유 PDF는 PDF 가져오기가 켜져 있으면 열린다', async () => {
++  const r = await run('보고서.PDF', () => true, '%PDF-1.7');
++  assert.equal(r.opened.length, 1);
++  assert.equal(r.opened[0].fileName, '보고서.PDF');
++  assert.deepEqual(r.unsupported, []);
++});
++
++test('PDF 가져오기가 꺼져 있거나 콜백이 없으면 PDF는 거부된다', async () => {
++  for (const cb of [() => false, undefined]) {
++    const r = await run('a.pdf', cb);
++    assert.equal(r.opened.length, 0);
++    assert.deepEqual(r.unsupported, ['a.pdf']);
++  }
++});
++
++test('HWP 3.0 파일(.hwp)은 PDF 설정과 무관하게 열린다', async () => {
++  for (const cb of [() => false, () => true, undefined]) {
++    const r = await run('구형.hwp', cb, 'HWP Document File V3.00');
++    assert.equal(r.opened.length, 1);
++    assert.deepEqual(r.unsupported, []);
++  }
++});
++
++test('지원하지 않는 확장자는 PDF가 켜져 있어도 거부된다', async () => {
++  const r = await run('a.txt', () => true);
++  assert.equal(r.opened.length, 0);
++  assert.deepEqual(r.unsupported, ['a.txt']);
++});
