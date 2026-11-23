@@ -57,11 +57,21 @@ export function cycleId(order, currentId, delta) {
   const at = order.indexOf(currentId);
   return order[(((at < 0 ? 0 : at) + delta) % order.length + order.length) % order.length];
 }
-export const docStateKey = state => JSON.stringify([state.title, state.dirty, state.encrypted, state.ready]);
+export const docStateKey = state => JSON.stringify([state.title, state.dirty, state.encrypted, state.ready, state.blank === true]);
+/** The name Studio gives the document it makes for "new" (WasmBridge.createNewDocument); saving or opening a file replaces it. */
+export const NEW_DOCUMENT_NAME = '새 문서.hwp';
+/**
+ * An untouched blank document: Studio's own new document with no edits, no file behind it and no password. Opening a file from such a
+ * tab replaces it in place instead of leaving an empty "새 문서" tab next to the opened one. A restored draft is dirty, so it never counts.
+ */
+export function isPristineBlank(studioState) {
+  return !!studioState?.hasDocument && studioState.dirty !== true && studioState.encrypted !== true && !studioState.fileHandle
+    && String(studioState.fileName || '') === NEW_DOCUMENT_NAME;
+}
 export function documentState(studioState) {
   const ready = !!studioState?.hasDocument;
   const name = ready ? String(studioState.fileName || '').trim() : '';
-  return {title: (name || (ready ? '새 문서' : '여는 중…')).slice(0, MAX_TITLE), dirty: ready && studioState.dirty === true, encrypted: ready && studioState.encrypted === true, ready};
+  return {title: (name || (ready ? '새 문서' : '여는 중…')).slice(0, MAX_TITLE), dirty: ready && studioState.dirty === true, encrypted: ready && studioState.encrypted === true, ready, blank: isPristineBlank(studioState)};
 }
 
 const CSS = `
@@ -163,13 +173,28 @@ export async function installWorkspace(ctx) {
     return node;
   }
   const tabsFull = () => snap.tabs.length >= snap.maxTabs;
-  const newTab = open => {
-    if (tabsFull()) { announce(MESSAGES.limit(snap.maxTabs)); return Promise.resolve(); }
+  /** This tab holds only Studio's untouched blank document (see isPristineBlank). */
+  const pristine = () => { try { return isPristineBlank(studio?.android?.getState?.()); } catch { return false; } };
+  /** Runs Studio's own open command in THIS tab (the in-place marker stops it from routing back here). False: no command surface. */
+  async function runHere(command, params) {
+    const execute = studio?.automation?.execute;
+    if (typeof execute !== 'function') return false;
+    let result;
+    try { result = await execute.call(studio.automation, command, {...params, androidWorkspaceInPlace: true}, {allowDialog: true}); }
+    catch (error) { result = {ok: false, message: String(error?.message || error)}; }
+    if (result && result.ok === false) fail(result.message || '문서를 열지 못했어요.');
+    return true;
+  }
+  // Opening from an untouched blank tab replaces that blank document instead of leaving an empty tab behind (also when tabs are full).
+  const newTab = async open => {
+    if (open && pristine() && await runHere('file:open', {})) return;
+    if (tabsFull()) { announce(MESSAGES.limit(snap.maxTabs)); return; }
     return send('workspaceNew', {open}).catch(fail);
   };
-  const openRecent = id => {
-    if (!RECENT_ID.test(String(id))) return Promise.reject(new Error('최근 문서를 확인하지 못했어요.'));
-    if (tabsFull()) { announce(MESSAGES.limit(snap.maxTabs)); return Promise.resolve(); }
+  const openRecent = async id => {
+    if (!RECENT_ID.test(String(id))) throw new Error('최근 문서를 확인하지 못했어요.');
+    if (pristine() && await runHere('file:open-recent', {id: String(id)})) return;
+    if (tabsFull()) { announce(MESSAGES.limit(snap.maxTabs)); return; }
     return send('workspaceOpenRecent', {recentId: String(id)}).catch(fail);
   };
   const closeTab = id => send('workspaceClose', {id}).catch(fail);
@@ -432,7 +457,7 @@ export async function installWorkspace(ctx) {
   }
 
   const controller = {
-    selfId, initialAction, snapshot: () => snap, apply: accept, refresh, newTab, openRecent, closeTab, selectTab, moveTab,
+    selfId, initialAction, snapshot: () => snap, apply: accept, refresh, newTab, openRecent, closeTab, selectTab, moveTab, pristine,
     dispose() { disposed = true; observer?.disconnect(); for (const fn of cleanups.splice(0).reverse()) { try { fn(); } catch { /* best effort */ } } strip?.remove(); },
   };
   void refresh(); // events sent before the subscription existed are not replayed

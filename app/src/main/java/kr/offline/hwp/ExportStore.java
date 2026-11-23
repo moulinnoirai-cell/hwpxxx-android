@@ -21,6 +21,11 @@ final class ExportStore {
         if(!format.equals("hml")){FileStore.validate(bytes,format);return;}
         xml(bytes,"HWPML");
     }
+    /** The bytes the engine may parse for a document read from a file (an HWPX may come back trimmed, see FileStore.withoutDeflateSlack). */
+    static byte[] documentForRead(byte[] bytes,String format)throws IOException {
+        if(format.equals("hml")){validateDocument(bytes,format);return bytes;}
+        return FileStore.readable(bytes,format);
+    }
     static void validateDocumentForRead(byte[] bytes,String format)throws IOException {
         if(format.equals("hml"))validateDocument(bytes,format);
         else FileStore.validateForRead(bytes,format);

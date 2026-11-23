@@ -19,7 +19,8 @@
   // Document-tab workspace (bridge-contract.md). Capability is SYNCHRONOUS and fixed: native's OfflineNative.workspaceEnabled() === true.
   // A host without that method (old fakes, the legacy harness) is a single-document host: no workspace ops are ever sent.
   // Patch 0115 routes file:new-doc / file:open / file:open-recent here whenever `enabled` is true — from the first instant, not after the
-  // handshake — and never falls back to replacing the current document. The in-place bypass is a per-command param (androidWorkspaceInPlace).
+  // handshake — and never falls back to replacing the current document, except an untouched blank one (pristineHere below), which open and
+  // open-recent replace in place. The in-place bypass is a per-command param (androidWorkspaceInPlace).
   const workspaceCapable = (() => { try { return typeof OfflineNative.workspaceEnabled === 'function' && OfflineNative.workspaceEnabled() === true; } catch { return false; } })();
   let workspaceController = null;
   async function workspaceAction(op, args) {
@@ -28,13 +29,17 @@
     catch (error) { announce(String(error?.message || error)); } // handled with an error: the current document is never replaced
     return true;
   }
+  // An untouched blank document (nothing typed, no file, no password) is not worth a tab of its own: open and open-recent decline
+  // (false) so Studio runs its own command in place and the blank tab becomes the opened document. New document still adds a tab.
+  const pristineHere = () => { try { return workspaceController?.pristine?.() === true; } catch { return false; } };
   const workspace = {
     version: 1, enabled: workspaceCapable,
     newDocument: () => workspaceAction('workspaceNew', {open: false}),
-    openDocument: () => workspaceAction('workspaceNew', {open: true}),
+    openDocument: () => workspace.enabled && pristineHere() ? Promise.resolve(false) : workspaceAction('workspaceNew', {open: true}),
     async openRecent(id) {
       if (!workspace.enabled) return false;
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(String(id))) throw new Error('최근 문서를 확인하지 못했어요.');
+      if (pristineHere()) return false;
       return workspaceAction('workspaceOpenRecent', {recentId: String(id)});
     },
   };

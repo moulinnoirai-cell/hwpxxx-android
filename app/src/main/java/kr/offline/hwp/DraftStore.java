@@ -36,7 +36,7 @@ final class DraftStore {
     }
     private void writeLocked(String key,Map<String,String> info,byte[] data)throws IOException {
         need(key);String format=info.get("format");if(format==null)throw new IOException("형식을 알 수 없어요.");
-        FileStore.validate(data,format);
+        data=FileStore.storable(data,format);FileStore.validate(data,format);
         long free=dir.getUsableSpace();if(free<data.length+4L*1024*1024)throw new IOException("복구 자료를 저장할 공간이 부족해요.");
         Properties p=new Properties();p.putAll(info);p.setProperty("size",String.valueOf(data.length));p.setProperty("sha",FileStore.sha(data));p.setProperty("savedAt",String.valueOf(System.currentTimeMillis()));
         ByteArrayOutputStream metadata=new ByteArrayOutputStream();
