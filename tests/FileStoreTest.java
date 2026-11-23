@@ -11,6 +11,36 @@ public class FileStoreTest {
     static void rejected(Run r)throws Exception{try{r.run();throw new AssertionError("expected rejection");}catch(IOException expected){checks++;}}
     static void yes(boolean b){if(!b)throw new AssertionError();checks++;}
     static byte[] xmlZip(String xml)throws Exception{ByteArrayOutputStream bytes=new ByteArrayOutputStream();try(ZipOutputStream z=new ZipOutputStream(bytes)){for(String name:new String[]{"mimetype","Contents/header.xml","Contents/section0.xml"}){z.putNextEntry(new ZipEntry(name));z.write((name.equals("mimetype")?"application/hwp+zip":xml).getBytes(StandardCharsets.UTF_8));z.closeEntry();}}return bytes.toByteArray();}
+    /**
+     * Rebuilds an HWPX as plain entries (mimetype stored, the rest raw-deflated) and appends {@code slack} stray bytes inside the compressed
+     * size of {@code target}, as rhwp does for pictures carried over from an HWP 5 file. {@code badCrc} breaks that entry's CRC in both headers.
+     */
+    static byte[] slackZip(byte[] hwpx,String target,int slack,boolean badCrc)throws Exception {
+        List<String> names=new ArrayList<>();List<byte[]> plain=new ArrayList<>();
+        try(ZipInputStream in=new ZipInputStream(new ByteArrayInputStream(hwpx))){ZipEntry e;while((e=in.getNextEntry())!=null){names.add(e.getName());plain.add(in.readAllBytes());}}
+        ByteArrayOutputStream out=new ByteArrayOutputStream(),central=new ByteArrayOutputStream();
+        java.util.function.BiConsumer<ByteArrayOutputStream,long[]> le=(o,v)->{for(int i=0;i<(int)v[1];i++)o.write((int)(v[0]>>>(8*i)));};
+        for(int i=0;i<names.size();i++){
+            byte[] name=names.get(i).getBytes(StandardCharsets.UTF_8),data=plain.get(i),stored;boolean deflate=!names.get(i).equals("mimetype");
+            if(deflate){Deflater d=new Deflater(Deflater.DEFAULT_COMPRESSION,true);d.setInput(data);d.finish();ByteArrayOutputStream z=new ByteArrayOutputStream();byte[] buf=new byte[8192];while(!d.finished())z.write(buf,0,d.deflate(buf));d.end();stored=z.toByteArray();}
+            else stored=data;
+            if(names.get(i).equals(target)){stored=Arrays.copyOf(stored,stored.length+slack);for(int k=0;k<slack;k++)stored[stored.length-1-k]=(byte)(0xa3+k);}
+            CRC32 crc=new CRC32();crc.update(data);long c=crc.getValue()^(badCrc&&names.get(i).equals(target)?1:0);long offset=out.size();int method=deflate?8:0;
+            for(ByteArrayOutputStream o:new ByteArrayOutputStream[]{out,central}){
+                boolean cd=o==central;
+                le.accept(o,new long[]{cd?0x02014b50L:0x04034b50L,4});if(cd)le.accept(o,new long[]{20,2});
+                for(long[] v:new long[][]{{20,2},{0x800,2},{method,2},{0,2},{0x5a21,2},{c,4},{stored.length,4},{data.length,4},{name.length,2},{0,2}})le.accept(o,v);
+                if(cd){for(long[] v:new long[][]{{0,2},{0,2},{0,2},{0,4},{offset,4}})le.accept(o,v);}
+                o.write(name);if(!cd)o.write(stored);
+            }
+        }
+        long cdOffset=out.size();out.write(central.toByteArray());
+        for(long[] v:new long[][]{{0x06054b50L,4},{0,2},{0,2},{names.size(),2},{names.size(),2},{central.size(),4},{cdOffset,4},{0,2}})le.accept(out,v);
+        return out.toByteArray();
+    }
+    static Map<String,byte[]> entries(byte[] zip)throws Exception {Map<String,byte[]> m=new LinkedHashMap<>();try(ZipInputStream in=new ZipInputStream(new ByteArrayInputStream(zip))){ZipEntry e;while((e=in.getNextEntry())!=null)m.put(e.getName(),in.readAllBytes());}return m;}
+    static boolean sameEntries(Map<String,byte[]> a,Map<String,byte[]> b){if(!a.keySet().equals(b.keySet()))return false;for(String k:a.keySet())if(!Arrays.equals(a.get(k),b.get(k)))return false;return true;}
+
     public static void main(String[] args)throws Exception {
         Path root=Files.createTempDirectory("hwp-file-tests-");FileStore store=new FileStore(Arrays.asList(root.toFile()));byte[] hwp=Files.readAllBytes(Paths.get(args[0])),hwpx=Files.readAllBytes(Paths.get(args[1]));
         try{
@@ -68,6 +98,24 @@ public class FileStoreTest {
             store.write(root.resolve("새 문서.hwp").toString(),hwp,null,false);
             yes(!Files.exists(stale)&&Files.exists(fresh)&&Files.exists(foreign));Files.delete(fresh);Files.delete(foreign);
             for(Path f:(Iterable<Path>)Files.walk(root)::iterator)yes(!f.getFileName().toString().startsWith(".hwp-offline-"));
+            // rhwp's deflate slack: a raw deflate stream that ends a few bytes before the entry's recorded compressed size.
+            yes(FileStore.withoutDeflateSlack(hwpx)==null&&FileStore.readable(hwpx,"hwpx")==hwpx&&FileStore.storable(hwpx,"hwpx")==hwpx&&FileStore.storable(hwp,"hwp")==hwp);
+            String section="Contents/section0.xml";Map<String,byte[]> plain=entries(hwpx);
+            byte[] clean=slackZip(hwpx,section,0,false);FileStore.validate(clean,"hwpx");checks++;yes(FileStore.withoutDeflateSlack(clean)==null);
+            byte[] slack=slackZip(hwpx,section,8,false);
+            rejected(()->entries(slack)); // what the strict streaming reader sees
+            FileStore.validate(slack,"hwpx");FileStore.validateForRead(slack,"hwpx");checks+=2;
+            byte[] trimmed=FileStore.readable(slack,"hwpx");
+            yes(trimmed!=slack&&trimmed.length==slack.length-8&&Arrays.equals(trimmed,FileStore.withoutDeflateSlack(slack))&&Arrays.equals(trimmed,FileStore.storable(slack,"hwpx")));
+            yes(Arrays.equals(trimmed,clean)); // exactly the archive without the stray bytes
+            yes(FileStore.withoutDeflateSlack(trimmed)==null&&sameEntries(entries(trimmed),plain));
+            Path drafted=root.resolve("복구 대상.hwpx");store.write(drafted.toString(),FileStore.storable(slack,"hwpx"),null,false);yes(Arrays.equals(clean,Files.readAllBytes(drafted)));
+            for(byte[] bad:new byte[][]{slackZip(hwpx,section,FileStore.MAX_DEFLATE_SLACK+1,false),slackZip(hwpx,section,8,true),slackZip(hwpx,section,0,true)}){
+                yes(FileStore.withoutDeflateSlack(bad)==null);rejected(()->FileStore.validate(bad,"hwpx"));rejected(()->FileStore.readable(bad,"hwpx"));
+            }
+            // A slack archive whose central directory disagrees with the local headers is not trimmed (and stays refused).
+            byte[] disagree=slack.clone();int dir=-1;for(int i=disagree.length-22;i>=0;i--)if(disagree[i]==0x50&&disagree[i+1]==0x4b&&disagree[i+2]==1&&disagree[i+3]==2){dir=i;break;}
+            disagree[dir+24]^=1;yes(FileStore.withoutDeflateSlack(disagree)==null);rejected(()->FileStore.validate(disagree,"hwpx"));
             System.out.println("FileStore: "+checks+" checks passed");
         }finally{try(java.util.stream.Stream<Path> paths=Files.walk(root)){paths.sorted(Comparator.reverseOrder()).forEach(p->{try{Files.deleteIfExists(p);}catch(IOException ignored){}});}}
     }

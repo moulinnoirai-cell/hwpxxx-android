@@ -62,11 +62,27 @@ test('drop slot / moveTarget: before/after, end, no-op and unknown ids', () => {
   assert.equal(tabs.cycleId(['a'], 'a', 1), null); assert.equal(tabs.cycleId(order, 'd', 1), 'a'); assert.equal(tabs.cycleId(order, 'a', -1), 'd');
 });
 
-test('documentState only reports the four contract fields and a stable key', () => {
+test('documentState only reports the five contract fields and a stable key', () => {
   const state = tabs.documentState({hasDocument: true, fileName: ' 보고서.hwp ', dirty: true, encrypted: false, fileHandle: {secret: 1}});
-  assert.deepEqual(state, {title: '보고서.hwp', dirty: true, encrypted: false, ready: true});
-  assert.deepEqual(tabs.documentState({hasDocument: false}), {title: '여는 중…', dirty: false, encrypted: false, ready: false});
+  assert.deepEqual(state, {title: '보고서.hwp', dirty: true, encrypted: false, ready: true, blank: false});
+  assert.deepEqual(tabs.documentState({hasDocument: false}), {title: '여는 중…', dirty: false, encrypted: false, ready: false, blank: false});
+  assert.deepEqual(tabs.documentState({hasDocument: true, fileName: tabs.NEW_DOCUMENT_NAME, dirty: false, encrypted: false, fileHandle: null}),
+    {title: '새 문서.hwp', dirty: false, encrypted: false, ready: true, blank: true});
   assert.equal(tabs.docStateKey(state), tabs.docStateKey({...state}));
+  assert.notEqual(tabs.docStateKey({...state, blank: true}), tabs.docStateKey(state), 'a blank change is reported');
+});
+
+test('isPristineBlank: only Studio\'s untouched new document (no edits, no file handle, no password) counts as blank', () => {
+  const blank = {hasDocument: true, fileName: '새 문서.hwp', dirty: false, encrypted: false, format: 'hwp', fileHandle: null};
+  assert.equal(tabs.NEW_DOCUMENT_NAME, '새 문서.hwp');
+  assert.equal(tabs.isPristineBlank(blank), true);
+  assert.equal(tabs.isPristineBlank({...blank, dirty: true}), false, 'typed into (or a restored draft)');
+  assert.equal(tabs.isPristineBlank({...blank, fileHandle: {name: '새 문서.hwp'}}), false, 'a real file that happens to have the same name');
+  assert.equal(tabs.isPristineBlank({...blank, encrypted: true}), false);
+  assert.equal(tabs.isPristineBlank({...blank, fileName: '보고서.hwp'}), false, 'saved or opened');
+  assert.equal(tabs.isPristineBlank({...blank, fileName: ''}), false);
+  assert.equal(tabs.isPristineBlank({...blank, hasDocument: false}), false, 'still loading');
+  for (const value of [null, undefined, {}, 'x']) assert.equal(tabs.isPristineBlank(value), false, String(value));
 });
 
 test('sources: no HTML injection, no iframes, text/plain never carried by a tab drag, host never lets JS pick the origin', () => {
@@ -621,7 +637,7 @@ withWorkspace('document state: one workspaceUpdate per real change, none while i
   await a.page.evaluate(() => { window.__studio.name = '보고서.hwp'; });
   await until(() => native.tabs.find(tab => tab.id === a.tabId).title === '보고서.hwp', 'title reported');
   const updates = native.ops('workspaceUpdate', a.tabId);
-  assert.deepEqual(Object.keys(updates.at(-1).args).sort(), ['dirty', 'encrypted', 'ready', 'title']);
+  assert.deepEqual(Object.keys(updates.at(-1).args).sort(), ['blank', 'dirty', 'encrypted', 'ready', 'title']);
   await a.page.waitForTimeout(1200);
   assert.equal(native.ops('workspaceUpdate', a.tabId).length, updates.length, 'no repeat of an unchanged state');
   // the badge appears in both views
@@ -689,10 +705,36 @@ withWorkspace('host.workspace API: newDocument/openDocument/openRecent go to nat
   assert.equal(await a.page.evaluate(() => Object.keys(window.AndroidStudioHost.workspace).sort().join()), 'enabled,newDocument,openDocument,openRecent,version', 'no controller/internal objects are exposed');
 });
 
+withWorkspace('untouched blank tab: open / open-recent / the strip\'s open button replace it in place; new document and a touched tab still add a tab', {views: 1, init: `window.__studioInit = {name: '새 문서.hwp'};`}, async ({native, views: [a]}) => {
+  await until(() => native.ops('workspaceUpdate', a.tabId).at(-1)?.args.blank === true, 'blank reported to native');
+  assert.equal(await a.page.evaluate(() => window.AndroidStudioHost.workspace.openDocument()), false, 'declined: Studio opens in this tab');
+  assert.equal(await a.page.evaluate(() => window.AndroidStudioHost.workspace.openRecent('cd'.repeat(32))), false);
+  assert.deepEqual(native.ops('workspaceNew').concat(native.ops('workspaceOpenRecent')), [], 'no tab is added for an open from a blank tab');
+  await a.page.click('#menu-bar .ws-btn[data-ws-action="open"]');
+  await until(async () => (await a.page.evaluate('window.__studio.executed')).some(entry => entry.id === 'file:open'), 'the strip\'s open button ran file:open here');
+  const executed = (await a.page.evaluate('window.__studio.executed')).filter(entry => entry.id === 'file:open');
+  assert.equal(executed.length, 1);
+  assert.deepEqual(executed[0].params, {androidWorkspaceInPlace: true}, 'with the in-place marker, so Studio does not route it back to a new tab');
+  assert.deepEqual(native.ops('workspaceNew'), [], 'the strip button did not add a tab either');
+  await a.page.waitForSelector('dialog.android-host-dialog[open]'); // the in-place host picker
+  await a.page.evaluate(() => window.AppBack());
+  assert.equal(await a.page.evaluate(() => window.AndroidStudioHost.workspace.newDocument()), true, 'new document still adds a tab');
+  assert.deepEqual(native.ops('workspaceNew', a.tabId).at(-1).args, {open: false});
+  await a.page.evaluate(() => { window.__studio.dirty = true; });
+  await until(() => native.ops('workspaceUpdate', a.tabId).at(-1).args.blank === false, 'no longer blank once typed into');
+  assert.equal(await a.page.evaluate(() => window.AndroidStudioHost.workspace.openDocument()), true);
+  assert.deepEqual(native.ops('workspaceNew', a.tabId).at(-1).args, {open: true}, 'a touched tab keeps its document: open goes to a new tab');
+  assert.deepEqual(a.errors, []);
+});
+
 // real Studio: the command surface itself routes into native (needs patch 0115)
 withWorkspace('REAL Studio: file:new-doc / file:open / file:open-recent from the real command registry open new tabs and leave the document alone', {target: 'studio'}, async ({native, views: [view]}) => {
   await view.page.waitForFunction('!!window.rhwpStudio?.automation && window.AndroidStudioHost.workspace.enabled === true', null, {timeout: 60000});
   await view.page.waitForTimeout(1500);
+  // An untouched blank document is replaced in place (next test). Type into it so this tab holds a document worth keeping.
+  await view.page.mouse.click(640, 400); await view.page.keyboard.type('keep');
+  await until(async () => (await view.page.evaluate(() => window.rhwpStudio.android.getState().dirty)) === true, 'typed into the document');
+  await until(() => native.ops('workspaceUpdate', view.tabId).at(-1)?.args.blank === false, 'reported as no longer blank');
   const docBefore = await view.page.evaluate(() => JSON.stringify({...window.rhwpStudio.android.getState(), fileHandle: null}));
   const run = (id, params) => view.page.evaluate(([id, params]) => window.rhwpStudio.automation.execute(id, params, {allowDialog: true}), [id, params]);
   assert.equal((await run('file:new-doc')).ok, true);
@@ -713,6 +755,30 @@ withWorkspace('REAL Studio: file:new-doc / file:open / file:open-recent from the
   assert.equal(native.ops('workspaceOpenRecent', view.tabId).length, 1, 'a stale recent id does not create a tab');
   const docAfter = await view.page.evaluate(() => JSON.stringify({...window.rhwpStudio.android.getState(), fileHandle: null}));
   assert.equal(docAfter, docBefore, 'current document name/dirty/format unchanged');
+  assert.deepEqual(view.errors, []);
+}, studioSkip);
+
+withWorkspace('REAL Studio: from the untouched blank document, file:open / the strip\'s open button / file:open-recent run in THIS tab; new document still adds a tab', {target: 'studio'}, async ({native, views: [view]}) => {
+  await view.page.waitForFunction('!!window.rhwpStudio?.automation && window.AndroidStudioHost.workspace.enabled === true', null, {timeout: 60000});
+  await until(() => native.ops('workspaceUpdate', view.tabId).at(-1)?.args.blank === true, 'the startup document is reported as blank');
+  const state = await view.page.evaluate(() => ({...window.rhwpStudio.android.getState(), fileHandle: window.rhwpStudio.android.getState().fileHandle ?? null}));
+  assert.deepEqual([state.fileName, state.dirty, state.fileHandle], ['새 문서.hwp', false, null], 'Studio names its blank document as workspace-tabs expects');
+  const run = (id, params) => view.page.evaluate(([id, params]) => window.rhwpStudio.automation.execute(id, params, {allowDialog: true}), [id, params]);
+  assert.equal((await run('file:open')).ok, true);
+  await view.page.waitForSelector('dialog.android-host-dialog[open]', {timeout: 30000}); // Studio's own picker, in this tab
+  await view.page.evaluate(() => window.AppBack());
+  await view.page.waitForSelector('dialog.android-host-dialog[open]', {state: 'detached'});
+  await view.page.click('#menu-bar .ws-btn[data-ws-action="open"]');
+  await view.page.waitForSelector('dialog.android-host-dialog[open]', {timeout: 30000});
+  await view.page.evaluate(() => window.AppBack());
+  await view.page.waitForSelector('dialog.android-host-dialog[open]', {state: 'detached'});
+  native.recents.push({id: 'ef'.repeat(32), fileName: 'a.hwp', sourceFormat: 'hwp', openedAt: 1, reopenable: true});
+  await run('file:open-recent', {id: 'ef'.repeat(32)});
+  await until(() => native.ops('recentOpen', view.tabId).length >= 1, 'the recent entry is opened by this tab itself');
+  assert.deepEqual(native.ops('workspaceNew').concat(native.ops('workspaceOpenRecent')), [], 'no tab was added for opens from a blank tab');
+  assert.equal((await run('file:new-doc')).ok, true);
+  await until(() => native.ops('workspaceNew', view.tabId).length === 1, 'new-doc still reaches native');
+  assert.deepEqual(native.ops('workspaceNew', view.tabId)[0].args, {open: false});
   assert.deepEqual(view.errors, []);
 }, studioSkip);
 

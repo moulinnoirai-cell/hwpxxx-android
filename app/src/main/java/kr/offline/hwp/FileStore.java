@@ -76,9 +76,25 @@ public final class FileStore {
     static boolean hasHwp5Header(byte[] bytes){return startsWith(bytes,HWP5_HEADER);}
     static boolean hasPdfHeader(byte[] bytes){return startsWith(bytes,PDF_HEADER);}
 
-    static void validateForRead(byte[] bytes,String format)throws IOException {validate(bytes,format,true);}
-    public static void validate(byte[] bytes,String format)throws IOException {validate(bytes,format,false);}
-    private static void validate(byte[] bytes,String format,boolean reading)throws IOException {
+    static void validateForRead(byte[] bytes,String format)throws IOException {checked(bytes,format,true);}
+    public static void validate(byte[] bytes,String format)throws IOException {checked(bytes,format,false);}
+    /** The bytes to hand to the engine for a document read from a file: the input, or its slack-trimmed copy (see withoutDeflateSlack). */
+    static byte[] readable(byte[] bytes,String format)throws IOException {return checked(bytes,format,true);}
+    /** The bytes to store for a document the engine produced: an HWPX with rhwp's deflate slack is stored trimmed, so every reader accepts it. */
+    static byte[] storable(byte[] bytes,String format){
+        if(!"hwpx".equals(format))return bytes;
+        byte[] trimmed=withoutDeflateSlack(bytes);return trimmed==null?bytes:trimmed;
+    }
+    /** The strict check. An HWPX it refuses only because of rhwp's deflate slack is checked, and returned, in its trimmed form. */
+    private static byte[] checked(byte[] bytes,String format,boolean reading)throws IOException {
+        try{strict(bytes,format,reading);return bytes;}
+        catch(IOException refused){
+            byte[] trimmed=format.equals("hwpx")?withoutDeflateSlack(bytes):null;
+            if(trimmed==null)throw refused;
+            strict(trimmed,format,reading);return trimmed;
+        }
+    }
+    private static void strict(byte[] bytes,String format,boolean reading)throws IOException {
         if (bytes.length < 8 || bytes.length > MAX_BYTES) throw new IOException("문서의 크기 또는 형식이 올바르지 않아요.");
         if (format.equals("pdf")) {
             if (!hasPdfHeader(bytes)) throw new IOException(reading?"PDF 파일의 헤더를 확인하지 못했어요.":"PDF 생성 결과를 확인하지 못했어요.");
@@ -124,6 +140,75 @@ public final class FileStore {
                 zin.closeEntry();
             }
         }
+    }
+    /** Most stray bytes one entry may carry after its deflate stream (rhwp leaves 8). */
+    static final int MAX_DEFLATE_SLACK=16;
+    /**
+     * rhwp, and with it the bundled engine, writes the pictures of an HWP 5 document into HWPX as a raw deflate stream followed by a few
+     * stray bytes that still count in the entry's compressed size (local and central headers agree; CRC and size are right). Hancom Office
+     * and the engine read such files, but a streaming reader (ZipInputStream, the strict check above) refuses them.
+     * Returns a copy with only those bytes dropped and the sizes/offsets adjusted, or null when there is nothing to trim or the archive is
+     * anything other than plain entries stored back to back in central-directory order (zip64, data descriptors, encryption, gaps, headers
+     * that disagree, a stream that does not end cleanly, CRC/size mismatch or more than MAX_DEFLATE_SLACK stray bytes).
+     */
+    static byte[] withoutDeflateSlack(byte[] b){
+        try{return trimDeflateSlack(b);}catch(RuntimeException|DataFormatException|IOException unusable){return null;}
+    }
+    private static int u16(byte[] b,int at){return (b[at]&255)|(b[at+1]&255)<<8;}
+    private static long u32(byte[] b,int at){return (u16(b,at)|(long)u16(b,at+2)<<16)&0xffffffffL;}
+    private static void put32(byte[] b,int at,long v){for(int i=0;i<4;i++)b[at+i]=(byte)(v>>>(8*i));}
+    private static byte[] trimDeflateSlack(byte[] b)throws DataFormatException,IOException {
+        int eocd=-1;
+        for(int i=b.length-22;i>=0&&i>=b.length-22-65535;i--)if(u32(b,i)==0x06054b50L&&i+22+u16(b,i+20)==b.length){eocd=i;break;}
+        if(eocd<0)return null;
+        int count=u16(b,eocd+10);long cdSize=u32(b,eocd+12),cdOffset=u32(b,eocd+16);
+        if(u16(b,eocd+4)!=0||u16(b,eocd+6)!=0||u16(b,eocd+8)!=count||count==0||count==0xffff||cdOffset+cdSize!=eocd)return null;
+        int[] local=new int[count],central=new int[count],used=new int[count];boolean slack=false;long next=0;int p=(int)cdOffset;
+        for(int i=0;i<count;i++){
+            if(u32(b,p)!=0x02014b50L)return null;
+            int flag=u16(b,p+8),method=u16(b,p+10),nameLength=u16(b,p+28);long crc=u32(b,p+16),size=u32(b,p+20),plain=u32(b,p+24),offset=u32(b,p+42);
+            // Encrypted entries and data descriptors are out of scope; zip64 markers fail the offset/size checks below.
+            if((flag&0x9)!=0||offset!=next||size==0xffffffffL||plain==0xffffffffL)return null;
+            int l=(int)offset;
+            if(u32(b,l)!=0x04034b50L||u16(b,l+6)!=flag||u16(b,l+8)!=method||u32(b,l+14)!=crc||u32(b,l+18)!=size||u32(b,l+22)!=plain||u16(b,l+26)!=nameLength)return null;
+            for(int k=0;k<nameLength;k++)if(b[l+30+k]!=b[p+46+k])return null;
+            int data=l+30+nameLength+u16(b,l+28);long end=data+size;
+            if(end>cdOffset)return null;
+            int kept=(int)size;
+            if(method==8){
+                Inflater inflater=new Inflater(true);
+                try{
+                    inflater.setInput(b,data,(int)size);byte[] buffer=new byte[65536];CRC32 check=new CRC32();long total=0;boolean padded=false;
+                    while(!inflater.finished()){
+                        int n=inflater.inflate(buffer);
+                        if(n==0&&!inflater.finished()){
+                            // A raw stream that ends exactly at the input's end may need one dummy byte (Inflater "nowrap" rule).
+                            if(!inflater.needsInput()||padded)return null;
+                            padded=true;inflater.setInput(new byte[1]);continue;
+                        }
+                        check.update(buffer,0,n);total+=n;if(total>plain)return null;
+                    }
+                    if(total!=plain||check.getValue()!=crc)return null;
+                    if(!padded)kept=(int)(size-inflater.getRemaining());
+                }finally{inflater.end();}
+                int extra=(int)size-kept;if(extra<0||extra>MAX_DEFLATE_SLACK)return null;if(extra>0)slack=true;
+            } else if(method!=0)return null;
+            local[i]=l;central[i]=p;used[i]=kept;next=end;
+            p+=46+nameLength+u16(b,p+30)+u16(b,p+32);
+        }
+        if(!slack||p!=eocd||next!=cdOffset)return null;
+        ByteArrayOutputStream out=new ByteArrayOutputStream(b.length);long[] moved=new long[count];
+        for(int i=0;i<count;i++){
+            int l=local[i],header=30+u16(b,l+26)+u16(b,l+28);moved[i]=out.size();
+            byte[] head=Arrays.copyOfRange(b,l,l+header);put32(head,18,used[i]);out.write(head);out.write(b,l+header,used[i]);
+        }
+        long directory=out.size();
+        for(int i=0;i<count;i++){
+            int c=central[i],length=46+u16(b,c+28)+u16(b,c+30)+u16(b,c+32);
+            byte[] head=Arrays.copyOfRange(b,c,c+length);put32(head,20,used[i]);put32(head,42,moved[i]);out.write(head);
+        }
+        byte[] tail=Arrays.copyOfRange(b,eocd,b.length);put32(tail,12,out.size()-directory);put32(tail,16,directory);out.write(tail);
+        return out.toByteArray();
     }
     private static boolean xmlLike(String n){String s=n.toLowerCase(Locale.ROOT);return s.endsWith(".xml")||s.endsWith(".hpf");}
     static boolean looksLikeXml(byte[] b){

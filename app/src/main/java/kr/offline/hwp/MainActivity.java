@@ -65,6 +65,8 @@ public class MainActivity extends Activity {
     private String startupWarning;
     private long savedWorkspaceRevision=-1;
     private String migrationOwnerId,newPlaceholderId;
+    /** Tabs that had recovery drafts at startup. Their editor may show a blank page before Studio restores the draft, so they never take a delivered document. */
+    private Set<String> startupRecoveryIds=Collections.emptySet();
     private final ArrayDeque<Intent> deferredIncoming=new ArrayDeque<>();
     private boolean migrationPending;
     private android.widget.ProgressBar startupProgress;
@@ -121,7 +123,7 @@ public class MainActivity extends Activity {
         if(activityDestroyed)return;
         if(warning!=null)startupWarning=warning;
         try{
-            mergeRecoveryTabs(recoverableIds);persistWorkspace();
+            startupRecoveryIds=new HashSet<>(recoverableIds);mergeRecoveryTabs(recoverableIds);persistWorkspace();
             for(String id:workspace.visibleIds())retainEditor(new EditorSession(id,"blank"));
             layoutWorkspace();migrationPending=false;
             if(startupProgress!=null){root.removeView(startupProgress);startupProgress=null;}
@@ -255,7 +257,11 @@ public class MainActivity extends Activity {
                     else if(result==WorkspaceModel.SplitResult.REJECTED)throw new IOException("분할할 문서 탭을 찾지 못했어요.");
                     else{layoutWorkspace();changed();}break;
                 }
-                case "workspaceUpdate":workspace.update(origin.tabId,args.optString("title","새 문서"),args.optBoolean("dirty",false),args.optBoolean("encrypted",false),args.optBoolean("ready",false));changed();break;
+                case "workspaceUpdate": {
+                    boolean ready=args.optBoolean("ready",false);
+                    if(ready){origin.stateReported=true;origin.blankDocument=args.optBoolean("blank",false);}
+                    workspace.update(origin.tabId,args.optString("title","새 문서"),args.optBoolean("dirty",false),args.optBoolean("encrypted",false),ready);changed();break;
+                }
                 case "workspaceClose":requestClose(args.getString("id"),origin);break;
                 case "workspaceCloseResult": {
                     String token=args.optString("token","");
@@ -381,8 +387,22 @@ public class MainActivity extends Activity {
         if(intent==null||!HostIntents.acceptableIncomingAction(intent.getAction()))return;
         if(intent.getData()==null&&!(intent.getParcelableExtra(Intent.EXTRA_STREAM) instanceof Uri))return;
         if(migrationPending){if(deferredIncoming.size()<WorkspaceModel.MAX_TABS)deferredIncoming.addLast(intent);else startupWarning="전달받은 문서가 너무 많아요. 복구가 끝난 뒤 파일 앱에서 다시 열어 주세요.";return;}
-        try{EditorSession owner=newEditor(activeEditor(),"blank");owner.handleIncoming(intent);}
+        try{
+            EditorSession blank=blankForIncoming();
+            if(blank!=null){blank.incomingClaimed=true;blank.handleIncoming(intent);return;}
+            EditorSession owner=newEditor(activeEditor(),"blank");owner.handleIncoming(intent);
+        }
         catch(Exception|OutOfMemoryError error){EditorSession active=activeEditor();if(active!=null)active.event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 문서를 열지 못했어요.":error.getMessage()));}
+    }
+    /**
+     * The active tab when it holds nothing but a blank document, so a delivered file opens there instead of next to an empty "새 문서" tab.
+     * Before its Studio has reported (cold start), a tab that started blank and had no recovery draft is still blank: nothing reopens
+     * documents at startup. Once reported, Studio's own judgement (no edits, no file, no password) decides. One delivery per editor.
+     */
+    private EditorSession blankForIncoming(){
+        EditorSession active=activeEditor();
+        if(active==null||!isLive(active)||!active.startedBlank||active.incomingClaimed||active.initialOpenPending||startupRecoveryIds.contains(active.tabId))return null;
+        return !active.stateReported||active.blankDocument?active:null;
     }
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(!legacyTests)incoming(intent);}
     @Override public void onConfigurationChanged(Configuration config){
@@ -421,6 +441,10 @@ public class MainActivity extends Activity {
     private final class EditorSession {
     final String tabId,sessionId=UUID.randomUUID().toString();
     String initialAction,initialRecentId,sessionStartupWarning; boolean visible,initialOpenPending,loaded,hostReady;
+    /** Created without an open/recent action; stateReported/blankDocument mirror Studio's last ready report (workspaceUpdate). */
+    final boolean startedBlank; boolean stateReported,blankDocument;
+    /** A delivered document was handed to this editor while it was blank; later deliveries get their own tab. */
+    volatile boolean incomingClaimed;
     private volatile boolean hasOpenedContent;
     /** IO-thread-owned keys written or explicitly selected/discarded, never mere recovery-list preview reads. */
     private final Set<String> ownedDraftKeys=new HashSet<>();
@@ -469,7 +493,7 @@ public class MainActivity extends Activity {
     private final class Upload extends NativeSessions.Session {final long started=System.currentTimeMillis();String target,sha;boolean replace,backup,overwrite;boolean studio;int seq,length,width,height;Map<String,String> info;ByteArrayOutputStream out=new ByteArrayOutputStream();}
 
     EditorSession(String tabId,String initialAction)throws IOException {
-        this.tabId=tabId;this.initialAction=initialAction;this.initialOpenPending="open".equals(initialAction);
+        this.tabId=tabId;this.initialAction=initialAction;this.initialOpenPending="open".equals(initialAction);this.startedBlank="blank".equals(initialAction);
         termux=new TermuxFolders(MainActivity.this);fonts=services.fonts();store=services.files();roots=workspaceRoots;
         try{
         try{drafts=legacyTests?services.legacyDraftStore():services.draftStoreFor(tabId);}catch(IOException preserved){drafts=null;sessionStartupWarning="이 문서의 복구 저장소를 열지 못했어요. 편집과 파일 저장은 계속할 수 있어요. 기존 복구 자료는 보존했어요.";}
@@ -664,12 +688,14 @@ public class MainActivity extends Activity {
                 SelectedFile selected=selectedFiles.get(id);
                 if(selected!=null){data=readProviderBytes(selected.uri,FileStore.MAX_BYTES);meta=selectedRecord(id,selected);format=selected.format;}
                 else if(linked!=null){data=termux.read(linked);meta=termux.record(linked);format=linked.format;}else{File f=document(id);data=store.read(f.getPath());meta=record(f);format=documentFormat(f);}
+                // The engine gets the checked bytes (an rhwp HWPX trimmed of its deflate slack); sha stays the file's own, the save baseline.
+                byte[] parsed=data;
                 if(format.equals("image"))validateImage(data);
                 else {
-                    ExportStore.validateDocumentForRead(data,format);
+                    parsed=ExportStore.documentForRead(data,format);
                     if(format.equals("pdf")||(format.equals("hwp")&&FileStore.hasHwp3Header(data)))meta.put("readOnly",true);
                 }
-                purgeBlobs();if(blobs.size()>=2)throw new IOException("다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.");String token=UUID.randomUUID().toString();putBlob(token,data);return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",meta);
+                purgeBlobs();if(blobs.size()>=2)throw new IOException("다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.");String token=UUID.randomUUID().toString();putBlob(token,parsed);return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",meta);
             }
             case "release":{String token=a.getString("token");blobs.remove(token);blobTimes.remove(token);return true;}
             case "delete": {String id=a.getString("id");File f=document(id);store.delete(f.getPath());documents.remove(id);return true;}
@@ -756,7 +782,7 @@ public class MainActivity extends Activity {
             }
             case "saveChunk": {Upload u=requireAnyUpload(a);if(a.getInt("seq")!=u.seq++)throw new IOException("저장 순서가 올바르지 않아요.");String b=a.getString("base64");if(b.length()>350000)throw new IOException("저장 조각이 너무 커요.");byte[] data=android.util.Base64.decode(b,android.util.Base64.DEFAULT);if(u.out.size()+data.length>u.length)throw new IOException("저장 크기가 일치하지 않아요.");u.out.write(data);return true;}
             case "abortSave":sessions.abort(a.optString("token",null),this::releaseNewSource);return true;
-            case "finishSave": {Upload u=requireUpload(a);try{if(!u.kind.equals("document")||u.out.size()!=u.length)throw new IOException("저장 크기가 일치하지 않아요.");byte[] bytes=u.out.toByteArray();
+            case "finishSave": {Upload u=requireUpload(a);try{if(!u.kind.equals("document")||u.out.size()!=u.length)throw new IOException("저장 크기가 일치하지 않아요.");byte[] bytes=FileStore.storable(u.out.toByteArray(),FileStore.ext(new File(u.target)));
                 synchronized(FileStore.class){
                 File backup=null;
                 if(u.backup){try{backup=u.studio?new ExportStore(store).backup(u.target,u.sha,new java.text.SimpleDateFormat("yyyyMMdd-HHmmss",Locale.ROOT).format(new Date())):store.backup(u.target,u.sha,new java.text.SimpleDateFormat("yyyyMMdd-HHmmss",Locale.ROOT).format(new Date()));}catch(IOException e){throw new IOException("원본 백업을 만들지 못해 저장을 멈췄어요. 원본은 변경하지 않았어요. "+e.getMessage(),e);}}
@@ -1094,13 +1120,13 @@ public class MainActivity extends Activity {
         if(uri==null){Object extra=intent.getParcelableExtra(Intent.EXTRA_STREAM);if(extra instanceof Uri)uri=(Uri)extra;}
         if(uri==null)return;
         final Uri document=uri;
-        if(!HostIntents.acceptableIncomingScheme(document.getScheme())){event("hostError",JSONObject.quote("이 방식으로 전달된 파일은 열 수 없어요. 파일 앱의 공유 또는 '연결 프로그램'을 사용해 주세요."));return;}
+        if(!HostIntents.acceptableIncomingScheme(document.getScheme())){incomingClaimed=false;event("hostError",JSONObject.quote("이 방식으로 전달된 파일은 열 수 없어요. 파일 앱의 공유 또는 '연결 프로그램'을 사용해 주세요."));return;}
         try{io.execute(()->{try{
             if(destroyed)return;
             JSONObject meta=registerSelection(document,"document",null);
             synchronized(pendingOpens){pendingOpens.add(meta);while(pendingOpens.size()>4)pendingOpens.remove(0);}
             event("openRequest",Boolean.TRUE);
-        }catch(OutOfMemoryError error){sessions.clear(this::releaseNewSource);event("hostError",JSONObject.quote("메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요."));}catch(Exception error){event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 파일을 열지 못했어요.":error.getMessage()));}});}catch(RejectedExecutionException closing){}
+        }catch(OutOfMemoryError error){incomingClaimed=false;sessions.clear(this::releaseNewSource);event("hostError",JSONObject.quote("메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요."));}catch(Exception error){incomingClaimed=false;event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 파일을 열지 못했어요.":error.getMessage()));}});}catch(RejectedExecutionException closing){}
     }
     private void pickerResult(int request,int result,Intent data){
         if(!isLive(this))return;
