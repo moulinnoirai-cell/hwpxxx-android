@@ -123,6 +123,41 @@ final class WorkspaceServices {
         return store;
         }
     }
+    private File tabRecoveryDirectory(String tabId)throws IOException {requireTabId(tabId);return new File(new File(filesDir,"recovery-tabs"),tabId);}
+    /** Names of the recovery drafts a tab still holds (newest first); empty when it holds none. Never creates the folder. */
+    List<String> tabRecoveryNames(String tabId)throws IOException {
+        File directory=tabRecoveryDirectory(tabId);
+        if(!hasRecoveryPair(directory))return Collections.emptyList();
+        List<String> names=new ArrayList<>();
+        for(Map<String,String> draft:draftStoreFor(tabId).list())names.add(draft.getOrDefault("name",""));
+        return Collections.unmodifiableList(names);
+    }
+    /**
+     * The user closed this tab and agreed that its unsaved content goes with it: every recovery record of the tab is deleted, so the closed
+     * tab never comes back at the next start. Other tabs are untouched. A commit already in progress finishes first; a later one fails
+     * because the folder is gone. Files this store did not write are left in place.
+     */
+    void discardTabRecovery(String tabId)throws IOException {
+        File directory=tabRecoveryDirectory(tabId);
+        synchronized(draftLock){
+            drafts.remove(tabId);
+            synchronized(recoveryBudget.lock()){
+                if(!directory.exists())return;
+                if(!directory.isDirectory()||!directory.getCanonicalFile().equals(directory))throw new IOException("복구 폴더 경로를 사용할 수 없어요.");
+                File[] entries=directory.listFiles();if(entries==null)throw new IOException("복구 폴더를 읽지 못했어요.");
+                IOException failed=null;
+                // Metadata first: a draft without metadata is no longer a recovery record, even if its bytes cannot be removed.
+                for(String suffix:new String[]{".meta",".draft"})for(File entry:entries){
+                    String name=entry.getName();
+                    if(!entry.isFile()||!name.matches("[0-9a-f]{32}\\"+suffix))continue;
+                    if(!entry.delete()&&entry.exists()&&failed==null)failed=new IOException("복구 자료를 모두 지우지 못했어요.");
+                }
+                for(File entry:entries)if(entry.isFile()&&entry.getName().startsWith(".draft-")&&entry.getName().endsWith(".tmp"))entry.delete();
+                directory.delete();// only succeeds when nothing else is left
+                if(failed!=null)throw failed;
+            }
+        }
+    }
     /** Discover recovery owners without parsing records or triggering DraftStore cleanup. */
     List<String> recoverableTabIds()throws IOException {
         List<String> owners=new ArrayList<>();

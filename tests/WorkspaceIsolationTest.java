@@ -483,9 +483,12 @@ public class WorkspaceIsolationTest {
     // ---- SOURCE checks for the close/lazy/recovery-ownership fixes (text patterns, not runtime proof) ----------
     static void closeFixChecks(String t){
         // P1-A: guarded close. Only a live-hook/Core answer or an explicit default-Cancel native confirmation closes.
-        yes(count(t,"removeConfirmed(origin,true)")==1&&count(t,"removeConfirmed(target,false)")==1&&count(t,"private void removeConfirmed(EditorSession editor,boolean discardOwnedRecovery)")==1&&!t.contains("removeConfirmed(EditorSession.this"),"session-level removal has exactly two callers: origin-bound hook/Core result (discard) and explicit native confirmation (preserve)");
+        // 2026-11-25 policy (user decision): a close the user agreed to deletes all of the tab's recovery, so a closed tab never comes back.
+        yes(count(t,"removeConfirmed(editor,true)")==3&&count(t,"removeConfirmed(target,true)")==1&&count(t,"removeConfirmed(target,false)")==0&&count(t,"removeConfirmed(origin,")==0&&count(t,"private void removeConfirmed(EditorSession editor,boolean discardRecovery)")==1&&!t.contains("removeConfirmed(EditorSession.this"),"session-level removal has exactly two callers: the consent path after the hook/Core result and the explicit native confirmation; both discard the tab's recovery");
         String ops=method(t,"private void workspaceOperation(");
-        yes(ops.contains("removeConfirmed(origin,true)")&&ops.indexOf("consumeClose(origin.sessionId,token)")<ops.indexOf("removeConfirmed(origin,true)")&&ops.contains("target.equals(origin.tabId)"),"hook/Core result closes only after consuming the origin-bound token");
+        yes(ops.contains("closeAfterConsent(origin)")&&ops.indexOf("consumeClose(origin.sessionId,token)")<ops.indexOf("closeAfterConsent(origin)")&&ops.contains("target.equals(origin.tabId)"),"hook/Core result closes only after consuming the origin-bound token");
+        String consent=method(t,"private void closeAfterConsent(");
+        yes(consent.contains("editor.io.execute(")&&consent.contains("recoveryNames(tabId)")&&consent.contains("if(names!=null&&names.isEmpty()){removeConfirmed(editor,true);return;}")&&consent.contains("recoveryNotice(names)")&&consent.contains("setNegativeButton(\"취소\"")&&consent.contains("getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()")&&consent.contains("if(isLive(editor))removeConfirmed(editor,true)"),"recovery left for other documents is named in a default-Cancel prompt before the close deletes it");
         yes(ops.contains("optBoolean(\"unavailable\",false)){offerNativeClose(origin,token);break;}"),"'unavailable' only offers the prompt, never closes");
         String req=method(t,"private void requestClose(");
         yes(!req.contains(".dirty")&&!req.contains(".ready")&&!req.contains("hasOpenedContent"),"requestClose never uses cached dirty/ready metadata");
@@ -494,7 +497,7 @@ public class WorkspaceIsolationTest {
         yes(req.contains("if(document.querySelector('dialog[open], .modal-overlay'))return 'dialog'")&&req.contains("core.confirmClose()")&&req.contains("AndroidWorkspaceCloseRequest(token)"),"script: dialog preflight, hook, then actual Core confirmClose");
         String show=method(t,"private void showNativeClose(");
         yes(show.contains("setNegativeButton(\"취소\"")&&show.contains("getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()"),"native fallback is default-Cancel");
-        yes(show.contains("removeConfirmed(target,false)")&&!show.contains("removeConfirmed(target,true)")&&show.contains("if(isLive(target))"),"native fallback closes the same live instance and preserves all recovery");
+        yes(show.contains("removeConfirmed(target,true)")&&!show.contains("removeConfirmed(target,false)")&&show.contains("if(isLive(target))")&&show.contains("복구 자료가 함께 지워져요"),"native fallback closes the same live instance and says that the tab's recovery goes with it");
         yes(show.indexOf("requests.consumeClose(target.sessionId,token)")<show.indexOf("dialog.show()"),"JS token revoked before the native prompt is shown");
         yes(show.contains("!activityResumed")&&show.contains("nativeDialogs.isEmpty()"),"native prompt waits for resumed Activity and no other dialog");
         String offer=method(t,"private void offerNativeClose(");
@@ -502,12 +505,14 @@ public class WorkspaceIsolationTest {
         yes(t.contains("CLOSE_FALLBACK_MS=15_000"),"15 s fallback delay");
         String un=method(t,"private void requestUnloadedClose(");
         yes(un.contains("setNegativeButton(\"취소\"")&&un.contains("requestFocus()")&&un.contains("editors.get(tabId)==null")&&un.contains("instance.equals(unloadedOwners.get(tabId))")&&un.contains("isPendingClose(instance,token)"),"unloaded close: default-Cancel, owner/instance/TTL re-validated");
-        yes(!un.contains("drafts")&&!un.contains("dispose(")&&!un.contains("new EditorSession")&&!un.contains("retainEditor")&&!un.contains(".delete("),"unloaded close touches no recovery and loads nothing");
+        yes(!un.contains("drafts.")&&!un.contains("dispose(")&&!un.contains("new EditorSession")&&!un.contains("retainEditor")&&!un.contains(".delete("),"unloaded close loads nothing");
+        yes(un.contains("recoveryNotice(recoveryNames(tabId))")&&un.indexOf("workspace.removeConfirmed(tabId)")<un.indexOf("discardTabRecoveryLater(tabId)")&&un.indexOf("isPendingClose(instance,token)")<un.indexOf("discardTabRecoveryLater(tabId)"),"unloaded close names the recovery it deletes, and deletes it only after the validated confirmation");
         String back=method(t,"public void onBackPressed()");
         yes(back.contains("requestClose(active.tabId,active)")&&back.contains("postDelayed(close,2500)")&&!back.contains("removeConfirmed(")&&!back.contains("dispose("),"Back goes through guarded close; hung evaluation retried, never removes directly");
         // P2-C: lazy runtimes.
         String startup=method(t,"private void completeStartup(");
         yes(startup.contains("for(String id:workspace.visibleIds())retainEditor(new EditorSession(id,\"blank\"))")&&!startup.contains("workspace.tabIds()"),"cold start instantiates only visible tabs");
+        yes(startup.contains("if(recoveryKnown)workspace.retainOnly(startupRecoveryIds);")&&startup.indexOf("mergeRecoveryTabs(recoverableIds)")<startup.indexOf("retainOnly(")&&startup.indexOf("retainOnly(")<startup.indexOf("retainEditor("),"restored tabs without recovery are dropped before any runtime starts, and only when recovery was checked");
         String renderer=method(t,"private void rendererGone(");
         yes(!renderer.contains("new EditorSession")&&!renderer.contains("retainEditor")&&renderer.contains("workspace.isVisible(editor.tabId)"),"hidden renderer loss defers replacement; only visible tabs are refilled by layout");
         String layout=method(t,"private void layoutWorkspace()");
@@ -516,18 +521,18 @@ public class WorkspaceIsolationTest {
         // P2-F: marker commit, migration and discovery run on the background executor, never on the UI thread.
         String create=method(t,"public void onCreate(Bundle saved)");int exec=create.indexOf("workspaceIo.execute(()->{");
         yes(exec>0&&create.indexOf("migrateLegacyDraftsTo(")>exec&&create.indexOf("recoverableTabIds()")>exec&&count(t,"migrateLegacyDraftsTo(")==1&&count(t,"recoverableTabIds()")==1&&count(t,"legacyDraftStore()")==1,"owner marker/migration/discovery only inside the background task");
-        yes(count(t,"drafts.delete(")==2,"recovery deletion sites: explicit discardDraft and owned-key cleanup only");
+        yes(count(t,"drafts.delete(")==1&&count(t,"discardTabRecovery(")==2,"recovery deletion sites: explicit discardDraft, and the whole tab after a consented close (session dispose or unloaded close)");
         // P2-D/E.
         yes(!t.contains("event(\"foldersChanged\"")&&count(t,"broadcastEvent(\"foldersChanged\"")==3,"folder connect/disconnect broadcast to every session");
         // P2-G: ownership of recovery deletion.
-        yes(count(t,"ownedDraftKeys.add(")==3,"recovery ownership is claimed at exactly beginSave(selected draft)/finishDraft/discardDraft");
+        yes(!t.contains("ownedDraftKeys"),"no per-session ownership bookkeeping: a consented close clears the whole tab");
         String readDraft=t.substring(t.indexOf("case \"readDraft\""),t.indexOf("case \"discardDraft\""));
-        yes(!readDraft.contains("ownedDraftKeys")&&!readDraft.contains("delete("),"previewing a draft via readDraft never claims or deletes it");
-        yes(!t.substring(t.indexOf("case \"listDrafts\""),t.indexOf("case \"readDraft\"")).contains("ownedDraftKeys"),"listDrafts never claims");
+        yes(!readDraft.contains("delete("),"previewing a draft via readDraft never deletes it");
+        yes(!t.substring(t.indexOf("case \"listDrafts\""),t.indexOf("case \"readDraft\"")).contains("delete("),"listDrafts never deletes");
         String dispose=method(t,"private void dispose(boolean confirmedClose)");
-        yes(dispose.contains("if(confirmedClose&&drafts!=null)for(String key:ownedDraftKeys)")&&!dispose.contains("drafts.list")&&!dispose.contains("listFiles")&&!dispose.contains("deleteRecursively"),"confirmed close deletes only owned keys, never a namespace");
+        yes(dispose.contains("if(confirmedClose&&!legacyTests)try{services.discardTabRecovery(tabId);}")&&!dispose.contains("drafts.list")&&!dispose.contains("listFiles")&&!dispose.contains("deleteRecursively"),"confirmed close deletes this tab's recovery namespace only, on the session IO thread");
         yes(method(t,"private void dispose()").contains("dispose(false)")&&method(t,"protected void onDestroy()").contains("editor.dispose()")&&method(t,"private void rendererGone(").contains("editor.dispose()")&&!method(t,"private void rendererGone(").contains("dispose(true)")&&!method(t,"protected void onDestroy()").contains("dispose(true)"),"Activity destroy and renderer loss preserve recovery");
-        yes(count(t,"dispose(true)")==0&&count(t,"dispose(discardOwnedRecovery)")==1,"only removeConfirmed's parameter can request recovery cleanup");
+        yes(count(t,"dispose(true)")==0&&count(t,"dispose(discardRecovery)")==1,"only removeConfirmed's parameter can request recovery cleanup");
     }
 
     // ---- static lint: no foreign-provider read inside the FileStore transaction lock -------------------------

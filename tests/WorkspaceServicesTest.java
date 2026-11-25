@@ -91,6 +91,7 @@ public final class WorkspaceServicesTest {
             budget(root,key,document);
             maintenance(root,key,document);
             discoverClosedRecovery(root,key,document);
+            discardClosedTab(root,key,document);
             durableLegacyOwner(root,key,document);
             Path broken=Files.createDirectory(root.resolve("broken-fonts"));Files.write(broken.resolve("fonts"),new byte[]{1});
             yes(services(broken,root,key).fonts()==null,"font initialization IO error preserves legacy unavailable-store behavior");
@@ -159,6 +160,31 @@ public final class WorkspaceServicesTest {
         yes(Arrays.equals(document,afterLegacy.read(good))&&after.recoverableTabIds().equals(Collections.singletonList(a)),"committed owner with empty target remains discoverable through pending legacy pair");
         WorkspaceServices retry=services(afterDir,root,key);retry.migrateLegacyDraftsTo(b);
         yes(Arrays.equals(document,retry.draftStoreFor(a).read(good))&&retry.draftStoreFor(b).list().isEmpty(),"retry after postcommit error honors durable owner rather than new current tab");
+    }
+    /** Closing a tab with consent deletes all of its recovery, so the closed tab is not rediscovered at the next start. */
+    private static void discardClosedTab(Path root,SecretKey key,byte[] document)throws Exception {
+        Path privateDir=Files.createDirectory(root.resolve("discard-closed"));
+        WorkspaceServices services=services(privateDir,root,key);
+        String a=UUID.randomUUID().toString(),b=UUID.randomUUID().toString(),fresh=UUID.randomUUID().toString();
+        yes(services.tabRecoveryNames(fresh).isEmpty()&&!Files.exists(privateDir.resolve("recovery-tabs").resolve(fresh)),"listing a tab without recovery creates no folder");
+        DraftStore da=services.draftStoreFor(a),db=services.draftStoreFor(b);
+        da.write(DraftStore.key("earlier document"),info("이전 문서.hwp"),document);Thread.sleep(5);
+        da.write(DraftStore.key("current document"),info("현재 문서.hwp"),document);
+        db.write(DraftStore.key("other tab"),info("다른 탭.hwp"),document);
+        yes(services.tabRecoveryNames(a).equals(Arrays.asList("현재 문서.hwp","이전 문서.hwp")),"tab recovery names, newest first");
+        Path aDir=privateDir.resolve("recovery-tabs").resolve(a);Files.write(aDir.resolve(".draft-1.tmp"),new byte[]{1});
+        yes(services.recoverableTabIds().containsAll(Arrays.asList(a,b)),"both tabs recoverable before close");
+        services.discardTabRecovery(a);
+        yes(!Files.exists(aDir),"closed tab folder is gone");
+        yes(!services.recoverableTabIds().contains(a)&&services.recoverableTabIds().contains(b),"closed tab is not rediscovered; other tab keeps its recovery");
+        yes(services.tabRecoveryNames(a).isEmpty()&&db.list().size()==1,"other tab drafts untouched");
+        rejects(()->da.write(DraftStore.key("late autosave"),info("늦은 저장.hwp"),document),"a late write from the closed session fails instead of reviving the tab");
+        yes(!services.recoverableTabIds().contains(a),"late write did not revive the closed tab");
+        services.discardTabRecovery(fresh);yes(!Files.exists(privateDir.resolve("recovery-tabs").resolve(fresh)),"discarding a tab without recovery is a no-op");
+        Path bDir=privateDir.resolve("recovery-tabs").resolve(b);Path foreign=Files.write(bDir.resolve("keep.txt"),new byte[]{3});
+        services.discardTabRecovery(b);
+        yes(Files.exists(foreign)&&!services.recoverableTabIds().contains(b),"unknown files are kept, recovery records are removed");
+        for(String invalid:new String[]{"../escape","",a.toUpperCase(Locale.ROOT)})rejects(()->services.discardTabRecovery(invalid),"reject noncanonical tab ID on discard");
     }
     private static void discoverClosedRecovery(Path root,SecretKey key,byte[] document)throws Exception {
         Path privateDir=Files.createDirectory(root.resolve("discovery"));

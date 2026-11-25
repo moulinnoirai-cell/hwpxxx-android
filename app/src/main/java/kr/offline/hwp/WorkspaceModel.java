@@ -286,6 +286,22 @@ public final class WorkspaceModel {
         return true;
     }
 
+    /**
+     * Startup: keeps only the tabs in {@code keep} (those with recovery drafts). The layout never stores documents, so any other restored
+     * tab would only reopen as an empty "새 문서". When none is kept, the active tab (else the first) stays so the workspace is never empty.
+     * Returns whether a tab was removed.
+     */
+    public boolean retainOnly(Set<String> keep) {
+        if (keep == null) throw new IllegalArgumentException("keep");
+        String spare = null;
+        boolean anyKept = false;
+        for (Tab t : tabs) if (keep.contains(t.id)) { anyKept = true; break; }
+        if (!anyKept && !tabs.isEmpty()) spare = active != null ? active : tabs.get(0).id;
+        boolean removed = false;
+        for (String id : tabIds()) if (!keep.contains(id) && !id.equals(spare)) removed |= removeConfirmed(id);
+        return removed;
+    }
+
     public SplitResult setSplit(boolean enabled, String originId) {
         String origin = canonicalId(originId);
         if (origin == null || !contains(origin)) return SplitResult.REJECTED;

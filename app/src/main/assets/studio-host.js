@@ -89,15 +89,31 @@
       await request(op, {token, seq, base64: btoa(binary)});
     }
   }
+  // Native refuses a read for a moment while its two read buffers are busy or the provider is slow; one retry hides that.
+  const TRANSIENT_READ = /다른 (문서|파일)를 처리 중|제한 시간 안에 응답하지/;
+  /** A read failure names its stage, so a "파일 로드 실패" report tells reading apart from parsing (which Studio reports itself). */
+  function staged(error, stage) {
+    const message = String(error?.message || error || '문서를 읽지 못했어요.');
+    return message.includes('(단계: ') ? error : new Error(`${message} (단계: ${stage})`);
+  }
   async function readRecord(meta) {
-    const result = await request(meta.draft ? 'readDraft' : 'read', meta.draft ? {key: meta.key || meta.id.slice(6)} : {id: meta.id});
+    const op = meta.draft ? 'readDraft' : 'read', args = meta.draft ? {key: meta.key || meta.id.slice(6)} : {id: meta.id};
+    const stage = meta.draft ? '복구 자료 읽기' : '파일 읽기';
+    let result;
+    try { result = await request(op, args); }
+    catch (error) {
+      if (!TRANSIENT_READ.test(String(error?.message))) throw staged(error, stage);
+      await new Promise(resolve => setTimeout(resolve, 600));
+      try { result = await request(op, args); } catch (again) { throw staged(again, stage); }
+    }
     try {
       const response = await fetch(result.url);
       if (!response.ok) throw new Error('문서를 읽지 못했어요.');
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.length > MAX_BYTES) throw new Error('32MB를 넘는 문서는 열 수 없어요.');
       return {...result, bytes};
-    } finally { await request('release', {token: result.token}).catch(() => {}); }
+    } catch (error) { throw staged(error, '앱 내부 전달'); }
+    finally { await request('release', {token: result.token}).catch(() => {}); }
   }
   function element(tag, text, properties = {}) {
     const node = document.createElement(tag); if (text != null) node.textContent = text;
