@@ -1,4 +1,4 @@
-# hwpxxx for Android 0.4.1
+# hwpxxx for Android 0.4.2
 
 개인용 오프라인 HWP/HWPX 문서 앱입니다. 앱 ID `kr.offline.hwp`, Android 11(API 30) 이상, 문서 엔진 rhwp 0.9.1(MIT).
 인터넷 권한이 없고 광고·분석·원격 글꼴·외부 전송이 없습니다. 문서는 기기 안에서만 처리합니다.
@@ -30,6 +30,9 @@
 | `app/src/main/assets/engine*`, `fonts/`, `icons.js` | rhwp 0.9.1, Noto Sans KR, Lucide (원래 라이선스 포함) |
 | `design/latest-inline-fragment.html` | 승인 디자인 원본 |
 | `tests/` | FileStore JVM 시험, 브라우저 미리보기 서버, 안내 화면 타이밍 시험, rhwp 샘플 문서 |
+
+## 0.4.2 닫은 탭이 "새 문서"로 되살아나지 않게
+파일 앱으로 문서를 열 때 옆에 "새 문서" 탭이 더 생기던 문제를 고쳤습니다. 탭을 닫으면 그 탭의 복구 자료를 함께 지우고(남은 다른 문서의 복구 자료는 확인 후), 다시 실행할 때는 복구 자료가 있는 탭만 "복구 문서"로 되살립니다. 문서 읽기 실패 문구에 단계를 표시합니다. [변경 안내](docs/CHANGES-0.4.2.md)
 
 ## 0.4.1 빈 탭 정리와 그림 든 HWPX 저장·열기
 빈 "새 문서" 탭에서 문서를 열면 그 탭을 사용합니다(탭이 두 개 생기지 않음). 그림이 든 HWP를 HWPX로 저장할 때 거부되던 문제와 rhwp로 만든 HWPX가 열리지 않던 문제를 고쳤습니다. [변경 안내](docs/CHANGES-0.4.1.md)

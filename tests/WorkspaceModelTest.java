@@ -312,8 +312,31 @@ public class WorkspaceModelTest {
         m.setSplit(false, m.activeId()); eq(m.size(), 2, "collapse loses nothing"); invariants(m, "end");
     }
 
+    static void retainOnlyRecovery() {
+        WorkspaceModel m = new WorkspaceModel();
+        for (int i = 1; i <= 4; i++) m.createTab(u(i));
+        m.setSplit(true, id(4)); m.select(id(2), id(4));
+        long rev = m.persistentRevision();
+        yes(m.retainOnly(new java.util.HashSet<>(java.util.Arrays.asList(id(3), id(9)))), "tabs without recovery are dropped");
+        eq(m.tabIds(), java.util.Arrays.asList(id(3)), "only the recovery tab stays");
+        eq(m.activeId(), id(3), "the kept tab is active"); yes(!m.isSplit(), "split collapses with one tab");
+        yes(m.persistentRevision() > rev, "dropping tabs is persisted"); invariants(m, "retain recovery");
+        yes(!m.retainOnly(java.util.Collections.singleton(id(3))), "nothing to drop");
+        WorkspaceModel blank = new WorkspaceModel();
+        for (int i = 1; i <= 3; i++) blank.createTab(u(i));
+        blank.select(id(2), id(3));
+        yes(blank.retainOnly(java.util.Collections.emptySet()), "no recovery: extra blank tabs dropped");
+        eq(blank.tabIds(), java.util.Arrays.asList(id(2)), "no recovery: the active tab stays, never empty"); invariants(blank, "retain none");
+        WorkspaceModel two = new WorkspaceModel();
+        for (int i = 1; i <= 3; i++) two.createTab(u(i));
+        yes(two.retainOnly(new java.util.HashSet<>(java.util.Arrays.asList(id(1), id(3)))), "two recovery tabs kept");
+        eq(two.tabIds(), java.util.Arrays.asList(id(1), id(3)), "order kept"); invariants(two, "retain two");
+        WorkspaceModel empty = new WorkspaceModel();
+        yes(!empty.retainOnly(java.util.Collections.emptySet()) && empty.isEmpty(), "empty stays empty");
+    }
+
     public static void main(String[] args) {
-        createAndSelect(); splitSwapFocusCollapse(); splitNeedsNewTab(); reorder(); closeFlow(); metadataIndependence(); cap(); legacyWorkspaceRestore(); restoreValidation(); snapshots(); sequence();
+        createAndSelect(); splitSwapFocusCollapse(); splitNeedsNewTab(); reorder(); closeFlow(); metadataIndependence(); cap(); legacyWorkspaceRestore(); restoreValidation(); snapshots(); sequence(); retainOnlyRecovery();
         System.out.println("WorkspaceModelTest OK (" + checks + " checks)");
     }
 }

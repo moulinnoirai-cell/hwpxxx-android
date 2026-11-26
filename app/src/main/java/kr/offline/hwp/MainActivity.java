@@ -53,6 +53,7 @@ public class MainActivity extends Activity {
     private final Handler closeHandler=new Handler(Looper.getMainLooper());
     private static final long CLOSE_FALLBACK_MS=15_000;
     private static final String CLOSE_BUSY="닫기 확인 중이에요. 열린 확인 대화상자를 마치거나 잠시 뒤 다시 시도해 주세요.";
+    private static final String RECOVERED_TITLE="복구 문서";
     private WorkspaceModel workspace;
     private WorkspaceStateStore workspaceState;
     private WorkspaceServices services;
@@ -108,22 +109,30 @@ public class MainActivity extends Activity {
             final String legacyOwner=migrationOwnerId;
             final boolean canMigrate=!legacyTests&&savedWorkspaceRevision==workspace.persistentRevision();
             workspaceIo.execute(()->{
-                String warning=null;List<String> recoverable=Collections.emptyList();
+                String warning=null;List<String> recoverable=Collections.emptyList();boolean known=false;
                 if(canMigrate)try{services.migrateLegacyDraftsTo(legacyOwner);}catch(IOException preserved){warning="이전 복구 자료를 모두 옮기지 못했어요. 원본 복구 자료는 보존했어요.";}
-                if(!legacyTests)try{recoverable=services.recoverableTabIds();}catch(IOException preserved){warning="일부 복구 자료를 확인하지 못했어요. 기존 자료는 보존했어요.";}
-                final String recoveryWarning=warning;final List<String> recoverableIds=recoverable;
-                if(!legacyTests)runOnUiThread(()->completeStartup(recoverableIds,recoveryWarning));
+                if(!legacyTests)try{recoverable=services.recoverableTabIds();known=true;}catch(IOException preserved){warning="일부 복구 자료를 확인하지 못했어요. 기존 자료는 보존했어요.";}
+                final String recoveryWarning=warning;final List<String> recoverableIds=recoverable;final boolean recoveryKnown=known;
+                if(!legacyTests)runOnUiThread(()->completeStartup(recoverableIds,recoveryKnown,recoveryWarning));
                 sweepPdfCache();ClipboardImageProvider.sweep(MainActivity.this);
             });
             if(!legacyTests&&saved==null)incoming(getIntent());
         }catch(Exception error){new AlertDialog.Builder(this).setMessage("작업공간을 열지 못했어요. 복구 자료는 보존했어요.").setPositiveButton("닫기",(d,w)->finish()).show();}
     }
     @Override protected void onSaveInstanceState(Bundle out){if(requests!=null)out.putInt("workspaceNextPickerCode",requests.nextPickerCode());super.onSaveInstanceState(out);}
-    private void completeStartup(List<String> recoverableIds,String warning){
+    /**
+     * Restores the tab layout. Only tabs with recovery drafts come back: the layout stores no documents, so any other restored tab would
+     * reopen as an empty "새 문서" next to the document the user is opening. When recovery could not be checked, every tab stays.
+     */
+    private void completeStartup(List<String> recoverableIds,boolean recoveryKnown,String warning){
         if(activityDestroyed)return;
         if(warning!=null)startupWarning=warning;
         try{
-            startupRecoveryIds=new HashSet<>(recoverableIds);mergeRecoveryTabs(recoverableIds);persistWorkspace();
+            startupRecoveryIds=new HashSet<>(recoverableIds);mergeRecoveryTabs(recoverableIds);
+            if(recoveryKnown)workspace.retainOnly(startupRecoveryIds);
+            // Until its editor reports, a recovery tab says what it is instead of the default "새 문서".
+            for(String id:recoverableIds)workspace.update(id,RECOVERED_TITLE,false,false,false);
+            persistWorkspace();
             for(String id:workspace.visibleIds())retainEditor(new EditorSession(id,"blank"));
             layoutWorkspace();migrationPending=false;
             if(startupProgress!=null){root.removeView(startupProgress);startupProgress=null;}
@@ -189,7 +198,7 @@ public class MainActivity extends Activity {
         try{
             List<String> wanted=workspace.visibleIds();
             for(String id:wanted)if(!editors.containsKey(id))try{retainEditor(new EditorSession(id,"blank"));}catch(Exception|OutOfMemoryError unavailable){
-                workspace.update(id,"복구 문서",false,false,false);
+                workspace.update(id,RECOVERED_TITLE,false,false,false);
                 android.widget.Toast.makeText(this,"문서를 열지 못했어요. 복구 자료는 보존했어요. 다른 문서를 저장한 뒤 다시 선택하거나 탭을 닫아 주세요.",android.widget.Toast.LENGTH_LONG).show();
             }
             for(EditorSession editor:editors.values())if(editor.visible&&!wanted.contains(editor.tabId)){
@@ -267,7 +276,7 @@ public class MainActivity extends Activity {
                     String token=args.optString("token","");
                     if(args.optBoolean("unavailable",false)){offerNativeClose(origin,token);break;}
                     String target=requests.consumeClose(origin.sessionId,token);
-                    if(target!=null&&target.equals(origin.tabId)){if(token.equals(origin.pendingCloseToken))origin.pendingCloseToken=null;if(args.optBoolean("allow",false))removeConfirmed(origin,true);}break;
+                    if(target!=null&&target.equals(origin.tabId)){if(token.equals(origin.pendingCloseToken))origin.pendingCloseToken=null;if(args.optBoolean("allow",false))closeAfterConsent(origin);}break;
                 }
                 case "workspaceInitialDone": {
                     boolean createdForOpen=origin.initialOpenPending;origin.initialOpenPending=false;
@@ -327,9 +336,9 @@ public class MainActivity extends Activity {
         if(!target.nativeDialogs.isEmpty()){closeHandler.postDelayed(()->offerNativeClose(target,token),CLOSE_FALLBACK_MS);return;}
         requests.consumeClose(target.sessionId,token);target.pendingCloseToken=null;target.closeFallbackRequired=true;target.closeProbe++;
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("문서 탭 닫기")
-            .setMessage("편집기의 응답을 확인하지 못했어요. 이 탭을 닫으면 저장하지 않은 변경사항이 사라질 수 있어요. 기존 복구 자료는 보존해요. 탭을 닫을까요?")
+            .setMessage("편집기의 응답을 확인하지 못했어요. 이 탭을 닫으면 저장하지 않은 변경사항과 이 탭의 복구 자료가 함께 지워져요. 탭을 닫을까요?")
             .setNegativeButton("취소",(d,w)->{})
-            .setPositiveButton("탭 닫기",(d,w)->{if(isLive(target))removeConfirmed(target,false);}).create();
+            .setPositiveButton("탭 닫기",(d,w)->{if(isLive(target))removeConfirmed(target,true);}).create();
         target.nativeDialogs.add(dialog);dialog.setOnDismissListener(d->target.nativeDialogs.remove(dialog));
         dialog.setOnShowListener(d->{dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFocusableInTouchMode(true);dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();});dialog.show();
     }
@@ -337,22 +346,64 @@ public class MainActivity extends Activity {
         String owner=unloadedOwners.get(tabId);if(owner==null){owner=UUID.randomUUID().toString();unloadedOwners.put(tabId,owner);}
         if(requests.hasPendingClose(owner)||unloadedCloseDialogs.containsKey(tabId))throw new IOException(CLOSE_BUSY);
         final String instance=owner,token=requests.requestClose(tabId,owner);
+        String notice=recoveryNotice(recoveryNames(tabId));
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("문서 탭 닫기")
-            .setMessage("아직 열지 않은 문서 탭을 닫을까요? 기존 복구 자료는 보존해요.")
+            .setMessage(notice.isEmpty()?"아직 열지 않은 문서 탭을 닫을까요?":"아직 열지 않은 문서 탭을 닫을까요? "+notice)
             .setNegativeButton("취소",(d,w)->{})
             .setPositiveButton("탭 닫기",(d,w)->{
                 if(!activityDestroyed&&workspace.contains(tabId)&&editors.get(tabId)==null&&instance.equals(unloadedOwners.get(tabId))&&requests.isPendingClose(instance,token)){
-                    requests.consumeClose(instance,token);requests.removeSession(instance);unloadedOwners.remove(tabId);workspace.removeConfirmed(tabId);finishCloseLayout();
+                    requests.consumeClose(instance,token);requests.removeSession(instance);unloadedOwners.remove(tabId);workspace.removeConfirmed(tabId);discardTabRecoveryLater(tabId);finishCloseLayout();
                 }else if(!activityDestroyed)showCloseError(new IOException("닫기 확인 시간이 지났어요. 문서 탭을 다시 확인한 뒤 닫아 주세요."));
             }).create();
         unloadedCloseDialogs.put(tabId,dialog);
         dialog.setOnDismissListener(d->{if(unloadedCloseDialogs.get(tabId)==dialog)unloadedCloseDialogs.remove(tabId);requests.consumeClose(instance,token);});
         dialog.setOnShowListener(d->{dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFocusableInTouchMode(true);dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();});dialog.show();
     }
-    private void removeConfirmed(EditorSession editor,boolean discardOwnedRecovery){
+    /** discardRecovery: the user agreed to close, so the tab's recovery goes with it and the tab never reappears at the next start. */
+    private void removeConfirmed(EditorSession editor,boolean discardRecovery){
         if(!isLive(editor))return;
         if(legacyTests){finish();return;}
-        workspace.removeConfirmed(editor.tabId);editors.remove(editor.tabId);editor.dispose(discardOwnedRecovery);finishCloseLayout();
+        workspace.removeConfirmed(editor.tabId);editors.remove(editor.tabId);editor.dispose(discardRecovery);finishCloseLayout();
+    }
+    /**
+     * Studio allowed the close (saved, clean, or the user chose to discard), which already settled its current document's recovery.
+     * Closing deletes all of the tab's recovery, so drafts it still holds for other documents are named and confirmed first.
+     * The check runs on the editor's IO thread, after any draft write it has queued.
+     */
+    private void closeAfterConsent(EditorSession editor){
+        final String tabId=editor.tabId;
+        try{editor.io.execute(()->{
+            final List<String> names=recoveryNames(tabId);
+            runOnUiThread(()->{
+                if(!isLive(editor))return;
+                if(names!=null&&names.isEmpty()){removeConfirmed(editor,true);return;}
+                AlertDialog dialog=new AlertDialog.Builder(this).setTitle("문서 탭 닫기")
+                    .setMessage(recoveryNotice(names)+" 탭을 닫을까요?")
+                    .setNegativeButton("취소",(d,w)->{})
+                    .setPositiveButton("지우고 닫기",(d,w)->{if(isLive(editor))removeConfirmed(editor,true);}).create();
+                editor.nativeDialogs.add(dialog);dialog.setOnDismissListener(d->editor.nativeDialogs.remove(dialog));
+                dialog.setOnShowListener(d->{dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setFocusableInTouchMode(true);dialog.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();});dialog.show();
+            });
+        });}catch(RejectedExecutionException closing){removeConfirmed(editor,true);}
+    }
+    /** Names of the recovery drafts a tab holds, for a close prompt; null when they could not be read. */
+    private List<String> recoveryNames(String tabId){try{return services.tabRecoveryNames(tabId);}catch(IOException|RuntimeException unreadable){return null;}}
+    /** What closing deletes besides the open document: "" when the tab holds no recovery. */
+    static String recoveryNotice(List<String> names){
+        if(names==null)return "이 탭의 복구 자료도 함께 지워져요.";
+        if(names.isEmpty())return "";
+        StringBuilder list=new StringBuilder();
+        for(int i=0;i<Math.min(3,names.size());i++){
+            String name=names.get(i)==null?"":names.get(i).trim();if(name.isEmpty())name="이름 없는 문서";
+            if(name.length()>40)name=name.substring(0,40)+"…";
+            if(list.length()>0)list.append(", ");list.append(name);
+        }
+        if(names.size()>3)list.append(" 외 ").append(names.size()-3).append("개");
+        return "이 탭에 저장하지 않은 복구 자료 "+names.size()+"개("+list+")도 함께 지워져요.";
+    }
+    private void discardTabRecoveryLater(String tabId){
+        try{workspaceIo.execute(()->{try{services.discardTabRecovery(tabId);}catch(IOException|RuntimeException kept){/* reappears as "복구 문서" at the next start */}});}
+        catch(RejectedExecutionException closing){}
     }
     private void finishCloseLayout(){
         if(workspace.isEmpty()){persistWorkspace();finish();return;}
@@ -363,7 +414,7 @@ public class MainActivity extends Activity {
         // Hidden documents keep only their recovery identity until selected again; no hidden WASM startup.
         editors.remove(editor.tabId);editor.dispose();
         if(legacyTests){finish();return;}
-        workspace.update(editor.tabId,"복구 문서",false,false,false);
+        workspace.update(editor.tabId,RECOVERED_TITLE,false,false,false);
         if(workspace.isVisible(editor.tabId))layoutWorkspace();
         changed();
     }
@@ -389,20 +440,29 @@ public class MainActivity extends Activity {
         if(migrationPending){if(deferredIncoming.size()<WorkspaceModel.MAX_TABS)deferredIncoming.addLast(intent);else startupWarning="전달받은 문서가 너무 많아요. 복구가 끝난 뒤 파일 앱에서 다시 열어 주세요.";return;}
         try{
             EditorSession blank=blankForIncoming();
-            if(blank!=null){blank.incomingClaimed=true;blank.handleIncoming(intent);return;}
+            if(blank!=null){
+                if(blank!=activeEditor()){workspace.select(blank.tabId,workspace.activeId());layoutWorkspace();changed();}
+                blank.incomingClaimed=true;blank.handleIncoming(intent);return;
+            }
             EditorSession owner=newEditor(activeEditor(),"blank");owner.handleIncoming(intent);
         }
         catch(Exception|OutOfMemoryError error){EditorSession active=activeEditor();if(active!=null)active.event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 문서를 열지 못했어요.":error.getMessage()));}
     }
     /**
-     * The active tab when it holds nothing but a blank document, so a delivered file opens there instead of next to an empty "새 문서" tab.
-     * Before its Studio has reported (cold start), a tab that started blank and had no recovery draft is still blank: nothing reopens
-     * documents at startup. Once reported, Studio's own judgement (no edits, no file, no password) decides. One delivery per editor.
+     * A tab holding nothing but a blank document, so a delivered file opens there instead of next to an empty "새 문서" tab: the active tab
+     * first, then any other loaded one (the caller selects it). Before its Studio has reported (cold start), the active tab that started
+     * blank and had no recovery draft is still blank: nothing reopens documents at startup. Once reported, Studio's own judgement (no
+     * edits, no file, no password) decides. One delivery per editor.
      */
     private EditorSession blankForIncoming(){
         EditorSession active=activeEditor();
-        if(active==null||!isLive(active)||!active.startedBlank||active.incomingClaimed||active.initialOpenPending||startupRecoveryIds.contains(active.tabId))return null;
-        return !active.stateReported||active.blankDocument?active:null;
+        if(takesIncoming(active,true))return active;
+        for(String id:workspace.tabIds()){EditorSession editor=editors.get(id);if(editor!=null&&editor!=active&&takesIncoming(editor,false))return editor;}
+        return null;
+    }
+    private boolean takesIncoming(EditorSession editor,boolean blankUntilReported){
+        if(editor==null||!isLive(editor)||!editor.startedBlank||editor.incomingClaimed||editor.initialOpenPending||startupRecoveryIds.contains(editor.tabId))return false;
+        return editor.stateReported?editor.blankDocument:blankUntilReported;
     }
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(!legacyTests)incoming(intent);}
     @Override public void onConfigurationChanged(Configuration config){
@@ -446,8 +506,6 @@ public class MainActivity extends Activity {
     /** A delivered document was handed to this editor while it was blank; later deliveries get their own tab. */
     volatile boolean incomingClaimed;
     private volatile boolean hasOpenedContent;
-    /** IO-thread-owned keys written or explicitly selected/discarded, never mere recovery-list preview reads. */
-    private final Set<String> ownedDraftKeys=new HashSet<>();
     private long backAttempt,closeProbe;
     private String pendingCloseToken;
     private boolean closeFallbackRequired;
@@ -764,7 +822,7 @@ public class MainActivity extends Activity {
                     // A recovered edit is only ever saved as a new copy; the original document is never its save target.
                     if(drafts==null||!DraftStore.validKey(u.sourceId.substring(6)))throw new IOException("복구 항목을 찾을 수 없어요.");
                     if(a.optBoolean("replace",false))throw new IOException("복구한 내용은 다른 이름으로 저장해 주세요.");
-                    String selectedKey=u.sourceId.substring(6);ownedDraftKeys.add(selectedKey);src=new File(drafts.info(selectedKey).get("name"));
+                    String selectedKey=u.sourceId.substring(6);src=new File(drafts.info(selectedKey).get("name"));
                 } else {src=linked==null?document(u.sourceId):new File(linked.name);if(linked!=null&&a.optBoolean("replace",false))throw new IOException("연결 폴더 원본은 유지해요. 다른 이름으로 저장해 주세요.");}u.target=store.resolve(a.getString("target")).getPath();u.replace=a.optBoolean("replace",false);u.backup=u.replace&&a.optBoolean("backup",false);u.sha=a.optString("sha","");u.length=a.getInt("length");
                 // "Save as" onto an existing file the user confirmed replacing (like Hancom/Word): another file than the open document. The
                 // existing file is hashed now, kept as a backup and replaced atomically only if it is still the same bytes at finishSave.
@@ -802,7 +860,7 @@ public class MainActivity extends Activity {
                 String token=a.getString("token");Upload u=sessions.draft;if(u==null||!u.token.equals(token))throw new IOException("복구 저장 세션이 만료되었어요.");
                 try{if(!u.kind.equals("draft")||u.out.size()!=u.length)throw new IOException("복구 자료 크기가 일치하지 않아요.");
                     if(destroyed)throw new IOException("문서가 닫혔어요.");
-                    String key=u.sourceId.startsWith("draft:")?u.sourceId.substring(6):DraftStore.key(u.sourceId);ownedDraftKeys.add(key);drafts.write(key,u.info,u.out.toByteArray());return obj("key",key);
+                    String key=u.sourceId.startsWith("draft:")?u.sourceId.substring(6):DraftStore.key(u.sourceId);drafts.write(key,u.info,u.out.toByteArray());return obj("key",key);
                 }finally{sessions.draft=null;}
             }
             case "abortDraft":sessions.abort(a.optString("token",null),this::releaseNewSource);return true;
@@ -814,7 +872,7 @@ public class MainActivity extends Activity {
                 JSONObject meta=obj("id","draft:"+key,"name",m.get("name"),"path",m.get("path"),"folder",m.get("folder"),"size",data.length,"modified",Long.parseLong(m.get("savedAt")),"format",m.get("format"),"external",true,"draft",true,"encrypted","true".equals(m.get("encrypted")));
                 return obj("url","/document/"+token,"token",token,"sha",FileStore.sha(data),"meta",meta);
             }
-            case "discardDraft": {if(drafts==null)return true;String key=draftKey(a);if(DraftStore.validKey(key)){ownedDraftKeys.add(key);drafts.delete(key);}return true;}
+            case "discardDraft": {if(drafts==null)return true;String key=draftKey(a);if(DraftStore.validKey(key))drafts.delete(key);return true;}
             default:throw new IOException("지원하지 않는 작업이에요.");
         }
     }
@@ -1126,7 +1184,7 @@ public class MainActivity extends Activity {
             JSONObject meta=registerSelection(document,"document",null);
             synchronized(pendingOpens){pendingOpens.add(meta);while(pendingOpens.size()>4)pendingOpens.remove(0);}
             event("openRequest",Boolean.TRUE);
-        }catch(OutOfMemoryError error){incomingClaimed=false;sessions.clear(this::releaseNewSource);event("hostError",JSONObject.quote("메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요."));}catch(Exception error){incomingClaimed=false;event("hostError",JSONObject.quote(error.getMessage()==null?"전달받은 파일을 열지 못했어요.":error.getMessage()));}});}catch(RejectedExecutionException closing){}
+        }catch(OutOfMemoryError error){incomingClaimed=false;sessions.clear(this::releaseNewSource);event("hostError",JSONObject.quote("메모리가 부족해 파일을 열지 못했어요. 원본은 변경하지 않았어요."));}catch(Exception error){incomingClaimed=false;event("hostError",JSONObject.quote((error.getMessage()==null?"전달받은 파일을 열지 못했어요.":error.getMessage())+" (단계: 받은 파일 확인)"));}});}catch(RejectedExecutionException closing){}
     }
     private void pickerResult(int request,int result,Intent data){
         if(!isLive(this))return;
@@ -1150,7 +1208,7 @@ public class MainActivity extends Activity {
         if(destroyed)return;destroyed=true;visible=false;requests.removeSession(sessionId);scanStop.set(true);scanner.shutdownNow();
         if(printAdapter!=null){printAdapter.close();printAdapter=null;}
         for(AlertDialog dialog:new ArrayList<>(nativeDialogs))dialog.cancel();nativeDialogs.clear();
-        try{io.execute(()->{if(confirmedClose&&drafts!=null)for(String key:ownedDraftKeys)try{drafts.delete(key);}catch(IOException preserved){}ownedDraftKeys.clear();blobs.clear();blobTimes.clear();documents.clear();pendingOpens.clear();sessions.clear(this::releaseNewSource);closePdf();});}catch(RejectedExecutionException ignored){}
+        try{io.execute(()->{if(confirmedClose&&!legacyTests)try{services.discardTabRecovery(tabId);}catch(IOException|RuntimeException kept){/* reappears as "복구 문서" at the next start */}blobs.clear();blobTimes.clear();documents.clear();pendingOpens.clear();sessions.clear(this::releaseNewSource);closePdf();});}catch(RejectedExecutionException ignored){}
         io.shutdown();
         if(web!=null){web.removeJavascriptInterface("OfflineNative");if(web.getParent() instanceof android.view.ViewGroup)((android.view.ViewGroup)web.getParent()).removeView(web);web.destroy();web=null;}
     }

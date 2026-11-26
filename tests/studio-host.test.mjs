@@ -135,9 +135,22 @@ test('open: native read failure rejects getFile with the native message and the 
   await openHandle(HWP);
   await control('/__fail?op=read&message=' + encodeURIComponent('읽기 시험 실패'));
   const failed = await page.evaluate(async () => { try { await __h.a.getFile(); return 'resolved'; } catch (error) { return error.message; } });
-  assert.equal(failed, '읽기 시험 실패');
+  assert.equal(failed, '읽기 시험 실패 (단계: 파일 읽기)', 'the native message is kept and names the stage');
   const info = await getFileInfo();
   assert.deepEqual(Buffer.from(info.bytes), fs.readFileSync(doc(HWP)));
+});
+
+test('open: a busy or slow native read is retried once; a second refusal is reported with its stage', async () => {
+  await openHandle(HWP);
+  await control('/__fail?op=read&message=' + encodeURIComponent('다른 문서를 처리 중이에요. 잠시 뒤 다시 시도해 주세요.') + '&times=1');
+  const info = await getFileInfo();
+  assert.deepEqual(Buffer.from(info.bytes), fs.readFileSync(doc(HWP)), 'one transient refusal is retried');
+  assert.equal((await nativeLog()).filter(o => o.op === 'read').length, 2, 'refused once, then read');
+  await control('/__logclear');
+  await control('/__fail?op=read&message=' + encodeURIComponent('파일 제공자가 제한 시간 안에 응답하지 않았어요.') + '&times=2');
+  const failed = await page.evaluate(async () => { try { await __h.a.getFile(); return 'resolved'; } catch (error) { return error.message; } });
+  assert.equal(failed, '파일 제공자가 제한 시간 안에 응답하지 않았어요. (단계: 파일 읽기)');
+  assert.equal((await nativeLog()).filter(o => o.op === 'read').length, 2, 'exactly one retry per open');
 });
 
 test('save same file: conditional write with the opened SHA, original backup, new baseline, notifySaved NOT called by host', async () => {
